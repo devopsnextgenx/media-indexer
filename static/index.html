@@ -47,25 +47,42 @@
             <div id="scan-log" class="scan-log" tabindex="0"></div>
         </section>
 
-        <section class="search-box">
-            <input type="text" id="search-input" placeholder="Search semantically (e.g., 'Ammadi Un Azhagu video song Vikram Prabhu')..." />
-            <button id="search-btn" class="btn btn-accent">Search</button>
-        </section>
+        <div class="search-bar-container">
+            <div class="search-input-wrapper">
+                <input type="search" id="search-input" placeholder="Search vector embeddings..." />
+                <button id="search-history-btn" class="history-dropdown-btn" title="Search history">&#128338;&#9660;</button>
+                <div id="search-history-menu" class="history-menu hidden"></div>
+            </div>
+            <button id="search-btn" class="btn btn-primary">Search</button>
+        </div>
 
-        <section class="results-container">
-            <div class="results-toolbar">
-                <input type="search" id="results-filter" class="results-filter" placeholder="Filter results by title, filename or mount..." />
+        <!-- Results Filter & Sort Toolbar -->
+        <div class="results-toolbar">
+            <div class="filter-tokens-container" id="filter-tokens-container">
+                <button id="filter-history-btn" class="filter-history-btn" title="Filter history">&#128338;&#9660;</button>
+                <div id="filter-history-menu" class="history-menu hidden"></div>
+                <div class="filter-tokens-list" id="filter-tokens-list"></div>
+                <input type="text" 
+                    id="results-filter-input" 
+                    class="filter-input-field" 
+                    placeholder="Filter (e.g., tag:Aditi quality=1080 duration>=4m)..." />
+            </div>
+
+            <!-- Grouped Sort Controls -->
+            <div class="sort-controls">
+                <span id="results-count" class="results-count"></span>
                 <label class="results-sort-label" for="results-sort">Sort by:</label>
-                <select id="results-sort" class="form-select">
+                <select id="results-sort" class="results-sort-select">
                     <option value="score">Score</option>
-                    <option value="normalized_title">Title</option>
-                    <option value="mount">Mount</option>
+                    <option value="title">Title</option>
                     <option value="duration">Duration</option>
                     <option value="size">Size</option>
                 </select>
-                <button id="results-sort-dir" class="btn btn-secondary" title="Toggle sort direction" data-dir="desc">&#8595; Desc</button>
-                <span id="results-count" class="results-count"></span>
+                <button id="results-sort-dir" class="btn btn-secondary" data-dir="desc">&#8595; Desc</button>
             </div>
+        </div>
+
+        <section class="results-container">
             <table class="vscode-table">
                 <thead>
                     <tr>

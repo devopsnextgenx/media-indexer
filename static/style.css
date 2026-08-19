@@ -622,3 +622,324 @@ body {
 .player-volume {
     flex: 0 0 110px;
 }
+
+/* Filter Tokens Box Container */
+.filter-tokens-container {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    background-color: #1e1e24;
+    border: 1px solid #33333d;
+    border-radius: 6px;
+    padding: 4px 8px;
+    min-height: 38px;
+    width: 100%;
+    cursor: text;
+}
+
+.filter-tokens-container:focus-within {
+    border-color: #5b6270;
+}
+
+/* Tokens List */
+.filter-tokens-list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Individual Filter Pill / Badge */
+.filter-token {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background-color: #2d2d38;
+    color: #e0e0e0;
+    border: 1px solid #3d3d4a;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 13px;
+    font-family: monospace;
+    user-select: none;
+}
+
+.filter-token .token-remove {
+    cursor: pointer;
+    color: #a0a0b0;
+    font-size: 14px;
+    line-height: 1;
+    font-weight: bold;
+}
+
+.filter-token .token-remove:hover {
+    color: #ffffff;
+}
+
+/* Embedded Input */
+.filter-input-field {
+    flex: 1;
+    min-width: 150px;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #fff;
+    font-size: 13px;
+    padding: 2px 4px;
+}
+
+/* History Wrapper & Buttons */
+.search-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+}
+
+.history-dropdown-btn,
+.filter-history-btn {
+    background: transparent;
+    border: none;
+    color: #a0a0b0;
+    cursor: pointer;
+    padding: 4px 6px;
+    font-size: 13px;
+    border-right: 1px solid #33333d;
+    margin-right: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.history-dropdown-btn:hover,
+.filter-history-btn:hover {
+    color: #ffffff;
+}
+
+/* History Dropdown Popover Menu */
+.history-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 1000;
+    background-color: #1e1e24;
+    border: 1px solid #33333d;
+    border-radius: 6px;
+    margin-top: 4px;
+    min-width: 220px;
+    max-width: 380px;
+    max-height: 250px;
+    overflow-y: auto;
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+}
+
+.history-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #e0e0e0;
+    border-bottom: 1px solid #2a2a34;
+}
+
+.history-item:last-child {
+    border-bottom: none;
+}
+
+.history-item:hover {
+    background-color: #2d2d38;
+}
+
+.history-item-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-item-remove {
+    color: #888;
+    margin-left: 8px;
+    padding: 0 4px;
+    font-size: 14px;
+}
+
+.history-item-remove:hover {
+    color: #ff5555;
+}
+
+.history-empty {
+    padding: 10px;
+    color: #888;
+    font-size: 12px;
+    text-align: center;
+}
+
+/* ==========================================
+   Search Bar Container Fixes
+   ========================================== */
+.search-bar-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin-bottom: 16px;
+}
+
+.search-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+    background-color: #1e1e24; /* Dark input container matching theme */
+    border: 1px solid #33333d;
+    border-radius: 6px;
+    padding: 0 8px;
+    height: 38px;
+    box-sizing: border-box;
+}
+
+.search-input-wrapper #search-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #ffffff;
+    font-size: 14px;
+    padding: 6px 8px;
+    width: 100%;
+}
+
+.search-input-wrapper .history-dropdown-btn {
+    background: transparent;
+    border: none;
+    border-left: 1px solid #33333d;
+    color: #a0a0b0;
+    cursor: pointer;
+    padding: 4px 8px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.search-input-wrapper .history-dropdown-btn:hover {
+    color: #ffffff;
+}
+
+/* ==========================================
+   Filter Bar & Sort Toolbar Fixes
+   ========================================== */
+.results-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    width: 100%;
+    margin-bottom: 16px;
+}
+
+.filter-tokens-container {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+    background-color: #1e1e24;
+    border: 1px solid #33333d;
+    border-radius: 6px;
+    padding: 4px 8px;
+    min-height: 38px;
+    gap: 6px;
+    box-sizing: border-box;
+}
+
+.filter-history-btn {
+    background: transparent;
+    border: none;
+    border-right: 1px solid #33333d;
+    color: #a0a0b0;
+    cursor: pointer;
+    padding: 2px 8px 2px 2px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.filter-history-btn:hover {
+    color: #ffffff;
+}
+
+.filter-tokens-list {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.filter-input-field {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #ffffff;
+    font-size: 13px;
+    padding: 4px 6px;
+    min-width: 220px;
+}
+
+.sort-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.results-sort-label {
+    color: #a0a0b0;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+/* Base button sizing alignment */
+.btn {
+    height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
+}
+
+/* Sort Dropdown & Option Styling */
+.results-sort-select {
+    background-color: #252526;
+    color: var(--text-primary);
+    border: 1px solid #33333d;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 13px;
+    height: 38px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+}
+
+.results-sort-select:hover,
+.results-sort-select:focus {
+    border-color: #007acc;
+    color: var(--text-active);
+}
+
+.results-sort-select option {
+    background-color: #1e1e24;
+    color: var(--text-primary);
+}
+
+/* Utility helper */
+.hidden {
+    display: none !important;
+}

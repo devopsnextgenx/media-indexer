@@ -3,6 +3,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const searchBtn = document.getElementById("search-btn");
     const resultsBody = document.getElementById("results-body");
 
+    const searchHistoryBtn = document.getElementById("search-history-btn");
+    const searchHistoryMenu = document.getElementById("search-history-menu");
+
     const btnScan = document.getElementById("btn-scan");
     const btnCleanIndex = document.getElementById("btn-clean-index");
     const btnBulk = document.getElementById("btn-bulk");
@@ -26,12 +29,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const ytCookies = document.getElementById("yt-cookies");
     const ytCookieStatus = document.getElementById("yt-cookie-status");
 
-    const resultsFilterInput = document.getElementById("results-filter");
+    // Interactive Token Filter & History Elements
+    const filterContainer = document.getElementById("filter-tokens-container");
+    const filterTokensList = document.getElementById("filter-tokens-list");
+    const filterInputField = document.getElementById("results-filter-input");
+    const filterHistoryBtn = document.getElementById("filter-history-btn");
+    const filterHistoryMenu = document.getElementById("filter-history-menu");
+
     const resultsSortSelect = document.getElementById("results-sort");
     const resultsSortDirBtn = document.getElementById("results-sort-dir");
     const resultsCount = document.getElementById("results-count");
 
     const MAX_LOG_LINES = 5000;
+    const MAX_HISTORY = 15;
+
     const activeStreams = new Map();
     const mountStatus = new Map();
     let logFilter = "";
@@ -40,9 +51,141 @@ document.addEventListener("DOMContentLoaded", () => {
     let allResults = [];
     let currentResults = [];
     let availableMounts = [];
-    let resultsFilterText = "";
+    let activeFilterTokens = [];
     let sortField = "score";
     let sortDir = "desc";
+
+    // ==========================================
+    // LocalStorage History Controllers
+    // ==========================================
+
+    function getLocalStorageArray(key) {
+        try {
+            return JSON.parse(localStorage.getItem(key)) || [];
+        } catch {
+            return [];
+        }
+    }
+
+    function saveLocalStorageArray(key, arr) {
+        try {
+            localStorage.setItem(key, JSON.stringify(arr));
+        } catch (e) {
+            console.error("Failed to save history to localStorage:", e);
+        }
+    }
+
+    // Search History
+    function saveSearchHistory(query) {
+        if (!query.trim()) return;
+        let history = getLocalStorageArray("app_search_history");
+        history = history.filter(q => q.toLowerCase() !== query.toLowerCase());
+        history.unshift(query);
+        if (history.length > MAX_HISTORY) history = history.slice(0, MAX_HISTORY);
+        saveLocalStorageArray("app_search_history", history);
+    }
+
+    function renderSearchHistory() {
+        const history = getLocalStorageArray("app_search_history");
+        if (!history.length) {
+            searchHistoryMenu.innerHTML = `<div class="history-empty">No search history</div>`;
+            return;
+        }
+
+        searchHistoryMenu.innerHTML = history.map((q, idx) => `
+            <div class="history-item" data-idx="${idx}">
+                <span class="history-item-text">${escapeHtml(q)}</span>
+                <span class="history-item-remove" data-remove="${idx}">&times;</span>
+            </div>
+        `).join("");
+
+        searchHistoryMenu.querySelectorAll(".history-item").forEach(el => {
+            el.addEventListener("click", (e) => {
+                const rmIdx = e.target.dataset.remove;
+                if (rmIdx !== undefined) {
+                    e.stopPropagation();
+                    let hist = getLocalStorageArray("app_search_history");
+                    hist.splice(rmIdx, 1);
+                    saveLocalStorageArray("app_search_history", hist);
+                    renderSearchHistory();
+                    return;
+                }
+                const q = history[el.dataset.idx];
+                searchInput.value = q;
+                searchHistoryMenu.classList.add("hidden");
+                performSearch();
+            });
+        });
+    }
+
+    searchHistoryBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        filterHistoryMenu.classList.add("hidden");
+        renderSearchHistory();
+        searchHistoryMenu.classList.toggle("hidden");
+    });
+
+    // Filter History
+    function saveFilterHistory(tokens) {
+        if (!tokens || !tokens.length) return;
+        const filterString = tokens.join(" ");
+        let history = getLocalStorageArray("app_filter_history");
+        history = history.filter(f => f !== filterString);
+        history.unshift(filterString);
+        if (history.length > MAX_HISTORY) history = history.slice(0, MAX_HISTORY);
+        saveLocalStorageArray("app_filter_history", history);
+    }
+
+    function renderFilterHistory() {
+        const history = getLocalStorageArray("app_filter_history");
+        if (!history.length) {
+            filterHistoryMenu.innerHTML = `<div class="history-empty">No filter history</div>`;
+            return;
+        }
+
+        filterHistoryMenu.innerHTML = history.map((fStr, idx) => `
+            <div class="history-item" data-idx="${idx}">
+                <span class="history-item-text">${escapeHtml(fStr)}</span>
+                <span class="history-item-remove" data-remove="${idx}">&times;</span>
+            </div>
+        `).join("");
+
+        filterHistoryMenu.querySelectorAll(".history-item").forEach(el => {
+            el.addEventListener("click", (e) => {
+                const rmIdx = e.target.dataset.remove;
+                if (rmIdx !== undefined) {
+                    e.stopPropagation();
+                    let hist = getLocalStorageArray("app_filter_history");
+                    hist.splice(rmIdx, 1);
+                    saveLocalStorageArray("app_filter_history", hist);
+                    renderFilterHistory();
+                    return;
+                }
+                const fStr = history[el.dataset.idx];
+                activeFilterTokens = fStr.split(" ").filter(Boolean);
+                renderFilterTokens();
+                filterHistoryMenu.classList.add("hidden");
+                applyFilterAndSort();
+            });
+        });
+    }
+
+    filterHistoryBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        searchHistoryMenu.classList.add("hidden");
+        renderFilterHistory();
+        filterHistoryMenu.classList.toggle("hidden");
+    });
+
+    // Close history dropdown menus on outside click
+    document.addEventListener("click", (e) => {
+        if (!searchHistoryMenu.contains(e.target) && e.target !== searchHistoryBtn) {
+            searchHistoryMenu.classList.add("hidden");
+        }
+        if (!filterHistoryMenu.contains(e.target) && e.target !== filterHistoryBtn) {
+            filterHistoryMenu.classList.add("hidden");
+        }
+    });
 
     loadMounts();
 
@@ -71,6 +214,8 @@ document.addEventListener("DOMContentLoaded", () => {
         const q = searchInput.value.trim();
         if (!q) return;
 
+        saveSearchHistory(q);
+
         resultsBody.innerHTML = `<tr><td colspan="8" class="empty-state">Searching vector embeddings...</td></tr>`;
 
         try {
@@ -83,14 +228,209 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    // ==========================================
+    // Token & Parsing Utilities
+    // ==========================================
+
+    function parseBytes(val) {
+        if (typeof val === 'number') return val;
+        if (!val) return 0;
+        const match = String(val).trim().match(/^([0-9.]+)\s*([a-zA-Z]*)$/);
+        if (!match) return parseFloat(val) || 0;
+        const num = parseFloat(match[1]);
+        const unit = match[2].toUpperCase();
+        switch (unit) {
+            case 'TB': case 'T': return num * 1024 * 1024 * 1024 * 1024;
+            case 'GB': case 'G': return num * 1024 * 1024 * 1024;
+            case 'MB': case 'M': return num * 1024 * 1024;
+            case 'KB': case 'K': return num * 1024;
+            case 'B': default: return num;
+        }
+    }
+
+    function parseDurationSeconds(val) {
+        if (typeof val === 'number') return val;
+        if (!val) return 0;
+        const str = String(val).trim().toLowerCase();
+        
+        let total = 0;
+        const matches = [...str.matchAll(/(\d+)\s*([hms])?/g)];
+        if (matches.length > 0) {
+            for (const m of matches) {
+                const num = parseInt(m[1], 10);
+                const unit = m[2] || 's';
+                if (unit === 'h') total += num * 3600;
+                else if (unit === 'm') total += num * 60;
+                else if (unit === 's') total += num;
+            }
+            return total;
+        }
+        return parseFloat(str) || 0;
+    }
+
+    function getItemDurationSeconds(item) {
+        if (typeof item.duration === 'number') return item.duration;
+        if (typeof item.metadata?.duration === 'number') return item.metadata.duration;
+        const durStr = item.duration_formatted || item.metadata?.duration_formatted || '';
+        if (!durStr) return 0;
+
+        const parts = durStr.split(':').map(p => parseInt(p, 10));
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        return parts[0] || 0;
+    }
+
+    function getItemResolutionHeight(item) {
+        const resStr = String(item.resolution || item.metadata?.resolution || item.quality || item.metadata?.quality || '');
+        const match = resStr.match(/(\d{3,4})/);
+        if (match) return parseInt(match[1], 10);
+        return null;
+    }
+
+    function getItemSizeBytes(item) {
+        if (item.size_bytes !== undefined) return item.size_bytes;
+        if (item.metadata?.file_size !== undefined) return item.metadata.file_size;
+        if (typeof item.size === 'number') return item.size;
+        return parseBytes(item.size_human || item.metadata?.file_size_human || '');
+    }
+
+    function evaluateToken(item, token) {
+        const kvMatch = token.match(/^([a-zA-Z0-9_-]+)(:|=|>=|<=|>|<)(.*)$/);
+        
+        if (!kvMatch) {
+            const needle = token.toLowerCase();
+            const tagsStr = (item.folder_tags || []).join(" ").toLowerCase();
+            const haystack = `${item.normalized_title || ""} ${item.file_name || ""} ${item.mount || ""} ${tagsStr}`.toLowerCase();
+            return haystack.includes(needle);
+        }
+
+        const key = kvMatch[1].toLowerCase();
+        const op = kvMatch[2];
+        const rawVal = kvMatch[3];
+
+        if (key === 'tag' || key === 'tags') {
+            const val = rawVal.toLowerCase();
+            const tags = item.folder_tags || [];
+            return tags.some(t => String(t).toLowerCase().includes(val));
+        }
+
+        if (key === 'mount') {
+            return (item.mount || "").toLowerCase().includes(rawVal.toLowerCase());
+        }
+
+        if (key === 'quality' || key === 'qality' || key === 'resolution' || key === 'res') {
+            const itemRes = getItemResolutionHeight(item);
+            if (!itemRes) return false;
+
+            const targetRes = parseInt(rawVal.replace(/p$/i, ''), 10);
+            if (isNaN(targetRes)) {
+                return (item.resolution || item.quality || "").toLowerCase().includes(rawVal.toLowerCase());
+            }
+
+            const standardResolutions = [480, 576, 720, 1080, 1440, 2160];
+            const closestStandard = standardResolutions.reduce((prev, curr) => 
+                Math.abs(curr - itemRes) < Math.abs(prev - itemRes) ? curr : prev
+            );
+
+            return closestStandard === targetRes || Math.abs(itemRes - targetRes) <= 120;
+        }
+
+        if (key === 'duration' || key === 'dur') {
+            const itemDur = getItemDurationSeconds(item);
+            const targetDur = parseDurationSeconds(rawVal);
+            const activeOp = op === ':' ? '=' : op;
+
+            switch (activeOp) {
+                case '>':  return itemDur > targetDur;
+                case '<':  return itemDur < targetDur;
+                case '>=': return itemDur >= targetDur;
+                case '<=': return itemDur <= targetDur;
+                case '=':
+                default:   return Math.abs(itemDur - targetDur) <= 5;
+            }
+        }
+
+        if (key === 'size') {
+            const itemSizeBytes = getItemSizeBytes(item);
+            const targetBytes = parseBytes(rawVal);
+            const activeOp = op === ':' ? '=' : op;
+
+            switch (activeOp) {
+                case '>':  return itemSizeBytes > targetBytes;
+                case '<':  return itemSizeBytes < targetBytes;
+                case '>=': return itemSizeBytes >= targetBytes;
+                case '<=': return itemSizeBytes <= targetBytes;
+                case '=':  return Math.abs(itemSizeBytes - targetBytes) <= targetBytes * 0.05;
+                default:   return false;
+            }
+        }
+
+        const itemPropStr = String(item[key] || item.metadata?.[key] || "").toLowerCase();
+        return itemPropStr.includes(rawVal.toLowerCase());
+    }
+
+    function evaluateTokensFilter(item, tokens) {
+        if (!tokens || tokens.length === 0) return true;
+        return tokens.every(token => evaluateToken(item, token));
+    }
+
+    // ==========================================
+    // Interactive Tag Token Input Controller
+    // ==========================================
+
+    function renderFilterTokens() {
+        filterTokensList.innerHTML = activeFilterTokens.map((token, index) => `
+            <div class="filter-token">
+                <span>${escapeHtml(token)}</span>
+                <span class="token-remove" onclick="removeFilterToken(${index})">&times;</span>
+            </div>
+        `).join("");
+    }
+
+    window.removeFilterToken = (index) => {
+        activeFilterTokens.splice(index, 1);
+        renderFilterTokens();
+        applyFilterAndSort();
+    };
+
+    function addFilterToken(tokenText) {
+        const trimmed = tokenText.trim();
+        if (!trimmed) return;
+        if (!activeFilterTokens.includes(trimmed)) {
+            activeFilterTokens.push(trimmed);
+            renderFilterTokens();
+            saveFilterHistory(activeFilterTokens);
+            applyFilterAndSort();
+        }
+    }
+
+    if (filterContainer && filterInputField) {
+        filterContainer.addEventListener("click", (e) => {
+            if (!filterHistoryBtn.contains(e.target)) {
+                filterInputField.focus();
+            }
+        });
+
+        filterInputField.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                const val = filterInputField.value;
+                if (val) {
+                    addFilterToken(val);
+                    filterInputField.value = "";
+                }
+            } else if (e.key === "Backspace" && filterInputField.value === "" && activeFilterTokens.length > 0) {
+                activeFilterTokens.pop();
+                renderFilterTokens();
+                applyFilterAndSort();
+            }
+        });
+    }
+
     function applyFilterAndSort() {
-        const needle = resultsFilterText.trim().toLowerCase();
-        let filtered = !needle
+        let filtered = activeFilterTokens.length === 0
             ? [...allResults]
-            : allResults.filter((item) => {
-                const haystack = `${item.normalized_title || ""} ${item.file_name || ""} ${item.mount || ""}`.toLowerCase();
-                return haystack.includes(needle);
-            });
+            : allResults.filter((item) => evaluateTokensFilter(item, activeFilterTokens));
 
         filtered.sort((a, b) => {
             let va = a[sortField];
@@ -111,11 +451,6 @@ document.addEventListener("DOMContentLoaded", () => {
             ? `${filtered.length} / ${allResults.length} result${allResults.length === 1 ? "" : "s"}`
             : "";
     }
-
-    resultsFilterInput.addEventListener("input", () => {
-        resultsFilterText = resultsFilterInput.value;
-        applyFilterAndSort();
-    });
 
     resultsSortSelect.addEventListener("change", () => {
         sortField = resultsSortSelect.value;
@@ -156,7 +491,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }[c]));
     }
 
-    // Parent -> grandparent -> great-grandparent
     const FOLDER_TAG_COLORS = ["#2ecc71", "#3b82f6", "#e74c3c"];
 
     function folderTagsHtml(item) {
@@ -303,7 +637,6 @@ document.addEventListener("DOMContentLoaded", () => {
         renderStatusHeader();
     }
 
-    // Mount-Aware Scanning Function
     btnScan.addEventListener("click", async () => {
         const selectedMount = mountSelect.value;
         const rescanDisk = rescanDiskCheckbox.checked;
@@ -347,7 +680,6 @@ document.addEventListener("DOMContentLoaded", () => {
         btnScan.disabled = false;
     });
 
-    // Formats remaining seconds as e.g. 3m45s / 1h04m / 12s
     function formatEta(seconds) {
         const total = Math.max(0, Math.round(Number(seconds) || 0));
         if (!total) return "--";
@@ -367,7 +699,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // Stream SSE Progress Updates (one independent stream per mount)
     function listenToStream(mountName) {
         closeStream(mountName);
 
@@ -521,7 +852,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
             modalYt.classList.add("hidden");
 
-            // Surface the server's own check of whether cookies were actually received/used.
             if (!data.cookies_received && cookies) {
                 showToast("Warning: server did not report receiving cookies — check the backend route.", "warn", 8000);
             } else if (!cookies) {
@@ -581,7 +911,7 @@ document.addEventListener("DOMContentLoaded", () => {
         playerVideo.src = streamUrl(item);
         playerOverlay.classList.remove("hidden");
         playerVideo.volume = Number(playerVolume.value);
-        playerVideo.play().catch(() => { /* autoplay blocked; user presses play */ });
+        playerVideo.play().catch(() => {});
     }
 
     function closePlayer() {
@@ -620,7 +950,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     playerPlay.addEventListener("click", togglePlay);
 
-    // Delay single-click play/pause so a double-click only toggles fullscreen
     let clickTimer = null;
     playerVideo.addEventListener("click", () => {
         if (clickTimer) return;
@@ -660,7 +989,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     playerVolume.addEventListener("input", () => {
         playerVideo.volume = Number(playerVolume.value);
-        playerVideo.muted = playerVideo.volume === 0;
+        playerVideo.muted = playerVolume.value === 0;
     });
 
     playerMute.addEventListener("click", () => {
@@ -684,7 +1013,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // Listen on document so movement over the video/controls always re-shows the chrome
     ["pointermove", "mousemove", "pointerdown", "keydown", "wheel"].forEach((evt) => {
         document.addEventListener(evt, () => {
             if (playerOverlay.classList.contains("hidden")) return;
@@ -788,7 +1116,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return name.replace(/_+/g, " ").replace(/\s+/g, " ").trim();
     }
 
-    // Movies get the folder name; everything else keeps its name with underscores removed.
     function suggestName(item) {
         const [base, ext] = splitExtension(item.file_name || "");
         if ((item.mount || "").toLowerCase() === "movies") {
@@ -899,4 +1226,14 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast(`Delete failed: ${err.message}`, "error", 8000);
         }
     };
+});
+
+// Close history dropdown menus on outside click
+document.addEventListener("click", (e) => {
+    if (!searchHistoryMenu.contains(e.target) && !searchHistoryBtn.contains(e.target)) {
+        searchHistoryMenu.classList.add("hidden");
+    }
+    if (!filterHistoryMenu.contains(e.target) && !filterHistoryBtn.contains(e.target)) {
+        filterHistoryMenu.classList.add("hidden");
+    }
 });
