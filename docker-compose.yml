@@ -16,6 +16,7 @@ services:
       - /media/zbox/storage/xos/x-linux/videos/xxx:/media/storage/xCollection
       - /media/zbox/Crucial-X6/ShareMe/media/serials/x:/media/storage/x-serials
       - /home/shared/services/store/mnts/vectordb:/app/data
+      - /home/shared/services/store/mnts/yt-dlp/yt_cookies.txt:/app/cookies/yt_cookies.txt
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped

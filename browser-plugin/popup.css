@@ -260,3 +260,57 @@ body {
 .toast-success { border-left-color: var(--success-green); }
 .toast-error { border-left-color: var(--danger-red); }
 .toast-warn { border-left-color: #d7a600; }
+
+/* Settings Toggles */
+.toggle-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.toggle-label input[type="checkbox"] {
+    cursor: pointer;
+}
+
+/* Download Entry Box & Copy Button */
+.entry-box {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.entry-text {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Toggle: Hide labels throughout */
+body.hide-labels .field-label {
+    display: none !important;
+}
+
+/* Clickable Download Entry Box */
+.clickable-entry {
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.clickable-entry:hover {
+    background-color: #262626;
+    border-color: var(--accent-hover);
+}
+
+.clickable-entry:active {
+    background-color: #333333;
+}

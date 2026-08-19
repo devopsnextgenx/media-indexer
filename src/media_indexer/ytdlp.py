@@ -47,6 +47,14 @@ YOUTUBE_PLAYER_CLIENTS_AUTH = ("web", "web_safari", "android_vr")
 # Kept as the anonymous default for any external caller still importing this name.
 YOUTUBE_PLAYER_CLIENTS = YOUTUBE_PLAYER_CLIENTS_ANON
 
+HOST_COOKIE_FILE = "/app/cookies/yt_cookies.txt"
+
+def _resolve_cookie_file(cookies: str | None) -> str | None:
+    if os.path.exists(HOST_COOKIE_FILE) and os.path.getsize(HOST_COOKIE_FILE) > 0:
+        return HOST_COOKIE_FILE
+    if cookies and cookies.strip():
+            return _create_temp_cookie_file(cookies)
+    return None
 
 def _player_clients(has_cookies: bool) -> tuple[str, ...]:
     return YOUTUBE_PLAYER_CLIENTS_AUTH if has_cookies else YOUTUBE_PLAYER_CLIENTS_ANON
@@ -209,7 +217,7 @@ def _verify_cookies(cookies: str | None, cookie_file: str | None, context: str) 
 
 def fetch_formats(url: str, cookies: str | None = None, verbose: bool = False) -> dict:
     url = _validate_url(url)
-    cookie_file = _create_temp_cookie_file(cookies)
+    cookie_file = _resolve_cookie_file(cookies)
     cookies_verified = _verify_cookies(cookies, cookie_file, f"Format probe for {url}")
 
     opts = {
@@ -388,7 +396,7 @@ def _run_download(
     verbose = True
     directory = target["directory"]
     output_template = os.path.join(directory, f"{target['stem']}.%(ext)s")
-    cookie_file = _create_temp_cookie_file(cookies)
+    cookie_file = _resolve_cookie_file(cookies)
     cookies_verified = _verify_cookies(cookies, cookie_file, f"Download job {job_id}")
     if not cookies_verified:
         logger.warning(

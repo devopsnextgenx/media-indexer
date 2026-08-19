@@ -17,6 +17,19 @@
             <label class="field-label" for="server-url">API base URL</label>
             <input type="text" id="server-url" placeholder="http://192.168.12.199:2345" />
         </div>
+
+        <!-- NEW: Toggles -->
+        <div class="toggle-group">
+            <label class="toggle-label">
+                <input type="checkbox" id="toggle-hide-labels" />
+                <span>Hide display of Labels throughout</span>
+            </label>
+            <label class="toggle-label">
+                <input type="checkbox" id="toggle-build-entry-only" />
+                <span>Switch download vs entry</span>
+            </label>
+        </div>
+
         <button id="settings-save" class="btn btn-primary">Save</button>
     </section>
 
@@ -62,6 +75,13 @@
             <div class="field">
                 <label class="field-label" for="movie-name">Movie name</label>
                 <input type="text" id="movie-name" class="meta-input" placeholder="e.g. Border" />
+            </div>
+        </div>
+
+        <div class="field">
+            <label class="field-label">Download Entry</label>
+            <div id="download-entry-preview" class="suggestion-text entry-text clickable-entry" title="Click to copy download entry">
+                Select resolution / metadata
             </div>
         </div>
 

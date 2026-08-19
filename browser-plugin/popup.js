@@ -20,7 +20,10 @@ const state = {
     pageStrings: [],
     formats: null,
     results: [],
-    pollTimer: null
+    pollTimer: null,
+    hideLabels: false,
+    buildEntryOnly: false,
+    selectedResolution: ""
 };
 
 const el = (id) => document.getElementById(id);
@@ -31,10 +34,18 @@ document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
     const prefs = await chrome.storage.local.get([
-        "serverUrl", "mediaType", "language", "quality", "actress", "industry"
+        "serverUrl", "mediaType", "language", "quality", "actress", "industry",
+        "hideLabels", "buildEntryOnly"
     ]);
     state.serverUrl = (prefs.serverUrl || DEFAULT_SERVER).replace(/\/+$/, "");
     el("server-url").value = state.serverUrl;
+
+    // Load toggle preferences
+    state.hideLabels = Boolean(prefs.hideLabels);
+    state.buildEntryOnly = Boolean(prefs.buildEntryOnly);
+    el("toggle-hide-labels").checked = state.hideLabels;
+    el("toggle-build-entry-only").checked = state.buildEntryOnly;
+    applyHideLabelsState();
 
     bindEvents();
     await loadOptions(prefs);
@@ -53,19 +64,76 @@ function bindEvents() {
     el("search-input").addEventListener("keypress", (e) => { if (e.key === "Enter") searchLibrary(); });
     el("formats-btn").addEventListener("click", fetchFormats);
 
+    // Toggle listeners
+    el("toggle-hide-labels").addEventListener("change", (e) => {
+        state.hideLabels = e.target.checked;
+        chrome.storage.local.set({ hideLabels: state.hideLabels });
+        applyHideLabelsState();
+    });
+
+    el("toggle-build-entry-only").addEventListener("change", (e) => {
+        state.buildEntryOnly = e.target.checked;
+        chrome.storage.local.set({ buildEntryOnly: state.buildEntryOnly });
+    });
+
+    // NEW: Click anywhere on entry box to copy
+    el("download-entry-preview").addEventListener("click", copyDownloadEntry);
+
     el("media-type").addEventListener("change", () => {
         const isMovie = el("media-type").value === "movie";
         el("song-fields").classList.toggle("hidden", isMovie);
         el("movie-fields").classList.toggle("hidden", !isMovie);
         persistPrefs();
         updateTargetPreview();
+        updateDownloadEntry();
         if (state.results.length) renderResults();
     });
 
     ["language", "quality", "actress", "industry", "movie-name"].forEach((id) => {
-        el(id).addEventListener("change", () => { persistPrefs(); updateTargetPreview(); });
-        el(id).addEventListener("input", updateTargetPreview);
+        el(id).addEventListener("change", () => { 
+            persistPrefs(); 
+            updateTargetPreview(); 
+            updateDownloadEntry();
+        });
+        el(id).addEventListener("input", () => {
+            updateTargetPreview();
+            updateDownloadEntry();
+        });
     });
+}
+
+function applyHideLabelsState() {
+    document.body.classList.toggle("hide-labels", state.hideLabels);
+}
+
+function buildDownloadEntry(res) {
+    const resolution = res || state.selectedResolution || "";
+    const language = el("language").value || "";
+    const actress = el("actress").value.trim();
+    const url = state.pageUrl || "";
+
+    return `${url}|${resolution}|${language}|${actress}`;
+}
+
+function updateDownloadEntry(res) {
+    if (res) state.selectedResolution = res;
+    const entry = buildDownloadEntry();
+    el("download-entry-preview").textContent = entry || "Select resolution / metadata";
+}
+
+async function copyDownloadEntry() {
+    const textToCopy = buildDownloadEntry();
+    if (!textToCopy) {
+        toast("Download entry is empty", "warn");
+        return;
+    }
+
+    try {
+        await navigator.clipboard.writeText(textToCopy);
+        toast("Download entry copied to clipboard!", "success");
+    } catch (err) {
+        toast("Failed to copy entry", "error");
+    }
 }
 
 async function loadOptions(prefs) {
@@ -130,11 +198,15 @@ async function readActiveTab() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || !tab.url || !/^https?:/.test(tab.url)) {
         el("page-url").textContent = "No supported page in the active tab.";
+        updateDownloadEntry();
         return;
     }
 
     state.pageUrl = tab.url;
     el("page-url").textContent = tab.url;
+
+    // Fix: Immediately update entry box as soon as state.pageUrl is initialized
+    updateDownloadEntry();
 
     try {
         const [injected] = await chrome.scripting.executeScript({
@@ -444,7 +516,18 @@ async function fetchFormats() {
         el("formats-btn").disabled = false;
     }
 }
+
 async function startDownload(videoFormat, audioFormat) {
+    const resString = videoFormat.height ? String(videoFormat.height) : "";
+    updateDownloadEntry(resString);
+
+    // If "Switch Submit download request to server vs building above download entry" is toggled ON:
+    if (state.buildEntryOnly) {
+        await copyDownloadEntry();
+        return;
+    }
+
+    // Otherwise, perform regular download request submission to server:
     const cookies = await getNetscapeCookies(state.pageUrl);
     const cookieCount = cookieEntryCount(cookies);
     if (cookieCount === 0) {
@@ -473,7 +556,6 @@ async function startDownload(videoFormat, audioFormat) {
         if (cookieCount > 0 && job.cookies_received === false) {
             toast("Cookies were sent but the server did not report using them - check the backend logs.", "warn");
         }
-        // Connect to SSE for real-time progress and format status
         connectJobSSE(job.id);
     } catch (err) {
         setJobStatus(`Download failed: ${err.message}`, true);
