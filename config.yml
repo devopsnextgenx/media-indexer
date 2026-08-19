@@ -1,0 +1,98 @@
+server:
+  host: "0.0.0.0"
+  port: 2345
+
+mounts:
+  base_dir: "/media"
+  # Mount -> folder -> Jellyfin libraries. An empty folder ("") maps the whole
+  # mount root; any other value maps the matching top-level directory subtree.
+  registry:
+    movies:
+      enabled: true
+      path: "/media/storage/movies"
+      media_type: "movie"
+      folders:
+        - folder: ""
+          libraries: ["bollywood", "hollywood"]
+    songs:
+      enabled: true
+      path: "/media/storage/songs"
+      media_type: "song"
+      folders:
+        - folder: "English"
+          libraries: ["English"]
+        - folder: "Hindi"
+          libraries: ["Hindi-hd", "Hindi-sd", "Hindi-xhd"]
+        - folder: "Marathi"
+          libraries: ["Marathi"]
+        - folder: "South"
+          libraries: ["South-hd", "South-sd", "South-xhd"]
+        - folder: "Bhojpuri"
+          libraries: ["xBhojpuri"]
+    shows:
+      enabled: true
+      path: "/media/storage/shows"
+      media_type: "auto"
+      folders:
+        - folder: ""
+          libraries: ["shows"]
+    xCollection:
+      enabled: true
+      path: "/media/storage/xCollection"
+      media_type: "auto"
+      folders:
+        - folder: ""
+          libraries: ["xCollections", "xJapanese"]
+    x-serials:
+      enabled: true
+      path: "/media/storage/x-serials"
+      media_type: "auto"
+      folders:
+        - folder: ""
+          libraries: ["x-serials"]
+
+vectordb:
+  type: "qdrant"
+  embedded_path: "/app/data/qdrant"
+  collection_name: "media_library"
+  # Set host/port below if using external Qdrant container instead of embedded
+  host: host.docker.internal
+  port: 6333
+
+mysql:
+  enabled: false
+  host: host.docker.internal
+  port: 3306
+  user: minis
+  password: m1nIspsswd
+  database: minis
+  root_pwd: p@ssw0rd
+
+embedding:
+  provider: "sentence-transformers"
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"
+  dimension: 384
+
+indexing:
+  # Concurrent embedding workers used per scan chunk
+  workers: 4
+  # Files embedded per worker task; workers * batch_size files are upserted per chunk
+  batch_size: 32
+  # Number of scan log lines kept in memory for the SSE console
+  log_buffer: 5000
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+downloads:
+  # Container-side roots. docker-compose maps these onto the host media folders,
+  # e.g. /media/zbox/Crucial-X6/ShareMe/media/songs/target -> /media/storage/songs
+  songs_root: "/media/storage/songs"
+  movies_root: "/media/storage/movies"
+
+jellyfin:
+  enabled: true
+  url: "http://192.168.12.111:8096"
+  api_key: "2f74464824354b2195e85757d4aaa723"
+  user_id: "3610636a4f02446bbaa335524466ba9e"

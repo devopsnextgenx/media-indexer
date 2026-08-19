@@ -1,0 +1,21 @@
+services:
+  media-indexer:
+    image: amitkshirsagar13/media-indexer:latest
+    container_name: media_indexer
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "2345:2345"
+    volumes:
+      # Mount configuration
+      - ./config.yml:/app/config.yml
+      # Mount external media directories under /media/<mount_name>
+      - /media/zbox/Crucial-X6/ShareMe/media/songs/target:/media/storage/songs
+      - /media/zbox/storage/ShareMe/media/movies:/media/storage/movies
+      - /media/zbox/Crucial-X6/ShareMe/media/serials/TV Shows:/media/storage/shows
+      - /media/zbox/storage/xos/x-linux/videos/xxx:/media/storage/xCollection
+      - /media/zbox/Crucial-X6/ShareMe/media/serials/x:/media/storage/x-serials
+      - /home/shared/services/store/mnts/vectordb:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

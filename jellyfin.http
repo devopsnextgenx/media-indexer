@@ -1,0 +1,62 @@
+For /media/storage/movies,
+
+we have libraries for each folder bollywood and hollywood.
+
+When indexing specific folder, in movies folder, use below steps to fetch all movies from jellyfin and filter the results to get the needed metadata for updating in qdrant vectordb.
+
+
+### Get User Views
+GET http://192.168.12.111:8096/UserViews?userId=3610636a4f02446bbaa335524466ba9e&ApiKey=2f74464824354b2195e85757d4aaa723
+
+
+iterate Items and create a map of 
+[
+{
+  "Id": "a1d72cc56433cbbcfc0bc22043b9953d",
+  "Name": "hollywood",
+},
+{
+  "Id": "0c47e6117cca8a8b9f6c6876b1017150",
+  "Name": "bollywood",
+}
+]
+
+### Get Library Items using ParentId -> Id from previous map
+GET http://192.168.12.111:8096/Users/3610636a4f02446bbaa335524466ba9e/Items?ParentId=0c47e6117cca8a8b9f6c6876b1017150&Limit=1000&fields=Path,Width,Height,ImageTags,RunTimeTicks&ApiKey=2f74464824354b2195e85757d4aaa723
+
+"Items": [
+    {
+      "Name": "3 Bachelors",
+      "ServerId": "64a37531968841d7bb931b6e337f1735",
+      "Id": "f61bb920eee3d305725e9fcaab801307",
+      "Container": "mov,mp4,m4a,3gp,3g2,mj2",
+      "PremiereDate": "2012-06-29T04:00:00.0000000Z",
+      "Path": "/media/data/storage/ShareMe/media/movies/bollywood/3 Bachelors (2012)/3 Bachelors (2012).mp4",
+      "OfficialRating": "Not Rated",
+      "ChannelId": null,
+      "CommunityRating": 9,
+      "RunTimeTicks": 65923541040,
+      "ProductionYear": 2012,
+      "IsFolder": false,
+      "Type": "Movie",
+      "UserData": {
+      },
+      "VideoType": "VideoFile",
+      "ImageTags": {
+      },
+      "BackdropImageTags": [
+      ],
+      "ImageBlurHashes": {
+      },
+      "LocationType": "FileSystem",
+      "MediaType": "Video",
+      "Width": 1920,
+      "Height": 1080
+    },
+    {...}]
+Lists all movies from jellyfin from that library folder
+
+
+Now, iterate each file from each folder, and retreive the item metadata by matching the file name in the Path field, which should end with exact file name.
+
+this will avoid us looking up each item by its Id in jellyfin and less network and cpu load for jellyfin server.

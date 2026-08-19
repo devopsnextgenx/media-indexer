@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Semantic Media Explorer</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="vscode-header">
+        <div class="logo"><span>VS</span> Media Indexer</div>
+        <div class="header-actions">
+            <!-- Mount Selection Controls -->
+            <div class="scan-control-group" style="display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 4px;">
+                <label for="mount-select" style="font-size: 12px; color: #ccc;">Mount:</label>
+                <select id="mount-select" class="form-select" style="background: #252526; color: #fff; border: 1px solid #3c3c3c; padding: 4px 8px; border-radius: 3px; font-size: 13px;">
+                    <option value="all">All Mounts</option>
+                </select>
+                
+                <label style="font-size: 12px; color: #ccc; cursor: pointer; display: flex; align-items: center; gap: 4px; margin-left: 6px;">
+                    <input type="checkbox" id="rescan-disk" /> Re-scan disk
+                </label>
+            </div>
+
+            <button id="btn-scan" class="btn btn-primary">Scan & Index</button>            <button id="btn-clean-index" class="btn btn-danger">Clean Vector DB</button>            <button id="btn-bulk" class="btn btn-secondary">Bulk Clean '_'</button>
+            <button id="btn-yt" class="btn btn-secondary">yt-dlp Download</button>
+            <a href="/docs" target="_blank" class="btn btn-info">Swagger Docs</a>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Live SSE Progress / Status Stream -->
+        <section id="scan-console" class="scan-console hidden">
+            <div class="scan-console-head">
+                <div id="scan-status-text" class="scan-status">Ready...</div>
+                <div class="scan-console-tools">
+                    <input type="search" id="scan-log-filter" class="scan-log-filter" placeholder="Search messages..." />
+                    <span id="scan-log-count" class="scan-log-count">0 / 0</span>
+                    <label class="scan-log-toggle">
+                        <input type="checkbox" id="scan-log-autoscroll" checked /> Auto-scroll
+                    </label>
+                    <button id="scan-log-clear" class="btn btn-secondary">Clear</button>
+                    <button id="scan-log-hide" class="btn btn-secondary">Hide</button>
+                </div>
+            </div>
+            <div class="scan-progress-track"><div id="scan-progress-fill" class="scan-progress-fill"></div></div>
+            <div id="scan-log" class="scan-log" tabindex="0"></div>
+        </section>
+
+        <section class="search-box">
+            <input type="text" id="search-input" placeholder="Search semantically (e.g., 'Ammadi Un Azhagu video song Vikram Prabhu')..." />
+            <button id="search-btn" class="btn btn-accent">Search</button>
+        </section>
+
+        <section class="results-container">
+            <div class="results-toolbar">
+                <input type="search" id="results-filter" class="results-filter" placeholder="Filter results by title, filename or mount..." />
+                <label class="results-sort-label" for="results-sort">Sort by:</label>
+                <select id="results-sort" class="form-select">
+                    <option value="score">Score</option>
+                    <option value="normalized_title">Title</option>
+                    <option value="mount">Mount</option>
+                    <option value="duration">Duration</option>
+                    <option value="size">Size</option>
+                </select>
+                <button id="results-sort-dir" class="btn btn-secondary" title="Toggle sort direction" data-dir="desc">&#8595; Desc</button>
+                <span id="results-count" class="results-count"></span>
+            </div>
+            <table class="vscode-table">
+                <thead>
+                    <tr>
+                        <th class="col-thumb">Thumbnail</th>
+                        <th class="col-details">File Details</th>
+                        <th class="col-mount">Mount</th>
+                        <th class="col-resolution">Resolution</th>
+                        <th class="col-duration">Duration</th>
+                        <th class="col-size">Size</th>
+                        <th class="col-score">Score</th>
+                        <th class="col-actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="results-body">
+                    <tr>
+                        <td colspan="8" class="empty-state">Enter a search query to explore media items.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+    </main>
+
+    <!-- Modal for YT Download -->
+    <div id="modal-yt" class="modal hidden">
+        <div class="modal-content">
+            <h3>Download YouTube Video</h3>
+            <input type="text" id="yt-url" placeholder="https://www.youtube.com/watch?v=..." />
+            <input type="text" id="yt-mount" value="movies" placeholder="Mount subfolder name (e.g., movies)" />
+
+            <label class="modal-label">Cookies (Netscape cookies.txt, optional but usually required)</label>
+            <textarea id="yt-cookies" class="yt-cookies-input" rows="5" placeholder="Paste exported cookies.txt content here to avoid HTTP 403 errors"></textarea>
+            <div id="yt-cookie-status" class="yt-cookie-status">No cookies provided — download may fail with HTTP 403.</div>
+
+            <div class="modal-buttons">
+                <button id="yt-submit" class="btn btn-primary">Download</button>
+                <button id="yt-close" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rename Modal -->
+    <div id="modal-rename" class="modal hidden">
+        <div class="modal-content">
+            <h3>Rename File</h3>
+            <div class="modal-note">Current: <span id="rename-current"></span></div>
+
+            <label class="modal-label">Suggested name</label>
+            <div class="input-row">
+                <div id="rename-suggestion" class="suggestion-text"></div>
+                <button id="rename-use-suggestion" class="btn btn-primary" title="Rename using the suggested name">Use</button>
+            </div>
+
+            <label class="modal-label">Or edit the name yourself</label>
+            <div class="input-row">
+                <button id="rename-apply" class="btn btn-accent" title="Rename using the name you typed">Rename</button>
+                <input type="text" id="rename-input" placeholder="new-file-name.mkv" />
+            </div>
+
+            <div class="modal-buttons">
+                <button id="rename-close" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div id="modal-confirm" class="modal hidden">
+        <div class="modal-content">
+            <h3 class="danger-title"><span class="warn-icon">&#9888;</span> <span id="confirm-title">Confirm</span></h3>
+            <div id="confirm-message" class="modal-note"></div>
+            <div class="modal-buttons">
+                <button id="confirm-cancel" class="btn btn-secondary">Cancel</button>
+                <button id="confirm-ok" class="btn btn-danger">Delete from disk</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Overlay Video Player -->
+    <div id="player-overlay" class="player-overlay hidden">
+        <div class="player-shell">
+            <div class="player-topbar">
+                <span id="player-title">Now Playing</span>
+                <span id="player-meta" class="player-meta"></span>
+                <button id="player-close" class="player-btn" title="Close (Esc)">&times;</button>
+            </div>
+
+            <video id="player-video" playsinline preload="metadata"></video>
+
+            <div class="player-controls">
+                <button id="player-play" class="player-btn" title="Play / Pause">&#9654;</button>
+
+                <span id="player-current" class="player-time">00:00</span>
+                <input type="range" id="player-progress" class="player-range" value="0" min="0" max="100" step="0.1" />
+                <span id="player-duration" class="player-time">00:00</span>
+
+                <button id="player-mute" class="player-btn" title="Mute / Unmute">&#128266;</button>
+                <input type="range" id="player-volume" class="player-range player-volume" value="1" min="0" max="1" step="0.01" />
+
+                <button id="player-fullscreen" class="player-btn" title="Fullscreen">&#9974;</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Media Indexer Companion</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <header class="vscode-header">
+        <div class="logo"><span>VS</span> Media Indexer</div>
+        <button id="btn-settings" class="btn btn-secondary" title="Server settings">&#9881;</button>
+    </header>
+
+    <section id="settings-panel" class="panel hidden">
+        <div class="panel-title">Server</div>
+        <div class="field">
+            <label class="field-label" for="server-url">API base URL</label>
+            <input type="text" id="server-url" placeholder="http://192.168.12.199:2345" />
+        </div>
+        <button id="settings-save" class="btn btn-primary">Save</button>
+    </section>
+
+    <!-- ------------ Download ------------ -->
+    <section class="panel panel-download">
+        <div class="panel-title">Download</div>
+
+        <div class="page-url" id="page-url">Reading current tab...</div>
+
+        <div class="field-row">
+            <div class="field">
+                <label class="field-label" for="media-type">Type</label>
+                <select id="media-type" class="meta-input">
+                    <option value="song">Song</option>
+                    <option value="movie">Movie</option>
+                </select>
+            </div>
+            <button id="formats-btn" class="btn btn-primary">Fetch formats</button>
+        </div>
+
+        <div id="song-fields">
+            <div class="field-row">
+                <div class="field">
+                    <label class="field-label" for="language">Language</label>
+                    <select id="language" class="meta-input"></select>
+                </div>
+                <div class="field">
+                    <label class="field-label" for="quality">Quality</label>
+                    <select id="quality" class="meta-input"></select>
+                </div>
+            </div>
+            <div class="field">
+                <label class="field-label" for="actress">Actress</label>
+                <input type="text" id="actress" class="meta-input" placeholder="e.g. Karisma Kapoor" />
+            </div>
+        </div>
+
+        <div id="movie-fields" class="hidden">
+            <div class="field">
+                <label class="field-label" for="industry">Industry</label>
+                <select id="industry" class="meta-input"></select>
+            </div>
+            <div class="field">
+                <label class="field-label" for="movie-name">Movie name</label>
+                <input type="text" id="movie-name" class="meta-input" placeholder="e.g. Border" />
+            </div>
+        </div>
+
+        <div class="field">
+            <label class="field-label">Target path</label>
+            <div id="target-preview" class="suggestion-text">Select the metadata above</div>
+        </div>
+
+        <div id="format-buttons" class="format-buttons">
+            <div class="empty-state">Fetch formats to list downloadable resolutions.</div>
+        </div>
+
+        <div id="job-status" class="job-status hidden"></div>
+    </section>
+
+    <!-- ------------ Library search ------------ -->
+    <section class="panel panel-search">
+        <div class="panel-title">Search library</div>
+        <div class="search-box">
+            <input type="text" id="search-input" placeholder="Song / movie title from the page..." />
+            <button id="search-btn" class="btn btn-accent">Search</button>
+        </div>
+        <div id="search-results" class="results">
+            <div class="empty-state">Open a video page and hit Search.</div>
+        </div>
+    </section>
+
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
