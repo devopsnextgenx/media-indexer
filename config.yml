@@ -65,7 +65,7 @@ mysql:
   port: 3306
   user: minis
   password: m1nIspsswd
-  database: minis
+  database: medialib
   root_pwd: p@ssw0rd
 
 embedding:

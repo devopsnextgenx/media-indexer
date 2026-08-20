@@ -12,7 +12,7 @@ services:
 
       # Mount external yt-dlp binary and folder
       - /usr/local/bin/yt-dlp:/usr/local/bin/yt-dlp:ro
-      - /home/shared/ytdlp:/app/ytdlp
+      - /media/zbox/Crucial-X6/ShareMe/media/songs/target/:/app/ytdlp
 
       # Mount external media directories under /media/<mount_name>
       - /media/zbox/Crucial-X6/ShareMe/media/songs/target:/media/storage/songs
