@@ -12,7 +12,7 @@ from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
 from media_indexer.config import settings
-from media_indexer.database import db_instance
+from media_indexer.database import db_instance, mysql_db_instance
 from media_indexer.indexer import indexer_service
 from media_indexer.search import search_engine
 from media_indexer.actions import MediaActions
@@ -30,7 +30,6 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# Browser extension popups call this API from a chrome-extension:// origin
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"^(chrome-extension|moz-extension)://[a-z0-9]+$",
@@ -39,10 +38,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static UI mount
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Check if Jellyfin is enabled in config
 jellyfin_cfg = getattr(settings, "jellyfin", None)
 
 if jellyfin_cfg and getattr(jellyfin_cfg, "enabled", False):
@@ -52,7 +49,7 @@ if jellyfin_cfg and getattr(jellyfin_cfg, "enabled", False):
         user_id=getattr(jellyfin_cfg, "user_id", None) or None,
     )
 else:
-    jellyfin_client = None  # Or disable client calls gracefully
+    jellyfin_client = None
 
 v_cfg = getattr(settings, "vectordb", None)
 qdrant_host = getattr(v_cfg, "host", "host.docker.internal")
@@ -75,12 +72,10 @@ MOUNT_REGISTRY = {
 
 MOUNT_MAP = {name: mount.path for name, mount in MOUNT_REGISTRY.items()}
 
-# Extract target collection from config.yml
 COLLECTION_NAME = getattr(
     getattr(settings, "vectordb", None), "collection_name", "media_library"
 )
 
-# Mount Registry: Instantiated after dependencies are available
 scanners = {
     name: DirectoryTreeScanner(
         mount_path=mount.path,
@@ -96,15 +91,12 @@ scanners = {
 }
 
 def get_mount_path(path: str) -> str:
-    """Translates host/disk paths to internal container mount paths."""
     if not path:
         return path
 
-    # If the path already exists inside the container, return as-is
     if os.path.exists(path):
         return path
 
-    # 1. Match configured mount disk/host paths if defined in settings
     for name, mount in MOUNT_REGISTRY.items():
         disk_path = (
             getattr(mount, "disk_path", None)
@@ -115,17 +107,14 @@ def get_mount_path(path: str) -> str:
         if disk_path and path.startswith(disk_path):
             return path.replace(disk_path, mount.path, 1)
 
-    # 2. Fallback heuristic matching based on configured mount folder paths
     normalized_path = path.replace("\\", "/")
     for name, mount in MOUNT_REGISTRY.items():
-        # Check folders mapped under this mount
         for folder_item in getattr(mount, "folders", []):
             folder_name = folder_item.folder.strip("/")
             if folder_name and f"/{folder_name}/" in normalized_path:
                 subpath = normalized_path.split(f"/{folder_name}/", 1)[1]
                 return os.path.join(mount.path, folder_name, subpath)
 
-        # Direct mount path fallback matching (e.g. /movies/, /songs/, /shows/)
         mount_basename = os.path.basename(mount.path.rstrip("/"))
         if f"/{mount_basename}/" in normalized_path:
             subpath = normalized_path.split(f"/{mount_basename}/", 1)[1]
@@ -177,7 +166,6 @@ class YtDownloadRequest(TargetRequest):
 
 
 def resolve_media_path(path: str) -> str:
-    """Blocks traversal outside the configured media root."""
     path = get_mount_path(path)
     real_path = os.path.realpath(path)
     root = os.path.realpath(settings.mounts.base_dir)
@@ -197,21 +185,22 @@ def serve_ui():
 async def trigger_scan(
     background_tasks: BackgroundTasks,
     rescan_disk: bool = Query(False, description="Re-walk disk to discover new files"),
+    incremental_scan: bool = Query(False, description="Incremental scan only for changed/added/deleted files"),
 ):
     """Triggers manifest generation and queue processing across all mounts."""
     for mount_name, scanner in scanners.items():
-        # Step 1: Ensure manifest exists or rescan disk
-        if rescan_disk or not hasattr(scanner, "manifest_path") or not scanner.manifest_path.exists():
+        if rescan_disk or incremental_scan or not hasattr(scanner, "manifest_path") or not scanner.manifest_path.exists():
             if hasattr(scanner, "load_or_create_manifest"):
-                scanner.load_or_create_manifest()
+                scanner.load_or_create_manifest(force_rescan=rescan_disk, incremental_scan=incremental_scan)
 
-        # Step 2: Queue background indexing via DirectoryTreeScanner
         if hasattr(scanner, "process_media_queue"):
-            background_tasks.add_task(scanner.process_media_queue)
+            background_tasks.add_task(
+                scanner.process_media_queue, force_rescan=rescan_disk, incremental_scan=incremental_scan
+            )
 
     return {
         "status": "success",
-        "message": f"Manifest scan and queue processing started for mounts: {list(scanners.keys())}",
+        "message": f"Manifest scan and queue processing started for mounts: {list(scanners.keys())} (incremental={incremental_scan})",
     }
 
 @app.get("/api/search", tags=["Search"])
@@ -228,7 +217,6 @@ async def get_thumbnail(
     height: int = Query(377, ge=32, le=1920, description="Target fill height"),
     quality: int = Query(96, ge=1, le=100),
 ):
-    # 1. Proxy directly from Jellyfin if ID is provided
     if jellyfin_client and jellyfin_id:
         image = await jellyfin_client.get_item_image(
             jellyfin_id,
@@ -245,7 +233,6 @@ async def get_thumbnail(
                 headers={"Cache-Control": "public, max-age=86400"},
             )
 
-    # 2. Return fallback placeholder to prevent FFmpeg timeouts over SMB/NFS
     return Response(status_code=404, content="Thumbnail unavailable")
 
 
@@ -259,7 +246,6 @@ async def stream_jellyfin_media(
     request: Request,
     jellyfin_id: str = Query(..., description="Jellyfin Item ID"),
 ):
-    """Proxies Jellyfin direct-play so the API key is never exposed to the browser."""
     if not jellyfin_client:
         raise HTTPException(status_code=503, detail="Jellyfin integration is disabled")
 
@@ -309,7 +295,6 @@ def get_metadata(path: str = Query(..., description="Absolute file path")):
 
 @app.post("/api/plugin/search", tags=["Browser Plugin"])
 def plugin_search(req: PluginSearchRequest):
-    """Semantic lookup driven by the yt-formatted-string text scraped by the browser plugin."""
     parts = [req.query or "", *req.strings]
     query = " ".join(p.strip() for p in parts if p and p.strip())
     if not query:
@@ -332,7 +317,6 @@ def ytdlp_formats(req: FormatsRequest):
 def ytdlp_download(req: YtDownloadRequest):
     data = req.model_dump()
     
-    # Normalize legacy payload format IDs if present
     if "video_format_id" in data:
         v_id = data.pop("video_format_id", None)
         if v_id and "video_format" not in data:
@@ -357,7 +341,6 @@ def ytdlp_job(job_id: str):
 
 @app.get("/api/ytdlp/stream/{job_id}", tags=["Browser Plugin"])
 async def stream_ytdlp_job(job_id: str):
-    """Server-Sent Events (SSE) endpoint to stream real-time yt-dlp download logs and format status."""
     async def event_generator():
         last_progress = None
         last_status = None
@@ -372,13 +355,11 @@ async def stream_ytdlp_job(job_id: str):
             status = job.get("status")
             progress = job.get("progress")
 
-            # Push event if status or progress changes
             if status != last_status or progress != last_progress:
                 last_status = status
                 last_progress = progress
                 yield f"data: {json.dumps(job)}\n\n"
 
-            # Terminate SSE stream when job completes or fails
             if status in ("success", "failed", "completed"):
                 break
 
@@ -417,7 +398,6 @@ def clean_index(
     mode: str = Query("truncate", pattern="^(truncate|recreate)$", description="truncate keeps the collection, recreate drops and rebuilds it"),
     clear_manifests: bool = Query(True, description="Also drop scan manifests so the next scan re-walks the disk"),
 ):
-    """Empties the Qdrant collection so a fresh indexing run can start clean."""
     removed = (
         db_instance.reset_collection() if mode == "recreate" else db_instance.truncate_collection()
     )
@@ -446,7 +426,6 @@ def index_stats():
 
 @app.get("/api/scan/mounts", tags=["Mount Indexing"])
 def list_mounts():
-    """Enabled mounts with their folder -> Jellyfin library mapping."""
     return [
         {
             "mount_name": name,
@@ -464,28 +443,28 @@ def list_mounts():
 async def start_scan(
     background_tasks: BackgroundTasks,
     mount_name: str = Query(..., description="Target mount name"),
-    rescan_disk: bool = Query(False, description="Force re-walk directory tree")
+    rescan_disk: bool = Query(False, description="Force re-walk directory tree"),
+    incremental_scan: bool = Query(False, description="Run incremental scan for new/modified/deleted files")
 ):
     scanner = scanners.get(mount_name)
     if not scanner:
         raise HTTPException(status_code=404, detail=f"Mount '{mount_name}' not registered")
 
     async def run_pipeline():
-        # Force rescan pipeline resets manifest and bookmark if rescan_disk=True
-        await scanner.process_media_queue(force_rescan=rescan_disk)
+        # If incremental_scan is requested, make sure rescan_disk is False
+        force_rescan = rescan_disk and not incremental_scan
+        await scanner.process_media_queue(force_rescan=force_rescan, incremental_scan=incremental_scan)
 
     background_tasks.add_task(run_pipeline)
-
     return {
         "status": "queued",
-        "message": f"Scan pipeline initiated in background for mount '{mount_name}'."
+        "message": f"Scan pipeline initiated for mount '{mount_name}' (incremental={incremental_scan})."
     }
 
 @app.get("/api/scan/stream", tags=["Mount Indexing"])
 async def stream_scan_progress(
     mount_name: str = Query(..., description="Mount name: 'songs' or 'movies'")
 ):
-    """Server-Sent Events (SSE) progress endpoint."""
     scanner = scanners.get(mount_name)
     if not scanner:
         raise HTTPException(
@@ -517,8 +496,6 @@ def add_download_entry(req: DownloadEntryRequest):
 
     try:
         os.makedirs(target_dir, exist_ok=True)
-        
-        # Append entry with newline
         with open(target_file, "a", encoding="utf-8") as f:
             f.write(entry_text + "\n")
 

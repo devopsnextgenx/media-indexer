@@ -28,6 +28,15 @@ class VectorDBConfig(BaseModel):
     host: str | None = None
     port: int | None = None
 
+class MySQLConfig(BaseModel):
+    enabled: bool = True
+    host: str = "host.docker.internal"
+    port: int = 3306
+    user: str = "minis"
+    password: str = "m1nIspsswd"
+    database: str = "medialib"
+    root_pwd: str = "p@ssw0rd"
+
 class EmbeddingConfig(BaseModel):
     provider: str = "sentence-transformers"
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
@@ -56,6 +65,7 @@ class AppConfig(BaseModel):
     server: ServerConfig = ServerConfig()
     mounts: MountsConfig = MountsConfig()
     vectordb: VectorDBConfig = VectorDBConfig()
+    mysql: MySQLConfig = MySQLConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
     logging: LoggingConfig = LoggingConfig()
     jellyfin: JellyfinConfig = JellyfinConfig()

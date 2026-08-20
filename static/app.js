@@ -12,7 +12,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnYt = document.getElementById("btn-yt");
 
     const mountSelect = document.getElementById("mount-select");
-    const rescanDiskCheckbox = document.getElementById("rescan-disk");
+    const scanModeToggle = document.getElementById("scan-mode-toggle");
+    const scanModeLabel = document.getElementById("scan-mode-label");
     const scanConsole = document.getElementById("scan-console");
     const scanStatusText = document.getElementById("scan-status-text");
     const scanLog = document.getElementById("scan-log");
@@ -637,9 +638,20 @@ document.addEventListener("DOMContentLoaded", () => {
         renderStatusHeader();
     }
 
+    scanModeToggle.addEventListener("click", () => {
+        const isIncremental = scanModeToggle.dataset.mode === "incremental";
+        const newMode = isIncremental ? "rescan" : "incremental";
+
+        scanModeToggle.dataset.mode = newMode;
+        scanModeLabel.textContent = newMode === "rescan" ? "Full Re-scan" : "Incremental";
+        scanModeLabel.style.color = newMode === "rescan" ? "#ce9178" : "#4ec9b0";
+    });
+
     btnScan.addEventListener("click", async () => {
         const selectedMount = mountSelect.value;
-        const rescanDisk = rescanDiskCheckbox.checked;
+        const scanMode = scanModeToggle.dataset.mode;
+        const rescanDisk = scanMode === "rescan";
+        const incrementalScan = scanMode === "incremental";
 
         const targetMounts = selectedMount === "all" ? [...availableMounts] : [selectedMount];
 
@@ -653,11 +665,11 @@ document.addEventListener("DOMContentLoaded", () => {
         btnScan.disabled = true;
 
         for (const mount of targetMounts) {
-            setMountStatus(mount, `Requesting scan start (rescan_disk=${rescanDisk})...`, 0, 0);
+            setMountStatus(mount, `Requesting scan start (mode=${scanMode})...`, 0, 0);
 
             try {
                 const response = await fetch(
-                    `/api/scan/start?mount_name=${encodeURIComponent(mount)}&rescan_disk=${rescanDisk}`,
+                    `/api/scan/start?mount_name=${encodeURIComponent(mount)}&rescan_disk=${rescanDisk}&incremental_scan=${incrementalScan}`,
                     { method: "POST" }
                 );
                 const data = await response.json();

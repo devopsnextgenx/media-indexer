@@ -16,7 +16,8 @@ from qdrant_client.models import PointStruct, VectorParams, Distance
 
 from media_indexer.jellyfin import JellyfinClient
 from media_indexer.config import settings
-from media_indexer.utils import build_media_metadata, normalize_text
+from media_indexer.database import db_instance, mysql_db_instance
+from media_indexer.utils import build_media_metadata, normalize_text, generate_file_id
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -48,7 +49,6 @@ class DirectoryTreeScanner:
         self.embedding_model = embedding_model
         self.collection_name = collection_name
         self.media_type = media_type
-        # Configured folder ("" = mount root) -> Jellyfin library names
         self.folder_libraries: Dict[str, List[str]] = folder_libraries or {}
         self._folder_keys = {f.lower(): f for f in self.folder_libraries}
         self._folder_caches: Dict[str, Dict[str, Any]] = {}
@@ -57,12 +57,10 @@ class DirectoryTreeScanner:
         self._events: Deque[Dict[str, Any]] = deque(maxlen=settings.indexing.log_buffer)
         self._event_seq = 0
 
-        # Ensure collection exists immediately on startup
         if self.qdrant:
             self._ensure_collection()
 
     def _emit(self, message: str, level: str = "info"):
-        """Appends a line to the in-memory scan console buffer consumed by the SSE stream."""
         self._event_seq += 1
         self._events.append(
             {
@@ -78,7 +76,6 @@ class DirectoryTreeScanner:
         return [event for event in self._events if event["seq"] > seq]
 
     def _resolve_folder(self, rel_path: str) -> str:
-        """Maps a mount-relative path onto its configured folder key."""
         parts = Path(rel_path).parts
         if len(parts) > 1:
             match = self._folder_keys.get(parts[0].lower())
@@ -89,7 +86,6 @@ class DirectoryTreeScanner:
     async def _build_folder_caches(
         self, force: bool = False, manifest: Optional[Dict[str, Any]] = None
     ):
-        """Loads each configured library once and groups the results per folder."""
         if not self.jellyfin:
             return
 
@@ -124,7 +120,6 @@ class DirectoryTreeScanner:
                     f"Library '{name}' loaded ({loaded} items) "
                     f"[{len(loaded_libraries)}/{len(all_libraries)}]"
                 )
-            # Throttle disk writes; SSE readers poll once per second anyway
             now = time.time()
             if done or now - last_flush >= 0.5:
                 last_flush = now
@@ -157,7 +152,6 @@ class DirectoryTreeScanner:
         )
 
     def _lookup_metadata(self, folder: str, file_name: str) -> Dict[str, Any]:
-        """Resolves a file against its folder's libraries, then the whole mount."""
         key = file_name.lower()
         scoped = self._folder_caches.get(folder) or {}
         return scoped.get(key) or self._mount_cache.get(key) or {}
@@ -184,7 +178,6 @@ class DirectoryTreeScanner:
         return "doesn't exist" in message or "not found" in message
 
     def _recover_collection(self):
-        """Recreates the collection so the run can continue; aborts after repeated failures."""
         if self._ensure_collection():
             self._collection_recovery_failures = 0
             return
@@ -201,7 +194,6 @@ class DirectoryTreeScanner:
         )
 
     def _upsert_points(self, points: List[PointStruct]):
-        """Upserts a batch of points, recreating the collection once if it vanished mid-run."""
         if not points:
             return
         try:
@@ -213,12 +205,9 @@ class DirectoryTreeScanner:
             self.qdrant.upsert(collection_name=self.collection_name, points=points)
 
     def _fast_dir_walk(self, directory: Path) -> List[Dict[str, Any]]:
-        """High-performance directory walker with CIFS/SMB and symlink compatibility."""
         valid_extensions = {
-            # Video
             ".mp4", ".mkv", ".avi", ".webm", ".flv", ".m4v", 
             ".wmv", ".mov", ".ts", ".m2ts", ".mpg", ".mpeg",
-            # Audio
             ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav"
         }
         tree_entries = []
@@ -239,11 +228,14 @@ class DirectoryTreeScanner:
                                 ext = child_path.suffix.lower()
                                 if ext in valid_extensions:
                                     rel = str(child_path.relative_to(self.mount_path))
+                                    stat = child_path.stat()
                                     tree_entries.append(
                                         {
                                             "path": rel,
                                             "folder": self._resolve_folder(rel),
                                             "status": "PENDING",
+                                            "mtime": stat.st_mtime,
+                                            "size": stat.st_size,
                                             "jellyfin_id": None,
                                             "library": None,
                                             "vector_id": None,
@@ -260,7 +252,6 @@ class DirectoryTreeScanner:
         return tree_entries
 
     def _save_manifest(self, data: Dict[str, Any]):
-        """Persists state checkpoint safely using an atomic file write swap."""
         data["job_info"]["last_updated"] = datetime.now(
             timezone.utc
         ).isoformat()
@@ -269,32 +260,85 @@ class DirectoryTreeScanner:
         try:
             with open(temp_manifest_path, "w") as f:
                 yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-            
-            # Atomic replacement guarantees SSE readers never encounter partial writes
             temp_manifest_path.replace(self.manifest_path)
         except Exception:
             if temp_manifest_path.exists():
                 temp_manifest_path.unlink()
 
-    def load_or_create_manifest(self, force_rescan: bool = False) -> Dict[str, Any]:
-        """Loads existing manifest or builds a new tree index. Rebuilds if force_rescan=True."""
-        logging.info(f"Starting directory walk for mount: {self.mount_name}")
-        
-        # Only load existing manifest if force_rescan is False
-        if not force_rescan and self.manifest_path.exists():
+    def load_or_create_manifest(
+        self, force_rescan: bool = False, incremental_scan: bool = False
+    ) -> Dict[str, Any]:
+        """Loads directory tree, purges orphaned database entries, and filters unmodified files."""
+        logging.info(f"Starting directory walk for mount: {self.mount_name} (incremental={incremental_scan}, force_rescan={force_rescan})")
+
+        # 1. ONLY load existing manifest if NOT doing an incremental scan and NOT forcing rescan
+        if not force_rescan and not incremental_scan and self.manifest_path.exists():
             try:
                 with open(self.manifest_path, "r") as f:
-                    manifest = yaml.safe_load(f)
-                    if manifest and "job_info" in manifest:
-                        return manifest
-            except Exception:
-                pass  # Fallback to rebuild if file read fails
+                    existing_manifest = yaml.safe_load(f)
+                    if existing_manifest and "job_info" in existing_manifest:
+                        return existing_manifest
+            except Exception as e:
+                logging.warning(f"Failed to read existing manifest: {e}")
 
-        # Build fresh manifest using optimized dir walk
+        # 2. Re-walk the disk directory tree
         self._emit(f"Walking directory tree at {self.mount_path}")
-        tree_entries = self._fast_dir_walk(self.mount_path)
-        logging.info(f"Directory walk completed. Found {len(tree_entries)} media files.")
-        self._emit(f"Directory walk completed. Found {len(tree_entries)} media files.")
+        all_disk_entries = self._fast_dir_walk(self.mount_path)
+        disk_map = {e["path"]: e for e in all_disk_entries}
+
+        added_count = 0
+        updated_count = 0
+        skipped_count = 0
+        cleaned_orphans_count = 0
+        entries_to_process = []
+
+        if incremental_scan:
+            # Fetch tracked state directly from MySQL
+            tracked_mysql = mysql_db_instance.get_tracked_files_map(self.mount_name)
+
+            # Purge orphaned entries in DB that no longer exist on disk
+            orphaned_paths = []
+            for rel_path, rec in tracked_mysql.items():
+                if rel_path not in disk_map:
+                    full_del_path = str(self.mount_path / rel_path)
+                    db_instance.delete_by_file_path(full_del_path)
+                    orphaned_paths.append(full_del_path)
+
+            if orphaned_paths:
+                cleaned_orphans_count = mysql_db_instance.delete_records_by_paths(orphaned_paths)
+                self._emit(f"Incremental scan purged {cleaned_orphans_count} orphaned file(s) from DBs.")
+
+            # Filter entries: identify new vs modified vs unchanged
+            for entry in all_disk_entries:
+                rel_path = entry["path"]
+                mysql_rec = tracked_mysql.get(rel_path)
+
+                if not mysql_rec:
+                    entry["operation"] = "ADD"
+                    entries_to_process.append(entry)
+                    added_count += 1
+                else:
+                    db_mtime = float(mysql_rec.get("mtime") or 0)
+                    db_size = int(mysql_rec.get("file_size") or 0)
+
+                    # Compare mtime/size tolerances
+                    if abs(entry["mtime"] - db_mtime) > 1.0 or entry["size"] != db_size:
+                        entry["operation"] = "UPDATE"
+                        entries_to_process.append(entry)
+                        updated_count += 1
+                    else:
+                        skipped_count += 1
+
+            self._emit(
+                f"Incremental filter complete: {len(entries_to_process)} to process "
+                f"({added_count} new, {updated_count} modified, {skipped_count} skipped, {cleaned_orphans_count} orphans cleaned)."
+            )
+        else:
+            # Full scan: process everything as ADD
+            for entry in all_disk_entries:
+                entry["operation"] = "ADD"
+            entries_to_process = all_disk_entries
+            added_count = len(all_disk_entries)
 
         now = datetime.now(timezone.utc).isoformat()
         manifest = {
@@ -305,27 +349,25 @@ class DirectoryTreeScanner:
                 "status": "PENDING",
                 "created_at": now,
                 "last_updated": now,
-                "total_files": len(tree_entries),
+                "total_files": len(all_disk_entries),
+                "to_process_files": len(entries_to_process),
                 "processed_files": 0,
+                "skipped_files": skipped_count,
+                "added_files": 0,
+                "updated_files": 0,
+                "cleaned_orphans": cleaned_orphans_count,
                 "failed_files": 0,
                 "eta_seconds": 0,
                 "current_index": 0,
                 "current_file": None,
-                "current_library": None,
-                "libraries_loaded": 0,
-                "libraries_total": 0,
-                "library_items_loaded": 0,
-                "library_items_total": None,
-                "bookmark": None,  # Reset bookmark on fresh manifest creation
             },
-            "tree": tree_entries,
+            "tree": entries_to_process,
         }
 
         self._save_manifest(manifest)
         return manifest
 
     def _prepare_entry(self, file_entry: Dict[str, Any]) -> Dict[str, Any]:
-        """Resolves Jellyfin metadata and builds the embedding text + Qdrant payload for one file."""
         rel_path = file_entry["path"]
         abs_path = self.mount_path / rel_path
 
@@ -337,10 +379,7 @@ class DirectoryTreeScanner:
         jf_metadata = self._lookup_metadata(folder, abs_path.name)
         normalized_title = normalize_text(abs_path.stem)
 
-        # Falls back to ffprobe/stat whenever Jellyfin omits resolution, duration or size
         local_meta = build_media_metadata(str(abs_path), jf_metadata)
-
-        # Resolve mapped file path or fall back to scanner path
         file_path = jf_metadata.get("path") or str(abs_path)
 
         title_for_embedding = (
@@ -371,10 +410,16 @@ class DirectoryTreeScanner:
             "jellyfin": jf_metadata,
         }
 
-        return {"text": text_to_embed, "payload": payload, "jellyfin": jf_metadata}
+        return {
+            "text": text_to_embed, 
+            "payload": payload, 
+            "jellyfin": jf_metadata,
+            "abs_path": str(abs_path),
+            "mtime": file_entry.get("mtime", 0.0),
+            "size": file_entry.get("size", 0)
+        }
 
     def _encode_batch(self, texts: List[str]) -> List[List[float]]:
-        """Encodes a batch of texts in one model call; runs inside the worker pool."""
         if not texts:
             return []
         if not self.embedding_model:
@@ -384,17 +429,15 @@ class DirectoryTreeScanner:
         )
         return [list(map(float, vector)) for vector in vectors]
 
-    async def process_media_queue(self, force_rescan: bool = False):
-        """Starts or resumes scanning using the bookmark pointer, indexing files in parallel."""
-        manifest = self.load_or_create_manifest(force_rescan=force_rescan)
+    async def process_media_queue(self, force_rescan: bool = False, incremental_scan: bool = False):
+        manifest = self.load_or_create_manifest(force_rescan=force_rescan, incremental_scan=incremental_scan)
         job_info = manifest["job_info"]
         file_tree: List[Dict[str, Any]] = manifest["tree"]
 
         self._emit(
-            f"Scan started for mount '{self.mount_name}' (force_rescan={force_rescan})"
+            f"Scan started for mount '{self.mount_name}' (force_rescan={force_rescan}, incremental={incremental_scan})"
         )
 
-        # Bulk-load the mapped Jellyfin libraries once so each file resolves locally
         if self.jellyfin:
             try:
                 await self._build_folder_caches(force=force_rescan, manifest=manifest)
@@ -405,8 +448,7 @@ class DirectoryTreeScanner:
         bookmark = job_info.get("bookmark")
         start_index = 0
 
-        # Bookmark Lookup: Find start position in sequence
-        if bookmark and not force_rescan:
+        if bookmark and not force_rescan and not incremental_scan:
             for idx, item in enumerate(file_tree):
                 if item["path"] == bookmark:
                     start_index = idx + 1
@@ -441,8 +483,6 @@ class DirectoryTreeScanner:
             for chunk_start in range(start_index, total_files, chunk_size):
                 chunk = file_tree[chunk_start : chunk_start + chunk_size]
 
-                # 1. Resolve metadata + build payloads; offloaded because missing
-                # Jellyfin fields trigger blocking ffprobe calls
                 prepared_results = await asyncio.gather(
                     *(
                         loop.run_in_executor(executor, self._prepare_entry, file_entry)
@@ -470,7 +510,6 @@ class DirectoryTreeScanner:
                         continue
                     prepared.append((absolute_index, file_entry, result))
 
-                # 2. Embed the chunk across the worker pool, one model call per batch
                 batches = [
                     prepared[i : i + batch_size]
                     for i in range(0, len(prepared), batch_size)
@@ -485,7 +524,6 @@ class DirectoryTreeScanner:
                     return_exceptions=True,
                 )
 
-                # 3. Collect points for a single bulk upsert
                 points: List[PointStruct] = []
                 indexed: List[tuple] = []
                 for batch, vectors in zip(batches, vector_groups):
@@ -502,7 +540,7 @@ class DirectoryTreeScanner:
                         continue
 
                     for (absolute_index, file_entry, data), vector in zip(batch, vectors):
-                        point_id = str(uuid.uuid4())
+                        point_id = generate_file_id(data["abs_path"])
                         if vector:
                             points.append(
                                 PointStruct(
@@ -535,21 +573,38 @@ class DirectoryTreeScanner:
                             )
                         indexed = []
 
-                # 4. Mark the chunk's files as indexed
+                # Update status & record in MySQL
+                total_remaining = len(file_tree)
                 for absolute_index, file_entry, data, point_id in indexed:
-                    jf_metadata = data["jellyfin"]
-                    file_entry["status"] = "INDEXED"
-                    file_entry["jellyfin_id"] = (
-                        jf_metadata.get("jellyfin_id") or jf_metadata.get("jf_id")
-                    )
-                    file_entry["library"] = jf_metadata.get("library")
-                    file_entry["vector_id"] = point_id
-                    job_info["processed_files"] += 1
-                    self._emit(
-                        f"[{absolute_index + 1}/{total_files}] INDEXED {file_entry['path']}"
+                    payload = data["payload"]
+                    op = file_entry.get("operation", "ADD")
+                    
+                    if op == "UPDATE":
+                        job_info["updated_files"] += 1
+                    else:
+                        job_info["added_files"] += 1
+
+                    mysql_db_instance.upsert_file_record(
+                        file_id=point_id,
+                        file_path=payload["file_path"],
+                        file_name=payload["file_name"],
+                        relative_path=payload["relative_path"],
+                        mount=self.mount_name,
+                        file_size=data.get("size", 0),
+                        mtime=data.get("mtime", 0.0),
+                        status="INDEXED",
+                        vector_id=point_id,
+                        jellyfin_id=data["jellyfin"].get("jf_id"),
+                        metadata=payload.get("metadata")
                     )
 
-                # 5. Advance bookmark to the end of the chunk and checkpoint once
+                    job_info["processed_files"] += 1
+                    
+                    # Change total_files to total_remaining so log displays [1/5] instead of [5413/5417]
+                    self._emit(
+                        f"[{job_info['processed_files']}/{total_remaining}] {op}ED {file_entry['path']}"
+                    )
+
                 last_index = chunk_start + len(chunk) - 1
                 last_path = file_tree[last_index]["path"]
                 job_info["current_index"] = last_index + 1
@@ -558,7 +613,7 @@ class DirectoryTreeScanner:
 
                 processed_this_run += len(chunk)
                 elapsed = time.time() - start_time
-                avg_speed = elapsed / processed_this_run
+                avg_speed = elapsed / max(processed_this_run, 1)
                 job_info["eta_seconds"] = int(
                     max(0, total_remaining - processed_this_run) * avg_speed
                 )
@@ -573,10 +628,12 @@ class DirectoryTreeScanner:
         finally:
             executor.shutdown(wait=False)
 
-        # Emit before flipping status so SSE readers see the summary before they disconnect
         self._emit(
-            f"Scan completed: {job_info['processed_files']} indexed, "
-            f"{job_info['failed_files']} failed, {total_files} total"
+            f"Scan completed: {job_info['added_files']} added, "
+            f"{job_info['updated_files']} updated, "
+            f"{job_info['skipped_files']} skipped, "
+            f"{job_info['cleaned_orphans']} orphans cleaned "
+            f"({job_info['failed_files']} failed, {total_files} total disk files)"
         )
         job_info["status"] = "COMPLETED"
         job_info["error"] = None
@@ -586,8 +643,6 @@ class DirectoryTreeScanner:
         self._save_manifest(manifest)
 
     async def stream_progress(self) -> AsyncGenerator[str, None]:
-        """SSE stream endpoint provider for live dashboard updates."""
-        # Replay the buffered console so a late subscriber still sees prior lines
         last_seq = 0
         while True:
             logs = self._events_since(last_seq)
@@ -602,33 +657,24 @@ class DirectoryTreeScanner:
                     if manifest and "job_info" in manifest:
                         job = manifest.get("job_info", {})
                         total = job.get("total_files", 0)
+                        to_process = job.get("to_process_files", total)
                         processed = job.get("processed_files", 0)
-                        # Position in the queue, which advances even for failed files
-                        current = job.get("current_index") or processed
 
                         data = {
                             "job_id": job.get("job_id"),
                             "mount_name": self.mount_name,
                             "status": job.get("status"),
-                            "bookmark": job.get("bookmark"),
-                            "current_index": current,
-                            "current_file": job.get("current_file") or job.get("bookmark"),
-                            "total": total,
-                            "processed": current,
                             "total_files": total,
+                            "to_process_files": to_process,
                             "processed_files": processed,
+                            "skipped_files": job.get("skipped_files", 0),
+                            "added_files": job.get("added_files", 0),
+                            "updated_files": job.get("updated_files", 0),
+                            "cleaned_orphans": job.get("cleaned_orphans", 0),
                             "failed_files": job.get("failed_files", 0),
                             "progress_percentage": round(
-                                (current / max(total, 1)) * 100, 2
-                            ),
-                            "eta_seconds": job.get("eta_seconds", 0),
-                            "current_library": job.get("current_library"),
-                            "libraries_loaded": job.get("libraries_loaded", 0),
-                            "libraries_total": job.get("libraries_total", 0),
-                            "library_items_loaded": job.get("library_items_loaded", 0),
-                            "library_items_total": job.get("library_items_total"),
-                            "error": job.get("error"),
-                            "last_updated": job.get("last_updated"),
+                                (processed / max(to_process, 1)) * 100, 2
+                            ) if to_process > 0 else 100.0,
                             "logs": logs,
                         }
 
@@ -637,8 +683,5 @@ class DirectoryTreeScanner:
                         if job.get("status") in ["COMPLETED", "FAILED"]:
                             break
                 except Exception:
-                    pass  # Ignore brief read conflicts during swap operations
-            else:
-                yield f"data: {json.dumps({'status': 'MANIFEST_NOT_FOUND', 'mount_name': self.mount_name, 'logs': logs})}\n\n"
-
+                    pass
             await asyncio.sleep(0.5)

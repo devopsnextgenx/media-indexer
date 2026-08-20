@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from qdrant_client import QdrantClient, models
 from media_indexer.config import settings
@@ -33,7 +34,6 @@ class VectorDatabase:
         self._ensure_text_indexes()
 
     def _ensure_text_indexes(self):
-        # Prefix tokenizer enables partial/single-word matches (e.g. "21", "aveng")
         text_params = models.TextIndexParams(
             type=models.TextIndexType.TEXT,
             tokenizer=models.TokenizerType.PREFIX,
@@ -111,7 +111,6 @@ class VectorDatabase:
         )
 
     def update_payload_by_file_path(self, file_path: str, payload_updates: dict) -> int:
-        """Merges payload_updates into every point currently pointing at file_path."""
         point_ids = self.find_point_ids_by_file_path(file_path)
         if not point_ids:
             return 0
@@ -132,7 +131,6 @@ class VectorDatabase:
             return 0
 
     def truncate_collection(self) -> int:
-        """Removes every point but keeps the collection and its vector config."""
         removed = self.count_items()
         self.client.delete(
             collection_name=self.collection_name,
@@ -142,7 +140,6 @@ class VectorDatabase:
         return removed
 
     def reset_collection(self) -> int:
-        """Drops and recreates the collection for a clean, fresh index."""
         removed = self.count_items()
         self.client.delete_collection(collection_name=self.collection_name)
         self._ensure_collection()
@@ -150,16 +147,14 @@ class VectorDatabase:
         return removed
 
     def search_vectors(self, query_vector: list[float], limit: int = 10):
-      response = self.client.query_points(
-          collection_name=self.collection_name,  # or your collection variable name
-          query=query_vector,
-          limit=limit,
-      )
-      # query_points returns a QueryResponse object containing a .points list
-      return response.points
+        response = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_vector,
+            limit=limit,
+        )
+        return response.points
 
     def keyword_search(self, query: str, limit: int = 50):
-        """Full-text/prefix match on normalized_title or file_name, for single-word/partial searches."""
         text_filter = models.Filter(
             should=[
                 models.FieldCondition(key="normalized_title", match=models.MatchText(text=query)),
@@ -175,4 +170,195 @@ class VectorDatabase:
         )
         return points
 
+
+class MySQLDatabase:
+    def __init__(self):
+        self.cfg = getattr(settings, "mysql", None)
+        self.enabled = getattr(self.cfg, "enabled", False) if self.cfg else False
+        if self.enabled:
+            self._ensure_table()
+
+    def _get_connection(self):
+        if not self.enabled:
+            return None
+        try:
+            import pymysql
+            return pymysql.connect(
+                host=self.cfg.host,
+                port=self.cfg.port,
+                user=self.cfg.user,
+                password=self.cfg.password,
+                database=self.cfg.database,
+                autocommit=True,
+                cursorclass=pymysql.cursors.DictCursor
+            )
+        except Exception as e:
+            logger.warning(f"MySQL connection error: {e}")
+            return None
+
+    def _ensure_table(self):
+        conn = self._get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS processed_files (
+                        id VARCHAR(255) PRIMARY KEY,
+                        file_path VARCHAR(1024) NOT NULL,
+                        file_name VARCHAR(255) NOT NULL,
+                        relative_path VARCHAR(1024),
+                        mount VARCHAR(255),
+                        file_size BIGINT DEFAULT 0,
+                        mtime DOUBLE DEFAULT 0,
+                        status VARCHAR(50) DEFAULT 'PENDING',
+                        vector_id VARCHAR(255),
+                        jellyfin_id VARCHAR(255),
+                        metadata_json LONGTEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        INDEX idx_file_path (file_path(255)),
+                        INDEX idx_mount (mount)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
+            conn.close()
+            logger.info("MySQL 'processed_files' table initialized.")
+        except Exception as e:
+            logger.error(f"Failed to create MySQL processed_files table: {e}")
+
+    def upsert_file_record(
+        self,
+        file_id: str,
+        file_path: str,
+        file_name: str,
+        relative_path: str,
+        mount: str,
+        file_size: int = 0,
+        mtime: float = 0.0,
+        status: str = "INDEXED",
+        vector_id: str = None,
+        jellyfin_id: str = None,
+        metadata: dict = None
+    ):
+        if not self.enabled:
+            return
+        conn = self._get_connection()
+        if not conn:
+            return
+        try:
+            meta_str = json.dumps(metadata) if metadata else None
+            query = """
+                INSERT INTO processed_files 
+                (id, file_path, file_name, relative_path, mount, file_size, mtime, status, vector_id, jellyfin_id, metadata_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    file_path = VALUES(file_path),
+                    file_name = VALUES(file_name),
+                    relative_path = VALUES(relative_path),
+                    mount = VALUES(mount),
+                    file_size = VALUES(file_size),
+                    mtime = VALUES(mtime),
+                    status = VALUES(status),
+                    vector_id = VALUES(vector_id),
+                    jellyfin_id = VALUES(jellyfin_id),
+                    metadata_json = VALUES(metadata_json);
+            """
+            with conn.cursor() as cursor:
+                cursor.execute(query, (file_id, file_path, file_name, relative_path, mount, file_size, mtime, status, vector_id, jellyfin_id, meta_str))
+            conn.close()
+        except Exception as e:
+            logger.error(f"MySQL upsert failed for {file_path}: {e}")
+
+    def update_file_path(self, old_path: str, new_path: str, new_name: str, relative_path: str = None) -> int:
+        if not self.enabled:
+            return 0
+        conn = self._get_connection()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cursor:
+                if relative_path:
+                    query = "UPDATE processed_files SET file_path=%s, file_name=%s, relative_path=%s WHERE file_path=%s OR file_name=%s"
+                    cursor.execute(query, (new_path, new_name, relative_path, old_path, os.path.basename(old_path)))
+                else:
+                    query = "UPDATE processed_files SET file_path=%s, file_name=%s WHERE file_path=%s OR file_name=%s"
+                    cursor.execute(query, (new_path, new_name, old_path, os.path.basename(old_path)))
+                count = cursor.rowcount
+            conn.close()
+            return count
+        except Exception as e:
+            logger.error(f"MySQL update path failed for {old_path}: {e}")
+            return 0
+
+    def delete_file_by_path(self, file_path: str) -> int:
+        if not self.enabled:
+            return 0
+        conn = self._get_connection()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cursor:
+                query = "DELETE FROM processed_files WHERE file_path=%s OR file_name=%s"
+                cursor.execute(query, (file_path, os.path.basename(file_path)))
+                count = cursor.rowcount
+            conn.close()
+            return count
+        except Exception as e:
+            logger.error(f"MySQL delete failed for {file_path}: {e}")
+            return 0
+
+    def get_tracked_files_by_mount(self, mount: str) -> dict:
+        """Returns dict mapping relative_path -> row dict."""
+        if not self.enabled:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        try:
+            with conn.cursor() as cursor:
+                query = "SELECT id, file_path, relative_path, file_size, mtime, status, vector_id FROM processed_files WHERE mount=%s"
+                cursor.execute(query, (mount,))
+                rows = cursor.fetchall()
+            conn.close()
+            return {row["relative_path"] or row["file_path"]: row for row in rows}
+        except Exception as e:
+            logger.error(f"MySQL fetch failed for mount {mount}: {e}")
+            return {}
+        
+    def get_tracked_files_map(self, mount: str) -> dict:
+        """Returns map: relative_path -> {mtime, file_size, id, vector_id}"""
+        if not self.enabled:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        try:
+            with conn.cursor() as cursor:
+                query = "SELECT id, relative_path, file_path, file_size, mtime, vector_id FROM processed_files WHERE mount=%s"
+                cursor.execute(query, (mount,))
+                rows = cursor.fetchall()
+            conn.close()
+            return {row["relative_path"] or row["file_path"]: row for row in rows}
+        except Exception as e:
+            logger.error(f"Failed fetching tracked files for mount {mount}: {e}")
+            return {}
+
+    def delete_records_by_paths(self, file_paths: list[str]) -> int:
+        """Batch removes records for deleted disk files."""
+        if not self.enabled or not file_paths:
+            return 0
+        conn = self._get_connection()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cursor:
+                format_strings = ','.join(['%s'] * len(file_paths))
+                cursor.execute(f"DELETE FROM processed_files WHERE file_path IN ({format_strings})", tuple(file_paths))
+                count = cursor.rowcount
+            conn.close()
+            return count
+        except Exception as e:
+            logger.error(f"Failed deleting records: {e}")
+            return 0
+        
 db_instance = VectorDatabase()
+mysql_db_instance = MySQLDatabase()

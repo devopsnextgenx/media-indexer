@@ -17,9 +17,9 @@
                     <option value="all">All Mounts</option>
                 </select>
                 
-                <label style="font-size: 12px; color: #ccc; cursor: pointer; display: flex; align-items: center; gap: 4px; margin-left: 6px;">
-                    <input type="checkbox" id="rescan-disk" /> Re-scan disk
-                </label>
+                <button id="scan-mode-toggle" type="button" data-mode="incremental" style="background: #252526; color: #fff; border: 1px solid #3c3c3c; padding: 4px 10px; border-radius: 3px; font-size: 13px; cursor: pointer;">
+                    Mode: <span id="scan-mode-label" style="font-weight: 600; color: #4ec9b0;">Incremental</span>
+                </button>
             </div>
 
             <button id="btn-scan" class="btn btn-primary">Scan & Index</button>            <button id="btn-clean-index" class="btn btn-danger">Clean Vector DB</button>            <button id="btn-bulk" class="btn btn-secondary">Bulk Clean '_'</button>

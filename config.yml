@@ -60,7 +60,7 @@ vectordb:
   port: 6333
 
 mysql:
-  enabled: false
+  enabled: true
   host: host.docker.internal
   port: 3306
   user: minis

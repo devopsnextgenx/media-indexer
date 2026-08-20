@@ -4,7 +4,7 @@ import logging
 import subprocess
 from fastapi import HTTPException
 from media_indexer.config import settings
-from media_indexer.database import db_instance
+from media_indexer.database import db_instance, mysql_db_instance
 from media_indexer.utils import generate_file_id, normalize_text
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,6 @@ class MediaActions:
         target_dir = os.path.join(settings.mounts.base_dir, output_mount)
         os.makedirs(target_dir, exist_ok=True)
         
-        # Download format replaces underscores automatically
         output_template = os.path.join(target_dir, "%(title)s.%(ext)s")
         cmd = [
             "yt-dlp",
@@ -33,7 +32,7 @@ class MediaActions:
 
     @staticmethod
     def _sync_index_after_rename(old_path: str, new_path: str) -> int:
-        """Repoints existing vectors at the new file instead of dropping them from the index."""
+        """Repoints existing vectors and MySQL DB records at the new file location."""
         new_name = os.path.basename(new_path)
         base_updates = {
             "file_path": new_path,
@@ -43,7 +42,6 @@ class MediaActions:
 
         points = db_instance.find_points_by_file_path(old_path)
         if not points:
-            # Payload path may have been rewritten by Jellyfin mapping; match on the file name instead
             points = db_instance.find_points_by_field("file_name", os.path.basename(old_path))
 
         updated_ids = set()
@@ -52,17 +50,20 @@ class MediaActions:
             payload = point.payload or {}
             rel_path = payload.get("relative_path")
             if rel_path:
-                updates["relative_path"] = os.path.join(os.path.dirname(rel_path), new_name)
+                new_rel = os.path.join(os.path.dirname(rel_path), new_name)
+                updates["relative_path"] = new_rel
             db_instance.update_payload_for_points([point.id], updates)
             updated_ids.add(str(point.id))
 
-        # Stale points written by the legacy indexer are keyed by a deterministic path-based id
         legacy_id = generate_file_id(old_path)
         if legacy_id not in updated_ids:
             db_instance.delete_media_item(legacy_id)
 
+        # Update MySQL Database
+        mysql_updated = mysql_db_instance.update_file_path(old_path, new_path, new_name)
+
         if points:
-            logger.info(f"Updated {len(points)} vector payload(s) for renamed file: {new_path}")
+            logger.info(f"Updated {len(points)} vector payload(s) and {mysql_updated} MySQL record(s) for renamed file: {new_path}")
         else:
             logger.warning(f"No vector payload found for renamed file: {old_path}")
         return len(points)
@@ -112,17 +113,19 @@ class MediaActions:
         if os.path.exists(file_path):
             os.remove(file_path)
 
+        # Synchronize Vector DB
         removed = db_instance.delete_by_file_path(file_path)
         if not removed:
-            # Payload path may have been rewritten by Jellyfin mapping; match on the file name instead
             removed = db_instance.delete_by_file_name(os.path.basename(file_path))
 
-        # Stale points written by the legacy indexer are keyed by a deterministic path-based id
         db_instance.delete_media_item(generate_file_id(file_path))
 
-        if removed:
-            logger.info(f"Removed {removed} vector point(s) for deleted file: {file_path}")
-        else:
-            logger.warning(f"No vector point found for deleted file: {file_path}")
+        # Synchronize MySQL DB
+        mysql_removed = mysql_db_instance.delete_file_by_path(file_path)
 
-        return {"status": "success", "message": f"Deleted {file_path}", "index_removed": removed}
+        if removed or mysql_removed:
+            logger.info(f"Removed {removed} vector point(s) and {mysql_removed} MySQL record(s) for deleted file: {file_path}")
+        else:
+            logger.warning(f"No vector point or MySQL record found for deleted file: {file_path}")
+
+        return {"status": "success", "message": f"Deleted {file_path}", "index_removed": removed, "mysql_removed": mysql_removed}

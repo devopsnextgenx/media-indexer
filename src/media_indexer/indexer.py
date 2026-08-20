@@ -3,7 +3,7 @@ import logging
 import requests
 from sentence_transformers import SentenceTransformer
 from media_indexer.config import settings
-from media_indexer.database import db_instance
+from media_indexer.database import db_instance, mysql_db_instance
 from media_indexer.utils import generate_file_id, normalize_text, build_media_metadata
 from media_indexer.jellyfin import format_ticks, normalize_mount_path
 
@@ -81,24 +81,43 @@ class MediaIndexer:
                 embedding_input = f"Title: {normalized_title} File: {file} Resolution: {meta.get('resolution')} Overview: {jf_meta.get('jf_overview', '')}"
                 vector = self.model.encode(embedding_input).tolist()
 
-                # Override file path if available from Jellyfin path transformation
                 final_path = jf_meta.get("path") or full_path
+                mount_name = os.path.relpath(full_path, base_dir).split(os.sep)[0]
+                rel_path = os.path.relpath(full_path, base_dir)
 
                 payload = {
                     "file_path": final_path,
                     "file_name": file,
                     "normalized_title": normalized_title,
-                    "mount": os.path.relpath(full_path, base_dir).split(os.sep)[0],
-                    "relative_path": os.path.relpath(full_path, base_dir),
+                    "mount": mount_name,
+                    "relative_path": rel_path,
                     "metadata": meta,
                     "jellyfin": jf_meta
                 }
 
+                # Upsert into Qdrant Vector DB
                 db_instance.upsert_media_item(
                     point_id=point_id,
                     vector=vector,
                     payload=payload
                 )
+
+                # Upsert into MySQL DB
+                stat = os.stat(full_path) if os.path.exists(full_path) else None
+                mysql_db_instance.upsert_file_record(
+                    file_id=point_id,
+                    file_path=final_path,
+                    file_name=file,
+                    relative_path=rel_path,
+                    mount=mount_name,
+                    file_size=stat.st_size if stat else meta.get("size", 0),
+                    mtime=stat.st_mtime if stat else 0.0,
+                    status="INDEXED",
+                    vector_id=point_id,
+                    jellyfin_id=jf_meta.get("jf_id"),
+                    metadata=meta
+                )
+
                 indexed_count += 1
 
         logger.info(f"Indexing complete. Processed {indexed_count} media files.")
