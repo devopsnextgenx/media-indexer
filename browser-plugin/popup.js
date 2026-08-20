@@ -108,7 +108,7 @@ function applyHideLabelsState() {
 
 function buildDownloadEntry(res) {
     const resolution = res || state.selectedResolution || "";
-    const language = el("language").value || "";
+    const language = (el("language").value || "").toLowerCase();
     const actress = el("actress").value.trim();
     const url = state.pageUrl || "";
 
@@ -521,9 +521,21 @@ async function startDownload(videoFormat, audioFormat) {
     const resString = videoFormat.height ? String(videoFormat.height) : "";
     updateDownloadEntry(resString);
 
-    // If "Switch Submit download request to server vs building above download entry" is toggled ON:
+    const downloadEntry = buildDownloadEntry();
+
+    // If "Switch download vs entry" is toggled ON:
     if (state.buildEntryOnly) {
-        await copyDownloadEntry();
+        if (!downloadEntry) {
+            toast("Download entry is empty", "warn");
+            return;
+        }
+
+        try {
+            const res = await api("POST", "/api/ytdlp/download-entry", { entry: downloadEntry });
+            toast(res.message || "Entry saved to download.txt!", "success");
+        } catch (err) {
+            toast(`Failed to save entry: ${err.message}`, "error");
+        }
         return;
     }
 

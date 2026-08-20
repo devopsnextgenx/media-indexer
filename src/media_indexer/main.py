@@ -461,6 +461,32 @@ async def stream_scan_progress(
         },
     )
 
+class DownloadEntryRequest(BaseModel):
+    entry: str
+
+@app.post("/api/ytdlp/download-entry", tags=["Browser Plugin"])
+def add_download_entry(req: DownloadEntryRequest):
+    entry_text = req.entry.strip()
+    if not entry_text:
+        raise HTTPException(status_code=400, detail="Download entry text cannot be empty")
+
+    target_dir = "/app/ytdlp"
+    target_file = os.path.join(target_dir, "download.txt")
+
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        
+        # Append entry with newline
+        with open(target_file, "a", encoding="utf-8") as f:
+            f.write(entry_text + "\n")
+
+        return {
+            "status": "success",
+            "message": f"Entry added to {target_file}",
+            "file": target_file
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write to entry file: {str(e)}")
 
 def start():
     uvicorn.run("media_indexer.main:app", host=settings.server.host, port=settings.server.port, reload=True)

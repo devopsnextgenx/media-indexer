@@ -16,6 +16,8 @@ from media_indexer.utils import format_file_size
 
 logger = logging.getLogger(__name__)
 
+YTDLP_BIN = "/usr/local/bin/yt-dlp"
+
 TARGET_HEIGHTS = (720, 1080, 1440, 2160)
 LANGUAGES = ("Hindi", "South", "Marathi", "English", "Bhojpuri")
 QUALITIES = ("xhd", "hd", "sd")
@@ -34,14 +36,6 @@ _MAX_LOG_LINES = 100
 # reloaded. So the client list must drop "tv" whenever cookies are present, and probe/
 # download/retry must all derive the list the same way or format IDs stop matching again.
 YOUTUBE_PLAYER_CLIENTS_ANON = ("web", "mweb", "web_safari", "android_vr", "tv")
-YOUTUBE_PLAYER_CLIENTS_AUTH = ("web", "mweb", "web_safari", "android_vr")
-# "web" is the client that actually reads and sends the browser cookie jar for login;
-# clients like "android_vr"/"tv" authenticate (if at all) through separate token flows
-# and largely ignore cookies. Without "web" here, a signed-in-only video (age-restricted,
-# members-only, etc.) can come back with zero usable formats even though cookies were
-# verified and attached - which surfaces as "Requested format is not available" rather
-# than an auth error. web_safari/android_vr are kept as fallbacks for nsig/PO-token
-# issues that occasionally affect plain "web".
 YOUTUBE_PLAYER_CLIENTS_AUTH = ("web", "web_safari", "android_vr")
 
 # Kept as the anonymous default for any external caller still importing this name.
@@ -51,9 +45,15 @@ HOST_COOKIE_FILE = "/app/cookies/yt_cookies.txt"
 
 def _resolve_cookie_file(cookies: str | None) -> str | None:
     if os.path.exists(HOST_COOKIE_FILE) and os.path.getsize(HOST_COOKIE_FILE) > 0:
-        return HOST_COOKIE_FILE
+        try:
+            with open(HOST_COOKIE_FILE, "r", encoding="utf-8") as f:
+                host_cookies = f.read()
+            return _create_temp_cookie_file(host_cookies)
+        except OSError as exc:
+            logger.error(f"Failed to copy host cookie file {HOST_COOKIE_FILE}: {exc}")
+
     if cookies and cookies.strip():
-            return _create_temp_cookie_file(cookies)
+        return _create_temp_cookie_file(cookies)
     return None
 
 def _player_clients(has_cookies: bool) -> tuple[str, ...]:
@@ -124,8 +124,7 @@ def quality_for_height(height: int | None) -> str:
 def options() -> dict:
     """Static config exposed to the extension/web UI for populating the
     language/quality/industry dropdowns and the target-path preview.
-    Referenced by main.py's GET /api/ytdlp/options - was missing entirely,
-    which is why that route 500'd with AttributeError."""
+    Referenced by main.py's GET /api/ytdlp/options."""
     return {
         "languages": list(LANGUAGES),
         "qualities": list(QUALITIES),
@@ -344,9 +343,15 @@ def _stream_ytdlp(
     verbose: bool,
     v_desc: str,
     a_desc: str,
+    env: dict | None = None,
 ) -> tuple[int, list[str], str | None]:
     process = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
     )
 
     logs: list[str] = []
@@ -446,8 +451,11 @@ def _run_download(
                 _set_job(job_id, status="running", progress=0,
                          message=f"Retrying after 403 with {extractor_args.split('=')[-1]}")
 
+            env = os.environ.copy()
+            env["PATH"] = f"/usr/local/bin:/usr/bin:/bin:{env.get('PATH', '')}"
+
             cmd = [
-                sys.executable, "-m", "yt_dlp",
+                YTDLP_BIN,
                 "-f", robust_selector,
                 "--no-playlist",
                 "--newline",
@@ -455,12 +463,16 @@ def _run_download(
                 "--retries", "10",
                 "--fragment-retries", "10",
                 "--extractor-retries", "5",
+                "--js-runtimes", "node",
                 "--embed-thumbnail",
                 "--add-metadata",
                 "--merge-output-format", "mp4",
+                "--postprocessor-args", "ffmpeg:-c:a aac -b:a 192k",
                 "--extractor-args", extractor_args,
                 "-o", output_template,
             ]
+
+            verbose = False
 
             if verbose:
                 cmd.append("-v")
@@ -471,7 +483,7 @@ def _run_download(
             cmd.append(url)
 
             returncode, logs, chosen_formats = _stream_ytdlp(
-                job_id, cmd, selector, verbose, v_desc, a_desc
+                job_id, cmd, selector, verbose, v_desc, a_desc, env=env
             )
 
             if returncode == 0:
@@ -603,9 +615,10 @@ def start_download(
     if v_id and a_id:
         selector = f"{v_id}+{a_id}"
     elif v_id:
-        selector = v_id
+        # Prefer m4a audio automatically when forcing MP4 container
+        selector = f"{v_id}+bestaudio[ext=m4a]/{v_id}+bestaudio"
     else:
-        selector = "bestvideo+bestaudio/best"
+        selector = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
 
     job_id = str(uuid.uuid4())
     job = _set_job(
@@ -616,8 +629,6 @@ def start_download(
         message="Queued",
         video_format=video_format,
         audio_format=audio_format,
-        # Provisional flag from the request itself; _run_download overwrites this with
-        # the verified result (cookie file actually created + non-empty) once it starts.
         cookies_received=cookies_present,
         **{k: target[k] for k in ("media_type", "directory", "filename", "path")},
     )

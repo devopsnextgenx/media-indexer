@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     atomicparsley \
     curl \
     git \
+    nodejs \
     unzip \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -33,7 +34,9 @@ COPY static/ ./static/
 # Sync dependencies using uv and ensure yt-dlp is updated to the latest build
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen && \
-    uv pip install --upgrade yt-dlp
+    uv pip install --upgrade yt-dlp && \
+    deno --version && \
+    node --version
 
 EXPOSE 2345
 
