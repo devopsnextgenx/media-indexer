@@ -95,6 +95,44 @@ scanners = {
     for name, mount in MOUNT_REGISTRY.items()
 }
 
+def get_mount_path(path: str) -> str:
+    """Translates host/disk paths to internal container mount paths."""
+    if not path:
+        return path
+
+    # If the path already exists inside the container, return as-is
+    if os.path.exists(path):
+        return path
+
+    # 1. Match configured mount disk/host paths if defined in settings
+    for name, mount in MOUNT_REGISTRY.items():
+        disk_path = (
+            getattr(mount, "disk_path", None)
+            or getattr(mount, "host_path", None)
+            or getattr(mount, "source_path", None)
+            or getattr(mount, "source", None)
+        )
+        if disk_path and path.startswith(disk_path):
+            return path.replace(disk_path, mount.path, 1)
+
+    # 2. Fallback heuristic matching based on configured mount folder paths
+    normalized_path = path.replace("\\", "/")
+    for name, mount in MOUNT_REGISTRY.items():
+        # Check folders mapped under this mount
+        for folder_item in getattr(mount, "folders", []):
+            folder_name = folder_item.folder.strip("/")
+            if folder_name and f"/{folder_name}/" in normalized_path:
+                subpath = normalized_path.split(f"/{folder_name}/", 1)[1]
+                return os.path.join(mount.path, folder_name, subpath)
+
+        # Direct mount path fallback matching (e.g. /movies/, /songs/, /shows/)
+        mount_basename = os.path.basename(mount.path.rstrip("/"))
+        if f"/{mount_basename}/" in normalized_path:
+            subpath = normalized_path.split(f"/{mount_basename}/", 1)[1]
+            return os.path.join(mount.path, subpath)
+
+    return path
+
 class DownloadRequest(BaseModel):
     url: str
     mount: str = "mount1"
@@ -140,6 +178,7 @@ class YtDownloadRequest(TargetRequest):
 
 def resolve_media_path(path: str) -> str:
     """Blocks traversal outside the configured media root."""
+    path = get_mount_path(path)
     real_path = os.path.realpath(path)
     root = os.path.realpath(settings.mounts.base_dir)
     if os.path.commonpath([real_path, root]) != root:
@@ -357,17 +396,20 @@ async def stream_ytdlp_job(job_id: str):
 
 @app.post("/api/actions/bulk-normalize-underscores", tags=["Actions"])
 def bulk_normalize_underscores(req: BulkRenameRequest):
-    return MediaActions.bulk_rename_remove_underscores(directory=req.directory)
+    directory = get_mount_path(req.directory) if req.directory else None
+    return MediaActions.bulk_rename_remove_underscores(directory=directory)
 
 
 @app.post("/api/actions/rename", tags=["Actions"])
 def rename_file(req: RenameRequest):
-    return MediaActions.rename_file(old_path=req.old_path, new_name=req.new_name)
+    old_path = get_mount_path(req.old_path)
+    return MediaActions.rename_file(old_path=old_path, new_name=req.new_name)
 
 
 @app.delete("/api/actions/file", tags=["Actions"])
 def delete_file(path: str = Query(...)):
-    return MediaActions.delete_file(file_path=path)
+    mount_path = get_mount_path(path)
+    return MediaActions.delete_file(file_path=mount_path)
 
 
 @app.post("/api/admin/index/clean", tags=["Admin"])
