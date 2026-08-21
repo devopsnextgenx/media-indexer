@@ -830,6 +830,19 @@ body {
     color: #ffffff;
 }
 
+.search-input-wrapper .history-dropdown-btn {
+    background: transparent;
+    border: none;
+    border-right: 1px solid #33333d; /* Changed from border-left to border-right */
+    color: #a0a0b0;
+    cursor: pointer;
+    padding: 2px 8px 2px 2px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
 /* ==========================================
    Filter Bar & Sort Toolbar Fixes
    ========================================== */
@@ -942,4 +955,23 @@ body {
 /* Utility helper */
 .hidden {
     display: none !important;
+}
+
+.btn-icon-clean {
+    background: transparent;
+    border: 1px solid #444;
+    color: #cca700;
+    border-radius: 4px;
+    padding: 2px 5px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+.btn-icon-clean:hover {
+    background: #cca700;
+    color: #121212;
+    border-color: #cca700;
 }

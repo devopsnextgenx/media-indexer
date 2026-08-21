@@ -211,6 +211,26 @@ document.addEventListener("DOMContentLoaded", () => {
         if (e.key === "Enter") performSearch();
     });
 
+    // Reset search results when input is cleared
+    searchInput.addEventListener("input", () => {
+        if (!searchInput.value.trim()) {
+            allResults = [];
+            currentResults = [];
+            resultsBody.innerHTML = `<tr><td colspan="7" class="empty-state">Enter a search query to explore media items.</td></tr>`;
+            resultsCount.textContent = "";
+        }
+    });
+    
+    // Focus input when clicking inside wrapper (excluding the history button)
+    const searchInputWrapper = document.querySelector(".search-input-wrapper");
+    if (searchInputWrapper && searchInput) {
+        searchInputWrapper.addEventListener("click", (e) => {
+            if (!searchHistoryBtn.contains(e.target)) {
+                searchInput.focus();
+            }
+        });
+    }
+
     async function performSearch() {
         const q = searchInput.value.trim();
         if (!q) return;
@@ -492,49 +512,23 @@ document.addEventListener("DOMContentLoaded", () => {
         }[c]));
     }
 
-    const FOLDER_TAG_COLORS = ["#2ecc71", "#3b82f6", "#e74c3c"];
+    const FOLDER_TAG_COLORS = ["#e67e22", "#2ecc71", "#3b82f6", "#e74c3c"];
 
     function folderTagsHtml(item) {
-        const tags = item.folder_tags || [];
-        if (!tags.length) return "";
-        return `<div class="folder-tags">` + tags.map((tag, i) =>
-            `<span class="folder-tag" style="border-color:${FOLDER_TAG_COLORS[i]};color:${FOLDER_TAG_COLORS[i]};">${escapeHtml(tag)}</span>`
-        ).join("") + `</div>`;
-    }
-
-    function renderResults(items) {
-        currentResults = items || [];
-
-        if (currentResults.length === 0) {
-            resultsBody.innerHTML = `<tr><td colspan="8" class="empty-state">No semantic matches found.</td></tr>`;
-            return;
+        const tags = [];
+        if (item.mount) {
+            tags.push(item.mount);
+        }
+        if (Array.isArray(item.folder_tags)) {
+            tags.push(...item.folder_tags);
         }
 
-        resultsBody.innerHTML = currentResults.map((item, idx) => `
-            <tr>
-                <td class="col-thumb">
-                    <img class="thumb-img" src="${thumbnailUrl(item)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'"/>
-                </td>
-                <td class="col-details">
-                    <div class="file-title" title="${escapeHtml(item.normalized_title)}">${escapeHtml(item.normalized_title)}</div>
-                    <small class="file-name" title="${escapeHtml(item.file_name)}">${escapeHtml(item.file_name)}</small>
-                    ${folderTagsHtml(item)}
-                </td>
-                <td class="col-mount">${escapeHtml(item.mount)}</td>
-                <td class="col-resolution">${escapeHtml(item.resolution || item.metadata?.resolution || 'N/A')}<br/>
-                    <small style="color:#888;">${escapeHtml(item.quality || item.metadata?.quality || '')}</small></td>
-                <td class="col-duration">${escapeHtml(item.duration_formatted || item.metadata?.duration_formatted || 'N/A')}</td>
-                <td class="col-size">${escapeHtml(item.size_human || item.metadata?.file_size_human || 'N/A')}</td>
-                <td class="col-score"><span style="color:var(--success-green);">${escapeHtml(item.score)}</span></td>
-                <td class="col-actions">
-                    <div class="row-actions">
-                        <button class="btn btn-secondary" onclick="playMedia(${idx})">Play</button>
-                        <button class="btn btn-secondary" onclick="renameMedia(${idx})">Rename</button>
-                        <button class="btn btn-danger" onclick="deleteMedia(${idx})">Delete</button>
-                    </div>
-                </td>
-            </tr>
-        `).join("");
+        if (!tags.length) return "";
+
+        return `<div class="folder-tags">` + tags.map((tag, i) => {
+            const color = FOLDER_TAG_COLORS[i % FOLDER_TAG_COLORS.length];
+            return `<span class="folder-tag" style="border-color:${color};color:${color};">${escapeHtml(tag)}</span>`;
+        }).join("") + `</div>`;
     }
 
     // ---------- Scan console ----------
@@ -1054,6 +1048,61 @@ document.addEventListener("DOMContentLoaded", () => {
         if (item) openPlayer(item);
     };
 
+    function renderResults(items) {
+        currentResults = items || [];
+
+        if (currentResults.length === 0) {
+            resultsBody.innerHTML = `<tr><td colspan="7" class="empty-state">No semantic matches found.</td></tr>`;
+            return;
+        }
+
+        resultsBody.innerHTML = currentResults.map((item, idx) => {
+            const vectorId = item.id || item.vector_id || "N/A";
+            const mysqlId = item.mysql_id || item.db_id || item.file_id || "N/A";
+
+            return `
+            <tr>
+                <td class="col-thumb">
+                    <img class="thumb-img" src="${thumbnailUrl(item)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'"/>
+                </td>
+                <td class="col-details">
+                    <div class="file-title" title="${escapeHtml(item.normalized_title)}">${escapeHtml(item.normalized_title)}</div>
+                    <small class="file-name" title="${escapeHtml(item.file_name)}">${escapeHtml(item.file_name)}</small>
+                    ${folderTagsHtml(item)}
+                    
+                    <!-- DB Identifiers with Inline Icon Button -->
+                    <div class="db-identifiers" style="margin-top: 6px; font-size: 11px; color: #888; display: flex; align-items: center; gap: 6px;">
+                        <span><strong>Vector ID:</strong> <code>${escapeHtml(vectorId)}</code></span> | 
+                        <span><strong>MySQL ID:</strong> <code>${escapeHtml(mysqlId)}</code></span>
+                        
+                        <button class="btn-icon-clean" onclick="cleanRecord(${idx})" title="Clean index (Remove from DBs, keep disk file)">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                <line x1="10" y1="11" x2="10" y2="17"></line>
+                                <line x1="14" y1="11" x2="14" y2="17"></line>
+                            </svg>
+                        </button>
+                    </div>
+                </td>
+                <!-- REMOVED: <td class="col-mount">${escapeHtml(item.mount)}</td> -->
+                <td class="col-resolution">${escapeHtml(item.resolution || item.metadata?.resolution || 'N/A')}<br/>
+                    <small style="color:#888;">${escapeHtml(item.quality || item.metadata?.quality || '')}</small></td>
+                <td class="col-duration">${escapeHtml(item.duration_formatted || item.metadata?.duration_formatted || 'N/A')}</td>
+                <td class="col-size">${escapeHtml(item.size_human || item.metadata?.file_size_human || 'N/A')}</td>
+                <td class="col-score"><span style="color:var(--success-green);">${escapeHtml(item.score)}</span></td>
+                <td class="col-actions">
+                    <div class="row-actions">
+                        <button class="btn btn-secondary" onclick="playMedia(${idx})">Play</button>
+                        <button class="btn btn-secondary" onclick="renameMedia(${idx})">Rename</button>
+                        <button class="btn btn-danger" onclick="deleteMedia(${idx})">Delete</button>
+                    </div>
+                </td>
+            </tr>
+            `;
+        }).join("");
+    }
+
     // ---- Toast Notifications ----
     const toastContainer = document.getElementById("toast-container");
     const TOAST_ICONS = { info: "&#8505;", success: "&#10004;", warn: "&#9888;", error: "&#9888;" };
@@ -1236,6 +1285,37 @@ document.addEventListener("DOMContentLoaded", () => {
             performSearch();
         } catch (err) {
             showToast(`Delete failed: ${err.message}`, "error", 8000);
+        }
+    };
+
+    window.cleanRecord = async (index) => {
+        const item = currentResults[index];
+        if (!item) return;
+
+        const ok = await askConfirm({
+            title: "Clean index records",
+            message: `Remove database records from Qdrant and MySQL?<br/><br/>
+                      <strong>${escapeHtml(item.file_name)}</strong><br/><br/>
+                      <small style="color:#aaa;">Note: The physical file on disk will NOT be deleted.</small>`,
+            okLabel: "Clean Index"
+        });
+        if (!ok) return;
+
+        try {
+            const res = await fetch(`/api/actions/clean-record?path=${encodeURIComponent(item.file_path)}`, { 
+                method: "DELETE" 
+            });
+            const data = await res.json().catch(() => ({}));
+            
+            if (!res.ok) {
+                showToast(`Cleaning failed: ${data.detail || res.statusText}`, "error", 8000);
+                return;
+            }
+            
+            showToast(`Removed DB records for ${item.file_name}. Disk file preserved.`, "success");
+            performSearch();
+        } catch (err) {
+            showToast(`Clean operation failed: ${err.message}`, "error", 8000);
         }
     };
 });

@@ -49,9 +49,9 @@
 
         <div class="search-bar-container">
             <div class="search-input-wrapper">
-                <input type="search" id="search-input" placeholder="Search vector embeddings..." />
                 <button id="search-history-btn" class="history-dropdown-btn" title="Search history">&#128338;&#9660;</button>
                 <div id="search-history-menu" class="history-menu hidden"></div>
+                <input type="search" id="search-input" placeholder="Search vector embeddings..." />
             </div>
             <button id="search-btn" class="btn btn-primary">Search</button>
         </div>
@@ -88,7 +88,7 @@
                     <tr>
                         <th class="col-thumb">Thumbnail</th>
                         <th class="col-details">File Details</th>
-                        <th class="col-mount">Mount</th>
+                        <!-- REMOVED: <th class="col-mount">Mount</th> -->
                         <th class="col-resolution">Resolution</th>
                         <th class="col-duration">Duration</th>
                         <th class="col-size">Size</th>
@@ -98,7 +98,8 @@
                 </thead>
                 <tbody id="results-body">
                     <tr>
-                        <td colspan="8" class="empty-state">Enter a search query to explore media items.</td>
+                        <!-- Updated colspan to 7 to match removed column -->
+                        <td colspan="7" class="empty-state">Enter a search query to explore media items.</td>
                     </tr>
                 </tbody>
             </table>

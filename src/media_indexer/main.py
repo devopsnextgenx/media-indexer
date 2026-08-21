@@ -507,6 +507,11 @@ def add_download_entry(req: DownloadEntryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write to entry file: {str(e)}")
 
+@app.delete("/api/actions/clean-record", tags=["Actions"])
+def clean_record_from_index(path: str = Query(..., description="Absolute file path")):
+    mount_path = get_mount_path(path)
+    return MediaActions.clean_record_from_index(file_path=mount_path)
+
 def start():
     uvicorn.run("media_indexer.main:app", host=settings.server.host, port=settings.server.port, reload=True)
 

@@ -391,3 +391,40 @@ body.hide-labels .field-label {
     outline: 2px solid var(--accent-hover);
     outline-offset: 1px;
 }
+
+/* DB Identifiers & Clean Button */
+.db-identifiers {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    font-size: 0.68rem;
+    color: #888;
+}
+
+.db-identifiers code {
+    font-family: monospace;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 1px 4px;
+    border-radius: 2px;
+}
+
+.btn-icon-clean {
+    background: transparent;
+    border: 1px solid #444;
+    color: #cca700;
+    border-radius: 3px;
+    padding: 1px 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    margin-left: 2px;
+}
+
+.btn-icon-clean:hover {
+    background: #cca700;
+    color: #121212;
+    border-color: #cca700;
+}

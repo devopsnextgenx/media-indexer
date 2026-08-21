@@ -129,3 +129,25 @@ class MediaActions:
             logger.warning(f"No vector point or MySQL record found for deleted file: {file_path}")
 
         return {"status": "success", "message": f"Deleted {file_path}", "index_removed": removed, "mysql_removed": mysql_removed}
+
+    @staticmethod
+    def clean_record_from_index(file_path: str) -> dict:
+        """Removes records from both Qdrant and MySQL DB without deleting the disk file."""
+        # Clean Vector DB
+        removed = db_instance.delete_by_file_path(file_path)
+        if not removed:
+            removed = db_instance.delete_by_file_name(os.path.basename(file_path))
+        
+        db_instance.delete_media_item(generate_file_id(file_path))
+
+        # Clean MySQL DB
+        mysql_removed = mysql_db_instance.delete_file_by_path(file_path)
+
+        logger.info(f"Cleaned index: {removed} vector point(s) and {mysql_removed} MySQL record(s) for path: {file_path}")
+
+        return {
+            "status": "success",
+            "message": f"Cleaned index records for {file_path}",
+            "vector_removed": removed,
+            "mysql_removed": mysql_removed
+        }

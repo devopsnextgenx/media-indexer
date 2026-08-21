@@ -305,6 +305,32 @@ function resultRow(item) {
         )
     );
 
+    const vectorId = item.id || item.vector_id || "N/A";
+    const mysqlId = item.mysql_id || item.db_id || item.file_id || "N/A";
+
+    // DB Identifiers with Inline Small Dustbin Icon Button
+    const dbRow = document.createElement("div");
+    dbRow.className = "db-identifiers";
+    dbRow.innerHTML = `
+        <span><strong>Vector ID:</strong> <code>${escapeHtml(String(vectorId))}</code></span> | 
+        <span><strong>MySQL ID:</strong> <code>${escapeHtml(String(mysqlId))}</code></span>
+    `;
+
+    const cleanBtn = document.createElement("button");
+    cleanBtn.className = "btn-icon-clean";
+    cleanBtn.title = "Clean index (Remove from DBs, keep disk file)";
+    cleanBtn.innerHTML = `
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            <line x1="10" y1="11" x2="10" y2="17"></line>
+            <line x1="14" y1="11" x2="14" y2="17"></line>
+        </svg>
+    `;
+    cleanBtn.addEventListener("click", () => cleanRecord(item, cleanBtn));
+    dbRow.appendChild(cleanBtn);
+    body.appendChild(dbRow);
+
     const tags = item.folder_tags || [];
     if (tags.length) {
         const tagRow = document.createElement("div");
@@ -758,4 +784,39 @@ function toast(message, type = "info") {
     const node = text("div", `toast toast-${type}`, message);
     el("toast-container").appendChild(node);
     setTimeout(() => node.remove(), 5000);
+}
+
+function escapeHtml(str) {
+    return String(str || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+async function cleanRecord(item, buttonEl) {
+    if (buttonEl.dataset.armed !== "1") {
+        buttonEl.dataset.armed = "1";
+        buttonEl.style.borderColor = "var(--danger-red)";
+        buttonEl.style.color = "var(--danger-red)";
+        toast("Click trash icon again to confirm cleaning DB index entries", "warn");
+        setTimeout(() => {
+            buttonEl.dataset.armed = "0";
+            buttonEl.style.borderColor = "";
+            buttonEl.style.color = "";
+        }, 4000);
+        return;
+    }
+
+    buttonEl.disabled = true;
+    try {
+        await api("DELETE", `/api/actions/clean-record?path=${encodeURIComponent(item.file_path)}`);
+        state.results = state.results.filter((r) => r !== item);
+        toast(`Cleaned DB entries for ${item.file_name}. File kept on disk.`, "success");
+        renderResults();
+    } catch (err) {
+        toast(`Cleaning failed: ${err.message}`, "error");
+        buttonEl.disabled = false;
+    }
 }

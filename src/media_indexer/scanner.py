@@ -99,6 +99,7 @@ class DirectoryTreeScanner:
 
         if job_info is not None:
             job_info["status"] = "LOADING_LIBRARIES"
+            job_info["eta_seconds"] = -1
             job_info["libraries_total"] = len(all_libraries)
             job_info["libraries_loaded"] = 0
             job_info["current_library"] = all_libraries[0] if all_libraries else None
@@ -613,10 +614,10 @@ class DirectoryTreeScanner:
 
                 processed_this_run += len(chunk)
                 elapsed = time.time() - start_time
-                avg_speed = elapsed / max(processed_this_run, 1)
-                job_info["eta_seconds"] = int(
-                    max(0, total_remaining - processed_this_run) * avg_speed
-                )
+                time_per_file = elapsed / max(processed_this_run, 1)
+
+                remaining_files = max(0, len(file_tree) - (start_index + processed_this_run))
+                job_info["eta_seconds"] = int(remaining_files * time_per_file)
 
                 logging.info(
                     f"[{self.mount_name}] Chunk done "
@@ -664,6 +665,7 @@ class DirectoryTreeScanner:
                             "job_id": job.get("job_id"),
                             "mount_name": self.mount_name,
                             "status": job.get("status"),
+                            "eta_seconds": job.get("eta_seconds", 0),
                             "total_files": total,
                             "to_process_files": to_process,
                             "processed_files": processed,
