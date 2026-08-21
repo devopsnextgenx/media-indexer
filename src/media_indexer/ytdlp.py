@@ -102,6 +102,8 @@ def options() -> dict:
         "qualities": list(QUALITIES),
         "industries": list(INDUSTRIES),
         "media_types": list(MEDIA_TYPES),
+        "songs_root": settings.downloads.songs_root,
+        "movies_root": settings.downloads.movies_root,
     }
 
 
