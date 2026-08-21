@@ -1,5 +1,4 @@
 const DEFAULT_SERVER = "http://192.168.12.199:2345";
-// Mirrors the /api/search default used by static/app.js so both UIs rank identically
 const SEARCH_LIMIT = 5;
 const THUMB_W = 251;
 const THUMB_H = 377;
@@ -9,7 +8,6 @@ const THUMB_PLACEHOLDER =
         `<svg xmlns='http://www.w3.org/2000/svg' width='${THUMB_W}' height='${THUMB_H}'><rect width='100%' height='100%' fill='#333'/></svg>`
     );
 
-// Parent -> grandparent -> great-grandparent
 const FOLDER_TAG_COLORS = ["#2ecc71", "#3b82f6", "#e74c3c"];
 
 const state = {
@@ -40,7 +38,6 @@ async function init() {
     state.serverUrl = (prefs.serverUrl || DEFAULT_SERVER).replace(/\/+$/, "");
     el("server-url").value = state.serverUrl;
 
-    // Load toggle preferences
     state.hideLabels = Boolean(prefs.hideLabels);
     state.buildEntryOnly = Boolean(prefs.buildEntryOnly);
     el("toggle-hide-labels").checked = state.hideLabels;
@@ -64,7 +61,6 @@ function bindEvents() {
     el("search-input").addEventListener("keypress", (e) => { if (e.key === "Enter") searchLibrary(); });
     el("formats-btn").addEventListener("click", fetchFormats);
 
-    // Toggle listeners
     el("toggle-hide-labels").addEventListener("change", (e) => {
         state.hideLabels = e.target.checked;
         chrome.storage.local.set({ hideLabels: state.hideLabels });
@@ -76,7 +72,6 @@ function bindEvents() {
         chrome.storage.local.set({ buildEntryOnly: state.buildEntryOnly });
     });
 
-    // NEW: Click anywhere on entry box to copy
     el("download-entry-preview").addEventListener("click", copyDownloadEntry);
 
     el("media-type").addEventListener("change", () => {
@@ -140,7 +135,6 @@ async function loadOptions(prefs) {
     try {
         state.options = await api("GET", "/api/ytdlp/options");
     } catch (err) {
-        // Offline fallback keeps the dropdowns usable
         state.options = {
             languages: ["Hindi", "South", "Marathi", "English", "Bhojpuri"],
             qualities: ["xhd", "hd", "sd"],
@@ -205,7 +199,6 @@ async function readActiveTab() {
     state.pageUrl = tab.url;
     el("page-url").textContent = tab.url;
 
-    // Fix: Immediately update entry box as soon as state.pageUrl is initialized
     updateDownloadEntry();
 
     try {
@@ -225,7 +218,6 @@ async function readActiveTab() {
     updateTargetPreview();
 }
 
-// Runs in the page context: collects yt-formatted-string content
 function scrapeFormattedStrings() {
     const heading = document.querySelector(
         "ytd-watch-metadata h1 yt-formatted-string, h1.title yt-formatted-string, h1 yt-formatted-string"
@@ -254,7 +246,6 @@ async function searchLibrary() {
     container.appendChild(emptyState("Searching vector embeddings..."));
 
     try {
-        // Same endpoint/params as the web UI so ranking and result set match exactly
         state.results = await api("GET", `/api/search?q=${encodeURIComponent(query)}&limit=${SEARCH_LIMIT}`);
         renderResults();
     } catch (err) {
@@ -279,18 +270,29 @@ function resultRow(item) {
     const row = document.createElement("div");
     row.className = "result-row";
 
-    const img = document.createElement("img");
-    img.className = "thumb-img";
-    img.loading = "lazy";
-    img.src = thumbnailUrl(item);
-    img.addEventListener("error", () => { img.src = THUMB_PLACEHOLDER; });
-    row.appendChild(img);
+    // Set background image with overlay layer
+    const bgUrl = thumbnailUrl(item);
+    if (bgUrl && bgUrl !== THUMB_PLACEHOLDER) {
+        row.style.backgroundImage = `url("${bgUrl}")`;
+    }
+
+    const overlay = document.createElement("div");
+    overlay.className = "result-row-overlay";
+    row.appendChild(overlay);
 
     const body = document.createElement("div");
     body.className = "result-body";
 
-    body.appendChild(text("div", "result-title", item.normalized_title || item.file_name));
-    body.appendChild(text("div", "result-meta", item.file_name || ""));
+    const displayTitle = item.normalized_title || item.file_name || "Untitled";
+    const titleEl = text("div", "result-title", displayTitle);
+    titleEl.title = displayTitle;
+    body.appendChild(titleEl);
+
+    const fileName = item.file_name || "";
+    const fileNameEl = text("div", "result-meta", fileName);
+    fileNameEl.title = fileName;
+    body.appendChild(fileNameEl);
+
     body.appendChild(
         text(
             "div",
@@ -305,16 +307,20 @@ function resultRow(item) {
         )
     );
 
-    const vectorId = item.id || item.vector_id || "N/A";
-    const mysqlId = item.mysql_id || item.db_id || item.file_id || "N/A";
+    const vectorId = String(item.id || item.vector_id || "N/A");
+    const mysqlId = String(item.mysql_id || item.db_id || item.file_id || "N/A");
 
-    // DB Identifiers with Inline Small Dustbin Icon Button
     const dbRow = document.createElement("div");
     dbRow.className = "db-identifiers";
     dbRow.innerHTML = `
-        <span><strong>Vector ID:</strong> <code>${escapeHtml(String(vectorId))}</code></span> | 
-        <span><strong>MySQL ID:</strong> <code>${escapeHtml(String(mysqlId))}</code></span>
+        <span class="result-score">score ${item.score}</span>
+        <span><code class="clickable-id" title="Click to copy Vector ID">${escapeHtml(vectorId)}</code></span>
     `;
+        // <span><code class="clickable-id" title="Click to copy MySQL ID">${escapeHtml(mysqlId)}</code></span>
+
+    const codes = dbRow.querySelectorAll(".clickable-id");
+    if (codes[0]) codes[0].addEventListener("click", () => copyToClipboard(vectorId, "Vector ID"));
+    if (codes[1]) codes[1].addEventListener("click", () => copyToClipboard(mysqlId, "MySQL ID"));
 
     const cleanBtn = document.createElement("button");
     cleanBtn.className = "btn-icon-clean";
@@ -335,10 +341,11 @@ function resultRow(item) {
     if (tags.length) {
         const tagRow = document.createElement("div");
         tagRow.className = "folder-tags";
+
         tags.forEach((tag, i) => {
             const chip = text("span", "folder-tag", tag);
-            chip.style.color = FOLDER_TAG_COLORS[i];
-            chip.style.borderColor = FOLDER_TAG_COLORS[i];
+            chip.style.color = FOLDER_TAG_COLORS[i] || "#cccccc";
+            chip.style.borderColor = FOLDER_TAG_COLORS[i] || "#cccccc";
             const targetField = folderTagTarget(i);
             if (targetField) {
                 chip.classList.add("folder-tag-clickable");
@@ -355,10 +362,34 @@ function resultRow(item) {
             }
             tagRow.appendChild(chip);
         });
+
+        const allChip = text("span", "folder-tag folder-tag-clickable", "All");
+        allChip.style.color = "#ffffff";
+        allChip.style.borderColor = "#ffffff";
+        allChip.setAttribute("role", "button");
+        allChip.tabIndex = 0;
+        allChip.title = "Apply all folder tags to inputs";
+
+        const applyAllTags = () => {
+            tags.forEach((tag, i) => {
+                const targetField = folderTagTarget(i);
+                if (targetField) {
+                    populateFromFolderTag(targetField, tag);
+                }
+            });
+        };
+
+        allChip.addEventListener("click", applyAllTags);
+        allChip.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                applyAllTags();
+            }
+        });
+
+        tagRow.appendChild(allChip);
         body.appendChild(tagRow);
     }
-
-    body.appendChild(text("div", "result-score", `score ${item.score}`));
 
     const actions = document.createElement("div");
     actions.className = "result-actions";
@@ -422,6 +453,19 @@ function resultRow(item) {
     return row;
 }
 
+async function copyToClipboard(value, label) {
+    if (!value || value === "N/A") {
+        toast(`${label} unavailable`, "warn");
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(value);
+        toast(`${label} copied!`, "success");
+    } catch {
+        toast(`Failed to copy ${label}`, "error");
+    }
+}
+
 function folderTagTarget(index) {
     if (el("media-type").value === "movie") return index === 1 ? "industry" : null;
     return ["actress", "quality", "language"][index] || null;
@@ -447,7 +491,6 @@ function thumbnailUrl(item) {
 async function getNetscapeCookies(url) {
     if (typeof chrome === "undefined" || !chrome.cookies) return null;
     try {
-        // Query both exact URL and the root YouTube domain to capture __Secure- and SID cookies
         const targetUrl = new URL(url);
         const domainUrl = `${targetUrl.protocol}//.youtube.com`;
 
@@ -456,7 +499,6 @@ async function getNetscapeCookies(url) {
             chrome.cookies.getAll({ url: domainUrl })
         ]);
 
-        // Deduplicate cookies by name + domain + path
         const cookieMap = new Map();
         [...urlCookies, ...domainCookies].forEach((c) => {
             const key = `${c.domain}:${c.path}:${c.name}`;
@@ -470,7 +512,6 @@ async function getNetscapeCookies(url) {
 
         const lines = ["# Netscape HTTP Cookie File"];
         const now = Math.floor(Date.now() / 1000);
-        // Default session cookies to 1 year expiration to avoid stale cookie dropping in yt-dlp
         const defaultExpiration = now + 31536000;
 
         for (const c of cookies) {
@@ -489,8 +530,6 @@ async function getNetscapeCookies(url) {
     }
 }
 
-// Counts real cookie entries (ignoring the Netscape header) so we can warn the
-// user before a request goes out unauthenticated instead of after it 403s.
 function cookieEntryCount(cookieFileContent) {
     if (!cookieFileContent) return 0;
     return cookieFileContent
@@ -519,11 +558,9 @@ async function fetchFormats() {
         state.formats = await api("POST", "/api/ytdlp/formats", {
             url: state.pageUrl,
             cookies: cookies,
-            verbose: false // Enabled for clear ytdlp issue output
+            verbose: false
         });
 
-        // Defense in depth: also trust the server's own verification (see ytdlp.py
-        // _verify_cookies) in case cookies were sent but the server couldn't use them.
         if (cookieCount > 0 && state.formats.cookies_received === false) {
             toast("Cookies were sent but the server did not accept them - check the backend logs.", "warn");
         }
@@ -549,7 +586,6 @@ async function startDownload(videoFormat, audioFormat) {
 
     const downloadEntry = buildDownloadEntry();
 
-    // If "Switch download vs entry" is toggled ON:
     if (state.buildEntryOnly) {
         if (!downloadEntry) {
             toast("Download entry is empty", "warn");
@@ -557,15 +593,13 @@ async function startDownload(videoFormat, audioFormat) {
         }
 
         try {
-            const res = await api("POST", "/api/ytdlp/download-entry", { entry: downloadEntry });
-            // toast(res.message || "Entry saved to download.txt!", "success");
+            await api("POST", "/api/ytdlp/download-entry", { entry: downloadEntry });
         } catch (err) {
             toast(`Failed to save entry: ${err.message}`, "error");
         }
         return;
     }
 
-    // Otherwise, perform regular download request submission to server:
     const cookies = await getNetscapeCookies(state.pageUrl);
     const cookieCount = cookieEntryCount(cookies);
     if (cookieCount === 0) {
@@ -608,7 +642,7 @@ function connectJobSSE(jobId) {
     evtSource.onmessage = (event) => {
         const job = JSON.parse(event.data);
         const isFailed = job.status === "failed";
-        
+
         setJobStatus(job.message || `${job.status}...`, isFailed);
 
         if (job.status === "success" || job.status === "completed" || isFailed) {
@@ -631,7 +665,6 @@ function qualityForHeight(height) {
     return "sd";
 }
 
-// Buckets heights into ranges so buttons keep a stable color regardless of exact resolution
 function fmtBucket(height) {
     if (!height || height < 720) return "sd";
     if (height < 1080) return "720";

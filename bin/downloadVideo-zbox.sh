@@ -15,6 +15,8 @@ COOKIE_TARGET="/media/data/Crucial-X6/ShareMe/media/songs/target/cookies-zbox.tx
 TMP_DIR=~/tmp
 TRACKER_FILE=$(mktemp -p "$TMP_DIR")
 
+API_URL="http://minis.local:2345/api/ytdlp/update-status"
+
 YT_DLP=~/bin/yt-dlp
 
 "$YT_DLP" --cookies-from-browser chrome --cookies "$COOKIE_TARGET" --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ" >/dev/null 2>&1
@@ -24,6 +26,20 @@ YT_DLP=~/bin/yt-dlp
 # ─────────────────────────────────────────────
 log() {
     echo "$*" | tee -a "$LOG_FILE"
+}
+
+# ─────────────────────────────────────────────
+#  Update Status API Call
+# ─────────────────────────────────────────────
+update_status() {
+    local entry_string="$1"
+    local status="$2"
+
+    curl -s -X 'POST' \
+      "$API_URL" \
+      -H 'accept: application/json' \
+      -H 'Content-Type: application/json' \
+      -d "{\"entry\": \"${entry_string}\", \"status\": \"${status}\"}" >/dev/null 2>&1 || true
 }
 
 # ─────────────────────────────────────────────
@@ -193,10 +209,13 @@ select_audio_format() {
 # ─────────────────────────────────────────────
 download_entry() {
     local url="$1" vformat="$2" lang="$3" actress="$4"
+    local entry_string="${url}|${vformat}|${lang}|${actress}"
 
     log ""
     log "  URL:     $url"
     log "  VFORMAT: $vformat  |  LANG: $lang  |  ACTRESS: $actress"
+
+    update_status "$entry_string" "Downloading"
 
     local dlang resolution move_location
     dlang=$(resolve_dlang "$lang")
@@ -212,6 +231,7 @@ download_entry() {
 
     if [ -z "$vfmt_id" ]; then
         log "  [ERROR] Could not determine video format id. Skipping."
+        update_status "$entry_string" "Failed"
         return 1
     fi
 
@@ -232,6 +252,7 @@ download_entry() {
     local exit_code=$?
     if [ $exit_code -ne 0 ]; then
         log "  [ERROR] yt-dlp exited with code $exit_code"
+        update_status "$entry_string" "Failed"
         return 1
     fi
 
@@ -239,6 +260,7 @@ download_entry() {
     downloaded_file=$(cat "$TRACKER_FILE" 2>/dev/null)
     if [ -z "$downloaded_file" ] || [ ! -f "$downloaded_file" ]; then
         log "  [ERROR] Tracker file empty or downloaded file not found."
+        update_status "$entry_string" "Failed"
         return 1
     fi
 
@@ -250,6 +272,7 @@ download_entry() {
     log "  [OK] Moved: $moved_name → $move_location/"
     notify-send "Download Completed" "Song '$moved_name' downloaded and moved to $move_location." 2>/dev/null || true
 
+    update_status "$entry_string" "Completed"
     return 0
 }
 

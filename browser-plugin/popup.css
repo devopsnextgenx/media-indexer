@@ -98,33 +98,57 @@ body {
 
 .results { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 
+/* Result Row with Background Image Overlay */
 .result-row {
+    position: relative;
     display: flex;
-    gap: 8px;
-    padding: 8px;
-    background: #1b1b1b;
+    padding: 10px;
     border: 1px solid var(--border-color);
-    border-radius: 3px;
+    border-radius: 4px;
+    overflow: hidden;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
 }
 
-.thumb-img {
-    width: 46px;
-    aspect-ratio: 251 / 377;
-    object-fit: cover;
-    border-radius: 3px;
-    background: #000;
-    flex: 0 0 auto;
+.result-row-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(18, 18, 18, 0.75);
+    backdrop-filter: blur(2px);
+    z-index: 1;
 }
 
-.result-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.result-body {
+    position: relative;
+    z-index: 2;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* Single line truncation with ellipsis */
 .result-title {
     color: var(--text-active);
     font-weight: 600;
-    font-size: 0.8rem;
-    word-break: break-word;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
-.result-meta { font-size: 0.7rem; color: #888; word-break: break-all; }
+
+.result-meta {
+    font-size: 0.7rem;
+    color: #bbb;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .result-score { color: var(--success-green); font-size: 0.7rem; }
+
 .folder-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
 .folder-tag {
     font-size: 0.65rem;
@@ -132,12 +156,13 @@ body {
     padding: 3px 6px;
     border: 1px solid currentColor;
     border-radius: 10px;
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(0, 0, 0, 0.4);
     white-space: nowrap;
 }
 .folder-tag-clickable { cursor: pointer; }
 .folder-tag-clickable:hover,
-.folder-tag-clickable:focus-visible { background: rgba(255, 255, 255, 0.14); outline: none; }
+.folder-tag-clickable:focus-visible { background: rgba(255, 255, 255, 0.25); outline: none; }
+
 .result-actions { display: flex; gap: 6px; margin-top: 4px; }
 .rename-row { display: flex; gap: 6px; margin-top: 4px; }
 .rename-row input {
@@ -171,7 +196,6 @@ body {
     color: #888;
 }
 
-/* Language / quality / actress / industry / movie inputs share one accent */
 .meta-input {
     width: 100%;
     padding: 7px;
@@ -261,7 +285,6 @@ body {
 .toast-error { border-left-color: var(--danger-red); }
 .toast-warn { border-left-color: #d7a600; }
 
-/* Settings Toggles */
 .toggle-group {
     display: flex;
     flex-direction: column;
@@ -278,11 +301,8 @@ body {
     cursor: pointer;
 }
 
-.toggle-label input[type="checkbox"] {
-    cursor: pointer;
-}
+.toggle-label input[type="checkbox"] { cursor: pointer; }
 
-/* Download Entry Box & Copy Button */
 .entry-box {
     display: flex;
     align-items: center;
@@ -294,12 +314,8 @@ body {
     min-width: 0;
 }
 
-/* Toggle: Hide labels throughout */
-body.hide-labels .field-label {
-    display: none !important;
-}
+body.hide-labels .field-label { display: none !important; }
 
-/* Clickable Download Entry Box */
 .clickable-entry {
     cursor: pointer;
     user-select: none;
@@ -311,11 +327,8 @@ body.hide-labels .field-label {
     border-color: var(--accent-hover);
 }
 
-.clickable-entry:active {
-    background-color: #333333;
-}
+.clickable-entry:active { background-color: #333333; }
 
-/* Settings Toggles (Single Row Switch Styling) */
 .toggle-group.inline-toggles {
     display: flex;
     flex-direction: row;
@@ -335,7 +348,6 @@ body.hide-labels .field-label {
     user-select: none;
 }
 
-/* Hide native checkbox */
 .toggle-label input[type="checkbox"] {
     position: absolute;
     opacity: 0;
@@ -343,7 +355,6 @@ body.hide-labels .field-label {
     height: 0;
 }
 
-/* Custom Toggle Switch Track */
 .toggle-switch {
     position: relative;
     display: inline-block;
@@ -356,7 +367,6 @@ body.hide-labels .field-label {
     flex-shrink: 0;
 }
 
-/* Toggle Thumb Circle */
 .toggle-switch::after {
     content: "";
     position: absolute;
@@ -369,49 +379,52 @@ body.hide-labels .field-label {
     transition: transform 0.2s ease, background-color 0.2s ease;
 }
 
-/* Hover State */
-.toggle-label:hover .toggle-switch {
-    border-color: var(--accent-hover);
-}
+.toggle-label:hover .toggle-switch { border-color: var(--accent-hover); }
 
-/* Checked Track State */
 .toggle-label input[type="checkbox"]:checked + .toggle-switch {
     background-color: var(--accent-blue);
     border-color: var(--accent-hover);
 }
 
-/* Checked Thumb Movement */
 .toggle-label input[type="checkbox"]:checked + .toggle-switch::after {
     transform: translateX(14px);
     background-color: #ffffff;
 }
 
-/* Focus Indicator for Accessibility */
 .toggle-label input[type="checkbox"]:focus-visible + .toggle-switch {
     outline: 2px solid var(--accent-hover);
     outline-offset: 1px;
 }
 
-/* DB Identifiers & Clean Button */
+/* DB Identifiers and Copyable Code Chips */
 .db-identifiers {
     display: flex;
     align-items: center;
     gap: 6px;
     margin-top: 4px;
     font-size: 0.68rem;
-    color: #888;
+    color: #aaa;
 }
 
-.db-identifiers code {
+.db-identifiers code.clickable-id {
     font-family: monospace;
-    background: rgba(255, 255, 255, 0.05);
-    padding: 1px 4px;
-    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    color: #fff;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.db-identifiers code.clickable-id:hover {
+    background: var(--accent-blue);
+    border-color: var(--accent-hover);
 }
 
 .btn-icon-clean {
     background: transparent;
-    border: 1px solid #444;
+    border: 1px solid #555;
     color: #cca700;
     border-radius: 3px;
     padding: 1px 4px;
@@ -420,7 +433,7 @@ body.hide-labels .field-label {
     align-items: center;
     justify-content: center;
     transition: all 0.2s ease;
-    margin-left: 2px;
+    margin-left: auto;
 }
 
 .btn-icon-clean:hover {
