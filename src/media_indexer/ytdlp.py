@@ -7,7 +7,7 @@ import threading
 import uuid
 from urllib.parse import urlparse
 from fastapi import HTTPException
-
+import json
 from media_indexer.config import settings
 from media_indexer.utils import format_file_size
 
@@ -116,29 +116,31 @@ def _validate_url(url: str) -> bool:
         return False
     
 def fetch_formats(url: str, cookies: str | None = None, verbose: bool = False) -> dict:
-    """Extracts formats via yt-dlp using cookies, mapping non-exact heights to the nearest
-    target height tier (480p, 720p, 1080p, 1440p, 2160p) and selecting the stream with
-    the lowest file size for each tier.
+    """Extracts formats via yt-dlp, mapping non-exact heights to the nearest
+    target height tier and formatting metadata properly for the extension UI.
     """
     if not _validate_url(url):
         raise HTTPException(status_code=400, detail="Invalid URL provided")
 
     cookie_file = _resolve_cookie_file(cookies)
+    cookies_verified = bool(cookie_file and os.path.exists(cookie_file))
 
+    # Fetch complete format and video metadata as JSON
     cmd = [
         YTDLP_BIN,
         "--js-runtimes", "node",
-        "-F", url
+        "-J", url
     ]
     if cookie_file:
         cmd.extend(["--cookies", cookie_file])
 
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        fmt_list = res.stdout
-    except subprocess.CalledProcessError as exc:
-        logger.error(f"yt-dlp format probe failed for {url}: {exc.stderr}")
-        raise HTTPException(status_code=502, detail=f"Could not read media info: {exc.stderr}")
+        info = json.loads(res.stdout)
+    except Exception as exc:
+        stderr_msg = getattr(exc, "stderr", str(exc))
+        logger.error(f"yt-dlp format probe failed for {url}: {stderr_msg}")
+        raise HTTPException(status_code=502, detail=f"Could not read media info: {stderr_msg}")
     finally:
         if cookie_file and cookie_file.startswith("/tmp/") and os.path.exists(cookie_file):
             try:
@@ -146,54 +148,45 @@ def fetch_formats(url: str, cookies: str | None = None, verbose: bool = False) -
             except OSError:
                 pass
 
+    target_heights = (480, 720, 1080, 1440, 2160)
     candidates_by_target: dict[int, list[dict]] = {}
     audio_candidates: list[dict] = []
 
-    target_heights = (480, 720, 1080, 1440, 2160)
-
-    for line in fmt_list.splitlines():
-        if re.search(r'audio only|storyboard|images', line, re.IGNORECASE):
-            if "audio only" in line:
-                parts = line.split()
-                if parts:
-                    audio_candidates.append({"format_id": parts[0], "ext": "m4a", "acodec": "audio"})
+    formats = info.get("formats", [])
+    for f in formats:
+        # Check for audio-only streams
+        vcodec = f.get("vcodec")
+        acodec = f.get("acodec")
+        
+        if vcodec == "none" and acodec != "none":
+            filesize = f.get("filesize") or f.get("filesize_approx") or 0
+            audio_candidates.append({
+                "format_id": f.get("format_id"),
+                "ext": f.get("ext", "m4a"),
+                "filesize": filesize,
+                "filesize_human": format_file_size(filesize) if filesize else "Unknown size",
+                "acodec": acodec,
+            })
             continue
 
-        if not re.match(r'^[0-9]+', line):
-            continue
-
-        parts = line.split()
-        fid = parts[0]
-
-        # Extract actual height (e.g., 540p or 960x540)
-        m_h = re.search(r'\b([0-9]+)p\b', line)
-        if not m_h:
-            m_h = re.search(r'(?<=x)[0-9]+', line)
-        actual_height = int(m_h.group(1)) if m_h else None
-
+        actual_height = f.get("height")
         if actual_height:
-            # Map actual height to the nearest available target height
             nearest_target = min(target_heights, key=lambda t: abs(t - actual_height))
-
-            # Parse size in MiB or KiB to pick the lowest file size
-            size_mb = 999999.0
-            size_match = re.search(r'~?\s*([0-9]+(?:\.[0-9]+)?)\s*MiB', line)
-            if size_match:
-                size_mb = float(size_match.group(1))
-            else:
-                kib_match = re.search(r'~?\s*([0-9]+(?:\.[0-9]+)?)\s*KiB', line)
-                if kib_match:
-                    size_mb = float(kib_match.group(1)) / 1024.0
+            filesize = f.get("filesize") or f.get("filesize_approx") or 0
+            size_mb = filesize / (1024 * 1024) if filesize else 999999.0
 
             candidates_by_target.setdefault(nearest_target, []).append({
-                "format_id": fid,
+                "format_id": f.get("format_id"),
                 "actual_height": actual_height,
                 "target_height": nearest_target,
+                "ext": f.get("ext", "mp4"),
                 "size_mb": size_mb,
+                "filesize": filesize,
+                "filesize_human": format_file_size(filesize) if filesize else "Unknown size",
                 "quality_tier": resolve_resolution(actual_height),
             })
 
-    # Pick the stream with the smallest size_mb for each assigned target height bucket
+    # Pick the stream with the smallest size for each assigned target height bucket
     filtered_video_formats = []
     for target_h in sorted(candidates_by_target.keys()):
         best_candidate = min(candidates_by_target[target_h], key=lambda x: x["size_mb"])
@@ -202,15 +195,28 @@ def fetch_formats(url: str, cookies: str | None = None, verbose: bool = False) -
             "height": best_candidate["actual_height"],
             "categorized_as": f"{best_candidate['target_height']}p",
             "quality_tier": best_candidate["quality_tier"],
+            "ext": best_candidate["ext"],
+            "filesize_human": best_candidate["filesize_human"],
             "size_mb": best_candidate["size_mb"] if best_candidate["size_mb"] < 999999 else None
         })
 
-    best_audio = audio_candidates[0] if audio_candidates else {"format_id": "bestaudio"}
+    # Pick best audio track
+    best_audio = None
+    if audio_candidates:
+        best_audio = max(audio_candidates, key=lambda x: x["filesize"])
+
+    duration = info.get("duration")
 
     return {
         "url": url,
+        "title": info.get("title") or "",
+        "uploader": info.get("uploader") or "",
+        "duration": duration,
+        "thumbnail": info.get("thumbnail"),
+        "suggested_filename": sanitize_component(info.get("title"), "download"),
         "video_formats": filtered_video_formats,
         "audio_format": best_audio,
+        "cookies_received": cookies_verified,
     }
 
 def plan_target(
