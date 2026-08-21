@@ -13,15 +13,15 @@ services:
       # Mount external yt-dlp binary and folder
       - /usr/local/bin/yt-dlp:/usr/local/bin/yt-dlp:ro
       - /media/zbox/Crucial-X6/ShareMe/media/songs/target/:/app/ytdlp
+      - /media/zbox/Crucial-X6/ShareMe/media/songs/target/cookies-zbox.txt:/app/cookies/yt_cookies.txt:ro
 
+      - /home/shared/services/store/mnts/vectordb:/app/data
       # Mount external media directories under /media/<mount_name>
       - /media/zbox/Crucial-X6/ShareMe/media/songs/target:/media/storage/songs
-      - /media/zbox/storage/ShareMe/media/movies:/media/storage/movies
-      - /media/zbox/Crucial-X6/ShareMe/media/serials/TV Shows:/media/storage/shows
-      - /media/zbox/storage/xos/x-linux/videos/xxx:/media/storage/xCollection
       - /media/zbox/Crucial-X6/ShareMe/media/serials/x:/media/storage/x-serials
-      - /home/shared/services/store/mnts/vectordb:/app/data
-      - /home/shared/services/store/mnts/yt-dlp/yt_cookies.txt:/app/cookies/yt_cookies.txt:ro
+      - /media/zbox/Crucial-X6/ShareMe/media/serials/TV Shows:/media/storage/shows
+      - /media/zbox/storage/ShareMe/media/movies:/media/storage/movies
+      - /media/zbox/storage/xos/x-linux/videos/xxx:/media/storage/xCollection
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped

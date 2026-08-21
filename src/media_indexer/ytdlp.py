@@ -2,13 +2,10 @@ import logging
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import threading
 import uuid
 from urllib.parse import urlparse
-
-import yt_dlp
 from fastapi import HTTPException
 
 from media_indexer.config import settings
@@ -27,78 +24,18 @@ MEDIA_TYPES = ("song", "movie")
 _UNSAFE_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _MAX_LOG_LINES = 100
 
-# Probe and download must use the same clients, otherwise the format IDs shown to the
-# user do not exist at download time and yt-dlp silently falls back to a muxed 360p stream.
-#
-# IMPORTANT: "tv" authenticates via a separate device-code OAuth flow, not cookies. If a
-# cookie jar is supplied alongside "tv", YouTube's innertube backend gets a mismatched
-# session context and yt-dlp surfaces it as: ERROR: [youtube] <id>: The page needs to be
-# reloaded. So the client list must drop "tv" whenever cookies are present, and probe/
-# download/retry must all derive the list the same way or format IDs stop matching again.
-YOUTUBE_PLAYER_CLIENTS_ANON = ("web", "mweb", "web_safari", "android_vr", "tv")
-YOUTUBE_PLAYER_CLIENTS_AUTH = ("web", "web_safari", "android_vr")
-
-# Kept as the anonymous default for any external caller still importing this name.
-YOUTUBE_PLAYER_CLIENTS = YOUTUBE_PLAYER_CLIENTS_ANON
-
 HOST_COOKIE_FILE = "/app/cookies/yt_cookies.txt"
-
-def _resolve_cookie_file(cookies: str | None) -> str | None:
-    if os.path.exists(HOST_COOKIE_FILE) and os.path.getsize(HOST_COOKIE_FILE) > 0:
-        try:
-            with open(HOST_COOKIE_FILE, "r", encoding="utf-8") as f:
-                host_cookies = f.read()
-            return _create_temp_cookie_file(host_cookies)
-        except OSError as exc:
-            logger.error(f"Failed to copy host cookie file {HOST_COOKIE_FILE}: {exc}")
-
-    if cookies and cookies.strip():
-        return _create_temp_cookie_file(cookies)
-    return None
-
-def _player_clients(has_cookies: bool) -> tuple[str, ...]:
-    return YOUTUBE_PLAYER_CLIENTS_AUTH if has_cookies else YOUTUBE_PLAYER_CLIENTS_ANON
-
-
-def _extractor_args_py(has_cookies: bool) -> dict:
-    return {
-        "youtube": {
-            "player_client": list(_player_clients(has_cookies)),
-            "player_skip": ["js"], # Skip JS execution locks where applicable
-        }
-    }
-
-
-def _extractor_args_cli(has_cookies: bool) -> str:
-    return f"youtube:player_client={','.join(_player_clients(has_cookies))}"
-
-
-# A CDN 403 usually means the media URL was signed for a client whose headers/PO token no
-# longer match, so retry with a single client at a time before giving up. "tv" is only
-# offered as a retry option when there are no cookies, for the same reason as above.
-_RETRY_PLAYER_CLIENTS_ANON = (("android_vr",), ("web_safari",), ("tv",))
-_RETRY_PLAYER_CLIENTS_AUTH = (("web",), ("android_vr",), ("web_safari",))
-
-
-def _retry_player_clients(has_cookies: bool) -> tuple[tuple[str, ...], ...]:
-    return _RETRY_PLAYER_CLIENTS_AUTH if has_cookies else _RETRY_PLAYER_CLIENTS_ANON
-
-
-_FORBIDDEN_RE = re.compile(r"HTTP Error 403|403: Forbidden", re.IGNORECASE)
 
 _JOBS: dict[str, dict] = {}
 _JOBS_LOCK = threading.Lock()
 
 def _set_job(job_id: str, **updates) -> dict:
-    """Thread-safe updates to the in-memory download job registry."""
     with _JOBS_LOCK:
         job = _JOBS.setdefault(job_id, {"id": job_id})
         job.update(updates)
         return dict(job)
 
-
 def get_job(job_id: str) -> dict:
-    """Thread-safe lookup for download job state."""
     with _JOBS_LOCK:
         job = _JOBS.get(job_id)
     if not job:
@@ -110,475 +47,272 @@ def sanitize_component(value: str | None, fallback: str = "") -> str:
     clean = re.sub(r"\s+", " ", clean).strip().strip(".")
     return clean or fallback
 
+def resolve_dlang(lang: str) -> str:
+    l = (lang or "").strip().lower()
+    if l == "hindi":
+        return "Hindi"
+    elif l == "marathi":
+        return "Marathi"
+    elif l in ("south", "telugu", "tamil", "kannada", "malyalam", "malayalam"):
+        return "South"
+    elif l == "bhojpuri":
+        return "Bhojpuri"
+    elif l == "english":
+        return "English"
+    return "Hindi"
 
-def quality_for_height(height: int | None) -> str:
-    if not height:
+def resolve_resolution(vformat: int) -> str:
+    if vformat < 720:
         return "sd"
-    if height > 1080:
-        return "xhd"
-    if height >= 720:
+    elif vformat <= 1080:
         return "hd"
-    return "sd"
+    return "xhd"
 
+def _resolve_cookie_file(cookies: str | None = None) -> str | None:
+    content = ""
+    
+    # 1. Read host mounted cookies if present
+    if os.path.exists(HOST_COOKIE_FILE) and os.path.getsize(HOST_COOKIE_FILE) > 0:
+        with open(HOST_COOKIE_FILE, "r") as f:
+            content = f.read().strip()
+            
+    # 2. Fall back to passed cookies parameter if host file is empty/missing
+    elif cookies and cookies.strip():
+        content = cookies.strip()
 
-def options() -> dict:
-    """Static config exposed to the extension/web UI for populating the
-    language/quality/industry dropdowns and the target-path preview.
-    Referenced by main.py's GET /api/ytdlp/options."""
-    return {
-        "languages": list(LANGUAGES),
-        "qualities": list(QUALITIES),
-        "industries": list(INDUSTRIES),
-        "media_types": list(MEDIA_TYPES),
-        "songs_root": settings.downloads.songs_root,
-        "movies_root": settings.downloads.movies_root,
-    }
-
-
-def _validate_url(url: str) -> str:
-    parsed = urlparse((url or "").strip())
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise HTTPException(status_code=400, detail="Only http(s) media URLs are supported")
-    return parsed.geturl()
-
-
-def _format_bytes(fmt: dict, duration: float | None) -> int:
-    size = fmt.get("filesize") or fmt.get("filesize_approx")
-    if not size and duration and fmt.get("tbr"):
-        size = int(fmt["tbr"] * 1000 / 8 * duration)
-    return int(size or 0)
-
-
-def _describe(fmt: dict, duration: float | None) -> dict:
-    size = _format_bytes(fmt, duration)
-    return {
-        "format_id": fmt.get("format_id"),
-        "ext": fmt.get("ext"),
-        "height": fmt.get("height"),
-        "fps": fmt.get("fps"),
-        "vcodec": fmt.get("vcodec"),
-        "acodec": fmt.get("acodec"),
-        "abr": fmt.get("abr"),
-        "filesize": size,
-        "filesize_human": format_file_size(size) if size else "unknown",
-        "has_audio": fmt.get("acodec") not in (None, "none"),
-    }
-
-
-def _create_temp_cookie_file(cookies: str | None) -> str | None:
-    if not cookies or not cookies.strip():
+    if not content:
         return None
 
-    content = cookies.strip()
+    # Write content to a writable temporary file in /tmp so yt-dlp can modify/update it
     if not content.startswith("# Netscape HTTP Cookie File"):
         content = f"# Netscape HTTP Cookie File\n{content}"
 
-    tmp = tempfile.NamedTemporaryFile(mode="w", dir="/tmp", prefix="yt_cookies_", suffix=".txt", delete=False)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", dir="/tmp", prefix="yt_cookies_", suffix=".txt", delete=False
+    )
     tmp.write(content)
     tmp.close()
     return tmp.name
 
-
-def _verify_cookies(cookies: str | None, cookie_file: str | None, context: str) -> bool:
-    """Confirms cookies actually reached this request and produced a usable cookie file.
-
-    Never logs cookie contents/values - only presence, entry count, and the temp file path.
-    Returns True only if cookies were supplied AND resulted in a non-empty cookie file.
-    """
-    if cookies is None or not cookies.strip():
-        logger.warning(f"{context}: no cookies were included in the request body")
-        return False
-
-    if not cookie_file or not os.path.exists(cookie_file):
-        logger.error(f"{context}: cookies string was present but no cookie file was created")
-        return False
-
-    try:
-        with open(cookie_file, "r") as f:
-            entry_count = sum(
-                1 for line in f
-                if line.strip() and not line.strip().startswith("#")
-            )
-    except OSError as exc:
-        logger.error(f"{context}: failed to read back cookie file {cookie_file}: {exc}")
-        return False
-
-    if entry_count == 0:
-        logger.warning(
-            f"{context}: cookie file {cookie_file} was created but contains no cookie "
-            f"entries - check the pasted content is Netscape cookies.txt format (tab-separated)"
-        )
-        return False
-
-    logger.info(f"{context}: cookies verified - {entry_count} entries in {cookie_file}")
-    return True
-
-
-def fetch_formats(url: str, cookies: str | None = None, verbose: bool = False) -> dict:
-    url = _validate_url(url)
-    cookie_file = _resolve_cookie_file(cookies)
-    cookies_verified = _verify_cookies(cookies, cookie_file, f"Format probe for {url}")
-
-    opts = {
-        "quiet": not verbose,
-        "verbose": verbose,
-        "no_warnings": not verbose,
-        "skip_download": True,
-        "ignore_no_formats_error": True,
-        "noplaylist": True,
-        "extractor_args": _extractor_args_py(cookies_verified),
+def options() -> dict:
+    """Returns available categorization choices and metadata target options."""
+    return {
+        "target_heights": list(TARGET_HEIGHTS),
+        "languages": list(LANGUAGES),
+        "qualities": list(QUALITIES),
+        "industries": list(INDUSTRIES),
+        "media_types": list(MEDIA_TYPES),
     }
+
+
+def _validate_url(url: str) -> bool:
+    """Validates if the provided string is a properly formatted HTTP/HTTPS URL."""
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url.strip())
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except Exception:
+        return False
+    
+def fetch_formats(url: str, cookies: str | None = None, verbose: bool = False) -> dict:
+    """Extracts formats via yt-dlp using cookies, mapping non-exact heights to the nearest
+    target height tier (480p, 720p, 1080p, 1440p, 2160p) and selecting the stream with
+    the lowest file size for each tier.
+    """
+    if not _validate_url(url):
+        raise HTTPException(status_code=400, detail="Invalid URL provided")
+
+    cookie_file = _resolve_cookie_file(cookies)
+
+    cmd = [
+        YTDLP_BIN,
+        "--js-runtimes", "node",
+        "-F", url
+    ]
     if cookie_file:
-        opts["cookiefile"] = cookie_file
+        cmd.extend(["--cookies", cookie_file])
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as exc:
-        logger.error(f"yt-dlp format probe failed for {url}: {exc}")
-        raise HTTPException(status_code=502, detail=f"Could not read media info: {exc}")
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        fmt_list = res.stdout
+    except subprocess.CalledProcessError as exc:
+        logger.error(f"yt-dlp format probe failed for {url}: {exc.stderr}")
+        raise HTTPException(status_code=502, detail=f"Could not read media info: {exc.stderr}")
     finally:
-        if cookie_file and os.path.exists(cookie_file):
+        if cookie_file and cookie_file.startswith("/tmp/") and os.path.exists(cookie_file):
             try:
                 os.remove(cookie_file)
             except OSError:
                 pass
 
-    if info.get("_type") == "playlist":
-        entries = [e for e in (info.get("entries") or []) if e]
-        if not entries:
-            raise HTTPException(status_code=404, detail="No downloadable entry found at that URL")
-        info = entries[0]
-
-    duration = info.get("duration")
-    formats = info.get("formats") or []
-
-    # Format Logging to Server Console
-    logger.info(f"--- Discovered Formats for: {url} ---")
-    for fmt in formats:
-        logger.info(
-            f"ID: {fmt.get('format_id'):<8} | "
-            f"Ext: {fmt.get('ext'):<5} | "
-            f"Res: {fmt.get('height')}p | "
-            f"VCodec: {fmt.get('vcodec')} | "
-            f"ACodec: {fmt.get('acodec')} | "
-            f"Protocol: {fmt.get('protocol')} | "
-            f"HasURL: {bool(fmt.get('url'))} | "
-            f"FormatNote: {fmt.get('format_note')}"
-        )
-
-    video_candidates: dict[int, list[dict]] = {}
+    candidates_by_target: dict[int, list[dict]] = {}
     audio_candidates: list[dict] = []
 
-    for fmt in formats:
-        if fmt.get("format_note") == "storyboard" or fmt.get("ext") == "mhtml":
+    target_heights = (480, 720, 1080, 1440, 2160)
+
+    for line in fmt_list.splitlines():
+        if re.search(r'audio only|storyboard|images', line, re.IGNORECASE):
+            if "audio only" in line:
+                parts = line.split()
+                if parts:
+                    audio_candidates.append({"format_id": parts[0], "ext": "m4a", "acodec": "audio"})
             continue
-        has_video = fmt.get("vcodec") not in (None, "none")
-        has_audio = fmt.get("acodec") not in (None, "none")
 
-        if has_video:
-            height = fmt.get("height")
-            if height:
-                video_candidates.setdefault(height, []).append(fmt)
-        elif has_audio:
-            audio_candidates.append(fmt)
+        if not re.match(r'^[0-9]+', line):
+            continue
 
-    def smallest(items: list[dict]) -> dict:
-        return min(items, key=lambda f: _format_bytes(f, duration) or float("inf"))
+        parts = line.split()
+        fid = parts[0]
 
-    best_video = {}
-    selected_heights = [h for h in TARGET_HEIGHTS if h in video_candidates]
-    if not selected_heights:
-        selected_heights = sorted(video_candidates.keys(), reverse=True)[:4]
+        # Extract actual height (e.g., 540p or 960x540)
+        m_h = re.search(r'\b([0-9]+)p\b', line)
+        if not m_h:
+            m_h = re.search(r'(?<=x)[0-9]+', line)
+        actual_height = int(m_h.group(1)) if m_h else None
 
-    for height in selected_heights:
-        items = video_candidates[height]
-        video_only = [f for f in items if f.get("acodec") in (None, "none")]
-        best_video[height] = smallest(video_only or items)
+        if actual_height:
+            # Map actual height to the nearest available target height
+            nearest_target = min(target_heights, key=lambda t: abs(t - actual_height))
 
-    best_audio = smallest(audio_candidates) if audio_candidates else None
-    video_formats = [_describe(best_video[h], duration) for h in sorted(best_video)]
+            # Parse size in MiB or KiB to pick the lowest file size
+            size_mb = 999999.0
+            size_match = re.search(r'~?\s*([0-9]+(?:\.[0-9]+)?)\s*MiB', line)
+            if size_match:
+                size_mb = float(size_match.group(1))
+            else:
+                kib_match = re.search(r'~?\s*([0-9]+(?:\.[0-9]+)?)\s*KiB', line)
+                if kib_match:
+                    size_mb = float(kib_match.group(1)) / 1024.0
+
+            candidates_by_target.setdefault(nearest_target, []).append({
+                "format_id": fid,
+                "actual_height": actual_height,
+                "target_height": nearest_target,
+                "size_mb": size_mb,
+                "quality_tier": resolve_resolution(actual_height),
+            })
+
+    # Pick the stream with the smallest size_mb for each assigned target height bucket
+    filtered_video_formats = []
+    for target_h in sorted(candidates_by_target.keys()):
+        best_candidate = min(candidates_by_target[target_h], key=lambda x: x["size_mb"])
+        filtered_video_formats.append({
+            "format_id": best_candidate["format_id"],
+            "height": best_candidate["actual_height"],
+            "categorized_as": f"{best_candidate['target_height']}p",
+            "quality_tier": best_candidate["quality_tier"],
+            "size_mb": best_candidate["size_mb"] if best_candidate["size_mb"] < 999999 else None
+        })
+
+    best_audio = audio_candidates[0] if audio_candidates else {"format_id": "bestaudio"}
 
     return {
         "url": url,
-        "title": info.get("title") or "",
-        "uploader": info.get("uploader") or "",
-        "duration": duration,
-        "thumbnail": info.get("thumbnail"),
-        "suggested_filename": sanitize_component(info.get("title"), "download"),
-        "video_formats": video_formats,
-        "audio_format": _describe(best_audio, duration) if best_audio else None,
-        "cookies_received": cookies_verified,
+        "video_formats": filtered_video_formats,
+        "audio_format": best_audio,
     }
 
+def plan_target(
+    media_type: str,
+    title: str | None = None,
+    language: str | None = None,
+    quality: str | int | None = None,
+    actress: str | None = None,
+    industry: str | None = None,
+    movie_name: str | None = None,
+) -> dict:
+    root = settings.downloads.songs_root if media_type == "song" else settings.downloads.movies_root
 
-def _fallback_selector(height: int | None) -> str:
-    """Resolution-bounded fallback so a missing format ID cannot degrade to 360p."""
-    if not height:
-        return "bestvideo*+bestaudio/best"
-    return (
-        f"bestvideo[height={height}]+bestaudio/"
-        f"bestvideo[height>={height}]+bestaudio/"
-        f"best[height>={height}]"
-    )
+    if media_type == "song":
+        dlang = resolve_dlang(language or "Hindi")
+        try:
+            vfmt = int(quality) if quality else 720
+        except ValueError:
+            vfmt = 720
+        resolution = resolve_resolution(vfmt)
+        artist = sanitize_component(actress, "Unknown")
+        
+        directory = os.path.join(root, dlang, resolution, artist)
+        stem = sanitize_component(title, "download")
+    else:
+        movie = sanitize_component(movie_name, "movie")
+        ind = sanitize_component(industry, "bollywood")
+        directory = os.path.join(root, ind, movie)
+        stem = movie
 
-
-def _clear_partials(directory: str, stem: str) -> None:
-    try:
-        names = os.listdir(directory)
-    except OSError:
-        return
-    for name in names:
-        if name.startswith(stem) and (name.endswith(".part") or name.endswith(".ytdl")):
-            try:
-                os.remove(os.path.join(directory, name))
-            except OSError:
-                pass
-
-
-def _stream_ytdlp(
-    job_id: str,
-    cmd: list[str],
-    selector: str,
-    verbose: bool,
-    v_desc: str,
-    a_desc: str,
-    env: dict | None = None,
-) -> tuple[int, list[str], str | None]:
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        env=env,
-    )
-
-    logs: list[str] = []
-    chosen_formats = None
-    for line in process.stdout:
-        clean_line = line.strip()
-        if not clean_line:
-            continue
-
-        logs.append(clean_line)
-        if verbose:
-            logger.info(f"[yt-dlp {job_id[-6:]}] {clean_line}")
-
-        chosen = re.search(r"Downloading \d+ format\(s\): (\S+)", clean_line)
-        if chosen:
-            chosen_formats = chosen.group(1)
-            if selector and chosen_formats != selector:
-                logger.warning(
-                    f"Job {job_id}: requested formats [{selector}] unavailable, "
-                    f"yt-dlp fell back to [{chosen_formats}]"
-                )
-
-        match = re.search(r"\[download\]\s+(\d+\.\d+)%", clean_line)
-        if match:
-            pct = float(match.group(1))
-            _set_job(
-                job_id,
-                status="running",
-                progress=pct,
-                message=f"Downloading [{v_desc} + {a_desc}] - {pct:.1f}%"
-            )
-
-    process.wait()
-    return process.returncode, logs, chosen_formats
-
+    return {
+        "media_type": media_type,
+        "directory": os.path.normpath(directory),
+        "filename": f"{stem}.mp4",
+        "path": os.path.join(os.path.normpath(directory), f"{stem}.mp4"),
+        "stem": stem,
+    }
 
 def _run_download(
     job_id: str,
     url: str,
     selector: str,
     target: dict,
-    video_info: dict | None = None,
-    audio_info: dict | None = None,
     cookies: str | None = None,
-    verbose: bool = True,
 ) -> None:
-    verbose = True
     directory = target["directory"]
-    output_template = os.path.join(directory, f"{target['stem']}.%(ext)s")
+    output_template = os.path.join(directory, "%(title)s.%(ext)s")
     cookie_file = _resolve_cookie_file(cookies)
-    cookies_verified = _verify_cookies(cookies, cookie_file, f"Download job {job_id}")
-    if not cookies_verified:
-        logger.warning(
-            f"Job {job_id}: proceeding WITHOUT verified cookies - YouTube is likely to "
-            f"return HTTP 403 partway through the download for this client"
-        )
 
-    fallback = _fallback_selector(video_info.get("height") if video_info else None)
+    os.makedirs(directory, exist_ok=True)
 
-    # If specific formats were chosen, use explicit selector first:
-    if selector and selector != "bestvideo+bestaudio/best":
-        robust_selector = f"{selector}/{fallback}"
-    else:
-        robust_selector = fallback
-
-    v_desc = f"{video_info.get('height')}p ({video_info.get('format_id')})" if video_info else "Best Video"
-    a_desc = f"{audio_info.get('format_id')} ({audio_info.get('ext')})" if audio_info else "Best Audio / Muxed"
-
-    start_msg = f"Downloading Video: [{v_desc}] | Audio: [{a_desc}] [{robust_selector}]"
-    logger.info(f"Job {job_id} starting -> {start_msg}")
-
-    _set_job(
-        job_id,
-        status="running",
-        message=start_msg,
-        video_format=video_info,
-        audio_format=audio_info,
-        progress=0,
-        cookies_received=cookies_verified,
-    )
-
-    attempts = [_extractor_args_cli(cookies_verified)] + [
-        f"youtube:player_client={','.join(clients)}"
-        for clients in _retry_player_clients(cookies_verified)
+    cmd = [
+        YTDLP_BIN,
+        "--js-runtimes", "node",
+        "-f", selector,
+        "--embed-thumbnail",
+        "--merge-output-format", "mp4",
+        "-c",
+        "-o", output_template,
+        url
     ]
 
-    try:
-        os.makedirs(directory, exist_ok=True)
+    if cookie_file:
+        cmd.extend(["--cookies", cookie_file])
 
-        for attempt, extractor_args in enumerate(attempts):
-            if attempt:
-                # Signed URLs in the partial file are dead once we switch clients.
-                _clear_partials(directory, target["stem"])
-                logger.warning(
-                    f"Job {job_id}: retrying after HTTP 403 with [{extractor_args}]"
-                )
-                _set_job(job_id, status="running", progress=0,
-                         message=f"Retrying after 403 with {extractor_args.split('=')[-1]}")
+    logger.info(f"Executing: {' '.join(cmd)}")
 
-            env = os.environ.copy()
-            env["PATH"] = f"/usr/local/bin:/usr/bin:/bin:{env.get('PATH', '')}"
-
-            cmd = [
-                YTDLP_BIN,
-                "-f", robust_selector,
-                "--no-playlist",
-                "--newline",
-                "--no-continue" if attempt else "-c",
-                "--retries", "10",
-                "--fragment-retries", "10",
-                "--extractor-retries", "5",
-                "--js-runtimes", "node",
-                "--embed-thumbnail",
-                "--add-metadata",
-                "--merge-output-format", "mp4",
-                "--postprocessor-args", "ffmpeg:-c:a aac -b:a 192k",
-                "--extractor-args", extractor_args,
-                "-o", output_template,
-            ]
-
-            verbose = False
-
-            if verbose:
-                cmd.append("-v")
-
-            if cookie_file:
-                cmd.extend(["--cookies", cookie_file])
-
-            cmd.append(url)
-
-            returncode, logs, chosen_formats = _stream_ytdlp(
-                job_id, cmd, selector, verbose, v_desc, a_desc, env=env
-            )
-
-            if returncode == 0:
-                break
-            if not any(_FORBIDDEN_RE.search(line) for line in logs):
-                break
-    except Exception as exc:
-        logger.error(f"Download job {job_id} encountered exception: {exc}")
-        _set_job(job_id, status="failed", message=str(exc))
-        return
-    finally:
-        if cookie_file and os.path.exists(cookie_file):
-            try:
-                os.remove(cookie_file)
-            except OSError:
-                pass
-
-    tail = "\n".join(logs[-_MAX_LOG_LINES:])
-
-    if returncode != 0:
-        logger.error(f"Download job {job_id} failed: {tail}")
-        forbidden = any(_FORBIDDEN_RE.search(line) for line in logs)
-        message = (
-            "Media host returned HTTP 403 for every player client; supply fresh cookies or retry later"
-            if forbidden else "yt-dlp exited with an error"
-        )
-        _set_job(job_id, status="failed", message=message, log=tail)
-        return
-
-    final_path = target["path"]
-    exists = os.path.isfile(final_path)
-    downgraded = bool(selector and chosen_formats and chosen_formats != selector)
-    suffix = f" (requested {selector}, got {chosen_formats})" if downgraded else ""
-    _set_job(
-        job_id,
-        status="success" if exists else "completed",
-        progress=100,
-        downgraded=downgraded,
-        chosen_formats=chosen_formats,
-        message=f"Finished! Video [{v_desc}] + Audio [{a_desc}] saved to {final_path}{suffix}" if exists else "Completed",
-        path=final_path,
-        size_human=format_file_size(os.path.getsize(final_path)) if exists else None,
-        log=tail,
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
     )
 
-def _root_for(media_type: str) -> str:
-    if media_type == "song":
-        return settings.downloads.songs_root
-    if media_type == "movie":
-        return settings.downloads.movies_root
-    raise HTTPException(status_code=400, detail=f"media_type must be one of {list(MEDIA_TYPES)}")
+    logs = []
+    for line in process.stdout:
+        clean_line = line.strip()
+        if clean_line:
+            logs.append(clean_line)
+            match = re.search(r'(\d+\.\d+)%', clean_line)
+            if match:
+                pct = float(match.group(1))
+                _set_job(job_id, status="running", progress=pct, message=clean_line)
 
+    process.wait()
 
-def plan_target(
-    media_type: str,
-    title: str | None = None,
-    language: str | None = None,
-    quality: str | None = None,
-    actress: str | None = None,
-    industry: str | None = None,
-    movie_name: str | None = None,
-) -> dict:
-    """Maps plugin metadata onto the on-disk folder convention for songs and movies."""
-    root = _root_for(media_type)
-
-    if media_type == "song":
-        if language not in LANGUAGES:
-            raise HTTPException(status_code=400, detail=f"language must be one of {list(LANGUAGES)}")
-        if quality not in QUALITIES:
-            raise HTTPException(status_code=400, detail=f"quality must be one of {list(QUALITIES)}")
-        artist = sanitize_component(actress)
-        if not artist:
-            raise HTTPException(status_code=400, detail="actress name is required for songs")
-        directory = os.path.join(root, language, quality, artist)
-        stem = sanitize_component(title, "download")
+    if process.returncode == 0:
+        _set_job(
+            job_id,
+            status="success",
+            progress=100,
+            message="Download completed successfully",
+            path=target["path"]
+        )
     else:
-        if industry not in INDUSTRIES:
-            raise HTTPException(status_code=400, detail=f"industry must be one of {list(INDUSTRIES)}")
-        movie = sanitize_component(movie_name)
-        if not movie:
-            raise HTTPException(status_code=400, detail="movie name is required for movies")
-        directory = os.path.join(root, industry, movie)
-        stem = movie
-
-    directory = os.path.normpath(directory)
-    if os.path.commonpath([directory, os.path.normpath(root)]) != os.path.normpath(root):
-        raise HTTPException(status_code=400, detail="Resolved target path escapes the media root")
-
-    return {
-        "media_type": media_type,
-        "directory": directory,
-        "filename": f"{stem}.mp4",
-        "path": os.path.join(directory, f"{stem}.mp4"),
-        "stem": stem,
-    }
+        _set_job(
+            job_id,
+            status="failed",
+            message=f"yt-dlp exited with code {process.returncode}",
+            log="\n".join(logs[-_MAX_LOG_LINES:])
+        )
 
 def start_download(
     url: str,
@@ -592,15 +326,11 @@ def start_download(
     industry: str | None = None,
     movie_name: str | None = None,
     cookies: str | None = None,
-    verbose: bool = False,
 ) -> dict:
-    url = _validate_url(url)
     v_id = video_format.get("format_id") if video_format else None
-    a_id = audio_format.get("format_id") if audio_format else None
+    a_id = audio_format.get("format_id") if audio_format else "bestaudio"
 
-    cookies_present = bool(cookies and cookies.strip())
-    if not cookies_present:
-        logger.warning(f"start_download for {url}: request received with no cookies")
+    selector = f"{v_id}+{a_id}" if v_id else "bestvideo+bestaudio/best"
 
     target = plan_target(
         media_type=media_type,
@@ -612,30 +342,12 @@ def start_download(
         movie_name=movie_name,
     )
 
-    if v_id and a_id:
-        selector = f"{v_id}+{a_id}"
-    elif v_id:
-        # Prefer m4a audio automatically when forcing MP4 container
-        selector = f"{v_id}+bestaudio[ext=m4a]/{v_id}+bestaudio"
-    else:
-        selector = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
-
     job_id = str(uuid.uuid4())
-    job = _set_job(
-        job_id,
-        status="queued",
-        url=url,
-        selector=selector,
-        message="Queued",
-        video_format=video_format,
-        audio_format=audio_format,
-        cookies_received=cookies_present,
-        **{k: target[k] for k in ("media_type", "directory", "filename", "path")},
-    )
+    job = _set_job(job_id, status="queued", url=url, selector=selector, progress=0)
 
     thread = threading.Thread(
         target=_run_download,
-        args=(job_id, url, selector, target, video_format, audio_format, cookies, verbose),
+        args=(job_id, url, selector, target, cookies),
         daemon=True,
     )
     thread.start()
