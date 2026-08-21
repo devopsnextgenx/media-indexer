@@ -80,6 +80,10 @@ indexing:
   batch_size: 32
   # Number of scan log lines kept in memory for the SSE console
   log_buffer: 5000
+  auto_scan:
+    enabled: true
+    cron: "0 3 * * *"  # Runs daily at 3:00 AM
+    incremental: true   # Performs fast incremental scanning
 
 logging:
   level: "INFO"

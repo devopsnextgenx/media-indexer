@@ -72,6 +72,18 @@ class AppConfig(BaseModel):
     downloads: DownloadsConfig = DownloadsConfig()
     indexing: IndexingConfig = IndexingConfig()
 
+
+class AutoScanConfig(BaseModel):
+    enabled: bool = False
+    cron: str = "0 3 * * *"
+    incremental: bool = True
+
+class IndexingConfig(BaseModel):
+    workers: int = Field(default=4, ge=1, le=64)
+    batch_size: int = Field(default=32, ge=1, le=512)
+    log_buffer: int = Field(default=5000, ge=100, le=100000)
+    auto_scan: AutoScanConfig = AutoScanConfig()
+
 def load_config(config_path: str = "config.yml") -> AppConfig:
     if os.path.exists(config_path):
         with open(config_path, "r", encoding="utf-8") as f:
@@ -85,5 +97,6 @@ def load_config(config_path: str = "config.yml") -> AppConfig:
         format=config.logging.format,
     )
     return config
+
 
 settings = load_config()

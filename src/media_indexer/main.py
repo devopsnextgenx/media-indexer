@@ -22,6 +22,11 @@ from media_indexer import ytdlp
 from media_indexer.jellyfin import JellyfinClient
 from media_indexer.scanner import DirectoryTreeScanner
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+scheduler = AsyncIOScheduler()
+
 app = FastAPI(
     title="Semantic Media Indexer & Search Engine",
     description="Vector search & management engine for local media mounts.",
@@ -511,6 +516,21 @@ def add_download_entry(req: DownloadEntryRequest):
 def clean_record_from_index(path: str = Query(..., description="Absolute file path")):
     mount_path = get_mount_path(path)
     return MediaActions.clean_record_from_index(file_path=mount_path)
+
+
+@app.on_event("startup")
+def setup_cron():
+    auto_cfg = settings.indexing.auto_scan
+    if auto_cfg.enabled:
+        trigger = CronTrigger.from_crontab(auto_cfg.cron)
+        
+        async def scheduled_scan():
+            for mount_name, scanner in scanners.items():
+                scanner.load_or_create_manifest(incremental_scan=auto_cfg.incremental)
+                await scanner.process_media_queue(incremental_scan=auto_cfg.incremental)
+
+        scheduler.add_job(scheduled_scan, trigger)
+        scheduler.start()
 
 def start():
     uvicorn.run("media_indexer.main:app", host=settings.server.host, port=settings.server.port, reload=True)
