@@ -177,6 +177,7 @@ class MySQLDatabase:
         self.enabled = getattr(self.cfg, "enabled", False) if self.cfg else False
         if self.enabled:
             self._ensure_table()
+            self._ensure_download_tracker_table()
 
     def _get_connection(self):
         if not self.enabled:
@@ -224,6 +225,90 @@ class MySQLDatabase:
             logger.info("MySQL 'processed_files' table initialized.")
         except Exception as e:
             logger.error(f"Failed to create MySQL processed_files table: {e}")
+
+    def _ensure_download_tracker_table(self):
+        conn = self._get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS download_tracker (
+                        entry VARCHAR(1024) PRIMARY KEY,
+                        status VARCHAR(50) DEFAULT 'PENDING',
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        INDEX idx_status (status)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
+            conn.close()
+            logger.info("MySQL 'download_tracker' table initialized.")
+        except Exception as e:
+            logger.error(f"Failed to create MySQL download_tracker table: {e}")
+
+    def add_or_update_download_entry(self, entry: str) -> str:
+        """
+        Adds entry or updates timestamp.
+        If existing entry has status 'CONFIRMED', ignores the update and returns 'CONFIRMED'.
+        """
+        if not self.enabled:
+            return "DISABLED"
+        conn = self._get_connection()
+        if not conn:
+            return "ERROR"
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT status FROM download_tracker WHERE entry=%s", (entry,))
+                row = cursor.fetchone()
+
+                if row and row["status"] == "CONFIRMED":
+                    conn.close()
+                    return "CONFIRMED"
+
+                query = """
+                    INSERT INTO download_tracker (entry, status, updated_at)
+                    VALUES (%s, 'PENDING', CURRENT_TIMESTAMP)
+                    ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP;
+                """
+                cursor.execute(query, (entry,))
+            conn.close()
+            return "PENDING" if not row else row["status"]
+        except Exception as e:
+            logger.error(f"Failed to add/update download entry '{entry}': {e}")
+            return "ERROR"
+
+    def update_download_status(self, entry: str, status: str) -> bool:
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cursor:
+                query = "UPDATE download_tracker SET status=%s WHERE entry=%s"
+                cursor.execute(query, (status, entry))
+                updated = cursor.rowcount > 0
+            conn.close()
+            return updated
+        except Exception as e:
+            logger.error(f"Failed to update download entry status: {e}")
+            return False
+
+    def remove_download_entry(self, entry: str) -> bool:
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cursor:
+                query = "DELETE FROM download_tracker WHERE entry=%s"
+                cursor.execute(query, (entry,))
+                deleted = cursor.rowcount > 0
+            conn.close()
+            return deleted
+        except Exception as e:
+            logger.error(f"Failed to remove download entry: {e}")
+            return False
 
     def upsert_file_record(
         self,

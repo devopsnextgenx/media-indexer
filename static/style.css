@@ -975,3 +975,59 @@ body {
     color: #121212;
     border-color: #cca700;
 }
+
+/* Navigation Tabs */
+.nav-tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 16px;
+}
+
+.tab-btn {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #888;
+    padding: 8px 16px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.tab-btn:hover {
+    color: var(--text-active);
+}
+
+.tab-btn.active {
+    color: var(--text-active);
+    border-bottom-color: #007acc;
+    font-weight: bold;
+}
+
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: block;
+}
+
+/* Status Badges */
+.status-badge {
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.status-badge.downloading { background: rgba(14, 99, 156, 0.2); color: #4ec9b0; border: 1px solid #4ec9b0; }
+.status-badge.completed { background: rgba(35, 209, 96, 0.2); color: var(--success-green); border: 1px solid var(--success-green); }
+.status-badge.failed { background: rgba(241, 70, 104, 0.2); color: var(--danger-red); border: 1px solid var(--danger-red); }
+
+.downloads-filter-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}

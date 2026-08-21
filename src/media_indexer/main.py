@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
 from media_indexer.config import settings
-from media_indexer.database import db_instance
+from media_indexer.database import db_instance, mysql_db_instance
 from media_indexer.search import search_engine
 from media_indexer.actions import MediaActions
 from media_indexer.utils import extract_media_metadata
@@ -492,9 +492,67 @@ async def stream_scan_progress(
         },
     )
 
+class DownloadUpdate(BaseModel):
+    status: str
+
+@app.get("/api/actions/downloads", tags=["Download Tracker"])
+def get_downloads():
+    if not mysql_db_instance.enabled:
+        raise HTTPException(status_code=503, detail="MySQL database is disabled")
+    
+    conn = mysql_db_instance._get_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT entry, status, updated_at FROM download_tracker ORDER BY updated_at DESC")
+            rows = cursor.fetchall()
+            
+            # Map database columns to the structure expected by the frontend UI
+            results = []
+            for row in rows:
+                entry_text = row.get("entry", "")
+                parts = entry_text.split("|")
+                url = parts[0] if parts else entry_text
+                title = parts[3] if len(parts) >= 4 else url
+                quality = parts[1] if len(parts) >= 2 else None
+                language = parts[2] if len(parts) >= 3 else None
+
+                results.append({
+                    "id": entry_text,  # Primary key string
+                    "url": url,
+                    "title": title,
+                    "quality": quality,
+                    "language": language,
+                    "status": row.get("status", "PENDING"),
+                    "created_at": row.get("updated_at")
+                })
+            return results
+    finally:
+        conn.close()
+
+@app.patch("/api/actions/downloads/{download_id:path}", tags=["Download Tracker"])
+def update_download_status(download_id: str, update: DownloadUpdate):
+    success = mysql_db_instance.update_download_status(download_id, update.status.upper())
+    if not success:
+        raise HTTPException(status_code=404, detail="Download entry not found or update failed")
+    return {"status": "success", "entry": download_id, "updated_status": update.status.upper()}
+
+@app.delete("/api/actions/downloads/{download_id:path}", tags=["Download Tracker"])
+def delete_download(download_id: str):
+    removed = mysql_db_instance.remove_download_entry(download_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Download entry not found or already deleted")
+    return {"status": "deleted", "entry": download_id}
+
 class DownloadEntryRequest(BaseModel):
     entry: str
 
+class UpdateEntryStatusRequest(BaseModel):
+    entry: str
+    status: str
+    
 @app.post("/api/ytdlp/download-entry", tags=["Browser Plugin"])
 def add_download_entry(req: DownloadEntryRequest):
     entry_text = req.entry.strip()
@@ -504,6 +562,16 @@ def add_download_entry(req: DownloadEntryRequest):
     target_dir = "/app/ytdlp"
     target_file = os.path.join(target_dir, "download.txt")
 
+    # Sync with MySQL download_tracker
+    db_status = mysql_db_instance.add_or_update_download_entry(entry_text)
+
+    if db_status == "CONFIRMED":
+        return {
+            "status": "success",
+            "message": "Entry is already confirmed; skipped write.",
+            "entry_status": "CONFIRMED"
+        }
+
     try:
         os.makedirs(target_dir, exist_ok=True)
         with open(target_file, "a", encoding="utf-8") as f:
@@ -511,11 +579,45 @@ def add_download_entry(req: DownloadEntryRequest):
 
         return {
             "status": "success",
-            "message": f"Entry added to {target_file}",
-            "file": target_file
+            "message": f"Entry logged and written to {target_file}",
+            "file": target_file,
+            "entry_status": db_status
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write to entry file: {str(e)}")
+
+@app.post("/api/ytdlp/update-status", tags=["Browser Plugin"])
+def update_entry_status(req: UpdateEntryStatusRequest):
+    entry_text = req.entry.strip()
+    status_text = req.status.strip().upper()
+
+    if not entry_text or not status_text:
+        raise HTTPException(status_code=400, detail="Entry and status are required")
+
+    success = mysql_db_instance.update_download_status(entry_text, status_text)
+    if not success:
+        raise HTTPException(status_code=404, detail="Entry not found or failed to update")
+
+    return {
+        "status": "success",
+        "entry": entry_text,
+        "updated_status": status_text
+    }
+
+@app.delete("/api/ytdlp/download-entry", tags=["Browser Plugin"])
+def remove_download_entry(entry: str = Query(..., description="Target entry string")):
+    entry_text = entry.strip()
+    if not entry_text:
+        raise HTTPException(status_code=400, detail="Entry parameter cannot be empty")
+
+    removed = mysql_db_instance.remove_download_entry(entry_text)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Entry not found or already deleted")
+
+    return {
+        "status": "success",
+        "message": f"Removed entry: {entry_text}"
+    }
 
 @app.delete("/api/actions/clean-record", tags=["Actions"])
 def clean_record_from_index(path: str = Query(..., description="Absolute file path")):

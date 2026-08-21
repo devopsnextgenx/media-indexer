@@ -55,6 +55,10 @@ document.addEventListener("DOMContentLoaded", () => {
     let activeFilterTokens = [];
     let sortField = "score";
     let sortDir = "desc";
+    let downloadsList = [];
+    let downloadStatusFilter = "all";
+    let downloadSortField = "created_at";
+    let downloadSortDir = "desc";
 
     // ==========================================
     // LocalStorage History Controllers
@@ -1316,6 +1320,138 @@ document.addEventListener("DOMContentLoaded", () => {
             performSearch();
         } catch (err) {
             showToast(`Clean operation failed: ${err.message}`, "error", 8000);
+        }
+    };
+
+    // Navigation Tab Switcher
+    const tabBtnSearch = document.getElementById("tab-btn-search");
+    const tabBtnDownloads = document.getElementById("tab-btn-downloads");
+    const tabPanelSearch = document.getElementById("tab-panel-search");
+    const tabPanelDownloads = document.getElementById("tab-panel-downloads");
+
+    tabBtnSearch?.addEventListener("click", () => {
+        tabBtnSearch.classList.add("active");
+        tabBtnDownloads.classList.remove("active");
+        tabPanelSearch.classList.add("active");
+        tabPanelDownloads.classList.remove("active");
+    });
+
+    tabBtnDownloads?.addEventListener("click", () => {
+        tabBtnDownloads.classList.add("active");
+        tabBtnSearch.classList.remove("active");
+        tabPanelDownloads.classList.add("active");
+        tabPanelSearch.classList.remove("active");
+        fetchDownloads();
+    });
+
+    // Download API Handlers
+    async function fetchDownloads() {
+        try {
+            const res = await fetch("/api/actions/downloads");
+            if (!res.ok) throw new Error("Failed to load downloads");
+            downloadsList = await res.json();
+            applyDownloadsFilterAndSort();
+        } catch (err) {
+            showToast(`Failed to load downloads: ${err.message}`, "error");
+        }
+    }
+
+    function applyDownloadsFilterAndSort() {
+        let items = downloadStatusFilter === "all"
+            ? [...downloadsList]
+            : downloadsList.filter(item => (item.status || "").toLowerCase() === downloadStatusFilter);
+
+        items.sort((a, b) => {
+            let va = a[downloadSortField] ?? "";
+            let vb = b[downloadSortField] ?? "";
+            if (typeof va === "string") {
+                const cmp = va.localeCompare(String(vb));
+                return downloadSortDir === "asc" ? cmp : -cmp;
+            }
+            return downloadSortDir === "asc" ? va - vb : vb - va;
+        });
+
+        renderDownloads(items);
+    }
+
+    function renderDownloads(items) {
+        const downloadsBody = document.getElementById("downloads-body");
+        const downloadsCount = document.getElementById("downloads-count");
+
+        if (!items.length) {
+            downloadsBody.innerHTML = `<tr><td colspan="6" class="empty-state">No matching download tasks.</td></tr>`;
+            downloadsCount.textContent = "";
+            return;
+        }
+
+        downloadsCount.textContent = `${items.length} / ${downloadsList.length} items`;
+        downloadsBody.innerHTML = items.map((item, idx) => `
+            <tr>
+                <td>${idx + 1}</td>
+                <td class="col-details">
+                    <div class="file-title" title="${escapeHtml(item.title || item.url)}">${escapeHtml(item.title || item.url)}</div>
+                    <small class="file-name" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</small>
+                </td>
+                <td><span class="status-badge ${escapeHtml(item.status || 'downloading')}">${escapeHtml(item.status || 'Pending')}</span></td>
+                <td><code>${escapeHtml(item.mount || 'movies')}</code></td>
+                <td><small>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : 'N/A')}</small></td>
+                <td class="col-actions">
+                    <div class="row-actions">
+                        ${item.status !== 'completed' ? `<button class="btn btn-secondary" onclick="markDownloadComplete('${item.id}')">Mark Complete</button>` : ''}
+                        <button class="btn btn-danger" onclick="deleteDownload('${item.id}')">Delete</button>
+                    </div>
+                </td>
+            </tr>
+        `).join("");
+    }
+
+    // Download Table Controls
+    document.getElementById("downloads-status-filter")?.addEventListener("change", (e) => {
+        downloadStatusFilter = e.target.value;
+        applyDownloadsFilterAndSort();
+    });
+
+    document.getElementById("downloads-sort")?.addEventListener("change", (e) => {
+        downloadSortField = e.target.value;
+        applyDownloadsFilterAndSort();
+    });
+
+    document.getElementById("downloads-sort-dir")?.addEventListener("click", (e) => {
+        downloadSortDir = downloadSortDir === "asc" ? "desc" : "asc";
+        e.target.innerHTML = downloadSortDir === "asc" ? "&#8593; Asc" : "&#8595; Desc";
+        applyDownloadsFilterAndSort();
+    });
+
+    window.markDownloadComplete = async (id) => {
+        try {
+            const res = await fetch(`/api/actions/downloads/${id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: "completed" })
+            });
+            if (!res.ok) throw new Error("Failed to update status");
+            showToast("Task marked as completed.", "success");
+            fetchDownloads();
+        } catch (err) {
+            showToast(`Update failed: ${err.message}`, "error");
+        }
+    };
+
+    window.deleteDownload = async (id) => {
+        const ok = await askConfirm({
+            title: "Delete download record",
+            message: "Are you sure you want to delete this download entry from history?",
+            okLabel: "Delete"
+        });
+        if (!ok) return;
+
+        try {
+            const res = await fetch(`/api/actions/downloads/${id}`, { method: "DELETE" });
+            if (!res.ok) throw new Error("Failed to delete entry");
+            showToast("Download record removed.", "success");
+            fetchDownloads();
+        } catch (err) {
+            showToast(`Delete failed: ${err.message}`, "error");
         }
     };
 });
