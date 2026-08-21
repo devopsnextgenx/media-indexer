@@ -2,9 +2,9 @@ import logging
 import difflib
 import os
 import re
-from sentence_transformers import SentenceTransformer
 from media_indexer.config import settings
 from media_indexer.database import db_instance
+from media_indexer.llms import OllamaEmbeddingClient
 from media_indexer.utils import (
     AUDIO_EXTENSIONS,
     TICKS_PER_SECOND,
@@ -52,7 +52,10 @@ def _folder_tags(payload: dict, file_path: str, audio: bool) -> list[str]:
 
 class SemanticSearchEngine:
     def __init__(self):
-        self.model = SentenceTransformer(settings.embedding.model_name)
+        logger.info(
+            f"Initializing SemanticSearchEngine with Ollama model [{settings.embedding.model_name}] at {settings.embedding.host}"
+        )
+        self.model = OllamaEmbeddingClient()
 
     def _build_metadata(self, meta: dict, jf: dict, audio: bool) -> dict:
         width = _to_int(meta.get("width") or jf.get("width"))
@@ -84,12 +87,15 @@ class SemanticSearchEngine:
 
     def search(self, query: str, limit: int = 50, min_score: float = 0.55) -> list[dict]:
         clean_query = normalize_text(query)
-        query_vector = self.model.encode(clean_query).tolist()
+        
+        # Generate query vector via Ollama REST API
+        encoded_vector = self.model.encode(clean_query)
+        query_vector = encoded_vector if isinstance(encoded_vector[0], float) else encoded_vector[0]
+
         semantic_hits = db_instance.search_vectors(query_vector=query_vector, limit=limit)
         keyword_hits = db_instance.keyword_search(query=clean_query, limit=limit)
 
-        # id -> (score, payload); combine so keyword matches surface even when
-        # the embedding score for short/single-word queries falls below min_score
+        # Combine results so keyword matches surface even if semantic score is low
         combined: dict = {}
         for hit in semantic_hits:
             if hit.score >= min_score:

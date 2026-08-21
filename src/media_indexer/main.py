@@ -6,17 +6,16 @@ import asyncio
 from fastapi import BackgroundTasks, FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
 
 from media_indexer.config import settings
-from media_indexer.database import db_instance, mysql_db_instance
-from media_indexer.indexer import indexer_service
+from media_indexer.database import db_instance
 from media_indexer.search import search_engine
 from media_indexer.actions import MediaActions
-from media_indexer.utils import generate_thumbnail_bytes, extract_media_metadata
+from media_indexer.utils import extract_media_metadata
+from media_indexer.llms import OllamaEmbeddingClient, OllamaLLMClient
 from media_indexer import ytdlp
 
 from media_indexer.jellyfin import JellyfinClient
@@ -65,8 +64,14 @@ qdrant_client = QdrantClient(
     port=qdrant_port,
 )
 
-embedding_model = SentenceTransformer(
-    getattr(settings, "EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+embedding_model = OllamaEmbeddingClient(
+    base_url=settings.embedding.host,
+    model_name=settings.embedding.model_name
+)
+
+llm_client = OllamaLLMClient(
+    base_url=settings.llm.host,
+    model_name=settings.llm.model_name
 )
 
 MOUNT_REGISTRY = {

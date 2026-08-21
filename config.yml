@@ -69,9 +69,15 @@ mysql:
   root_pwd: p@ssw0rd
 
 embedding:
-  provider: "sentence-transformers"
-  model_name: "sentence-transformers/all-MiniLM-L6-v2"
-  dimension: 384
+  provider: "ollama"
+  host: "http://host.docker.internal:11434"
+  model_name: "nomic-embed-text"
+  dimension: 768
+
+llm:
+  provider: "ollama"
+  host: "http://host.docker.internal:11434"
+  model_name: "gemma4:e2b"
 
 indexing:
   # Concurrent embedding workers used per scan chunk

@@ -8,13 +8,13 @@ dependencies = [
     "fastapi[standard]>=0.110.0",
     "uvicorn[standard]>=0.28.0",
     "qdrant-client>=1.8.0",
-    "sentence-transformers>=2.5.1",
     "yt-dlp>=2024.3.10",
     "pyyaml>=6.0.1",
     "pydantic>=2.6.4",
     "requests>=2.31.0",
     "aiofiles>=23.2.1",
     "pymysql>=1.1.0",
+    "apscheduler>=3.10.0",
 ]
 
 [build-system]
@@ -23,13 +23,3 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 media-indexer = "media_indexer.main:start"
-
-[tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchvision = { index = "pytorch-cpu" }
-torchaudio = { index = "pytorch-cpu" }
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true

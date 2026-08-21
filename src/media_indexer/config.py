@@ -8,7 +8,7 @@ class ServerConfig(BaseModel):
     port: int = 2345
 
 class FolderLibraryMap(BaseModel):
-    folder: str = ""  # "" targets the mount root, otherwise a top-level directory
+    folder: str = ""
     libraries: list[str] = Field(default_factory=list)
 
 class MountConfig(BaseModel):
@@ -38,9 +38,15 @@ class MySQLConfig(BaseModel):
     root_pwd: str = "p@ssw0rd"
 
 class EmbeddingConfig(BaseModel):
-    provider: str = "sentence-transformers"
-    model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
-    dimension: int = 384
+    provider: str = "ollama"
+    host: str = "http://host.docker.internal:11434"
+    model_name: str = "nomic-embed-text"
+    dimension: int = 768
+
+class LLMConfig(BaseModel):
+    provider: str = "ollama"
+    host: str = "http://host.docker.internal:11434"
+    model_name: str = "gemma4:e2b"
 
 class LoggingConfig(BaseModel):
     level: str = "INFO"
@@ -56,23 +62,6 @@ class DownloadsConfig(BaseModel):
     songs_root: str = "/media/storage/songs"
     movies_root: str = "/media/storage/movies"
 
-class IndexingConfig(BaseModel):
-    workers: int = Field(default=4, ge=1, le=64)
-    batch_size: int = Field(default=32, ge=1, le=512)
-    log_buffer: int = Field(default=5000, ge=100, le=100000)
-
-class AppConfig(BaseModel):
-    server: ServerConfig = ServerConfig()
-    mounts: MountsConfig = MountsConfig()
-    vectordb: VectorDBConfig = VectorDBConfig()
-    mysql: MySQLConfig = MySQLConfig()
-    embedding: EmbeddingConfig = EmbeddingConfig()
-    logging: LoggingConfig = LoggingConfig()
-    jellyfin: JellyfinConfig = JellyfinConfig()
-    downloads: DownloadsConfig = DownloadsConfig()
-    indexing: IndexingConfig = IndexingConfig()
-
-
 class AutoScanConfig(BaseModel):
     enabled: bool = False
     cron: str = "0 3 * * *"
@@ -83,6 +72,18 @@ class IndexingConfig(BaseModel):
     batch_size: int = Field(default=32, ge=1, le=512)
     log_buffer: int = Field(default=5000, ge=100, le=100000)
     auto_scan: AutoScanConfig = AutoScanConfig()
+
+class AppConfig(BaseModel):
+    server: ServerConfig = ServerConfig()
+    mounts: MountsConfig = MountsConfig()
+    vectordb: VectorDBConfig = VectorDBConfig()
+    mysql: MySQLConfig = MySQLConfig()
+    embedding: EmbeddingConfig = EmbeddingConfig()
+    llm: LLMConfig = LLMConfig()
+    logging: LoggingConfig = LoggingConfig()
+    jellyfin: JellyfinConfig = JellyfinConfig()
+    downloads: DownloadsConfig = DownloadsConfig()
+    indexing: IndexingConfig = IndexingConfig()
 
 def load_config(config_path: str = "config.yml") -> AppConfig:
     if os.path.exists(config_path):
@@ -97,6 +98,5 @@ def load_config(config_path: str = "config.yml") -> AppConfig:
         format=config.logging.format,
     )
     return config
-
 
 settings = load_config()

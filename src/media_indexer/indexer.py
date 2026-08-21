@@ -1,8 +1,8 @@
 import os
 import logging
 import requests
-from sentence_transformers import SentenceTransformer
 from media_indexer.config import settings
+from media_indexer.llms import OllamaEmbeddingClient
 from media_indexer.database import db_instance, mysql_db_instance
 from media_indexer.utils import generate_file_id, normalize_text, build_media_metadata
 from media_indexer.jellyfin import format_ticks, normalize_mount_path
@@ -11,10 +11,10 @@ logger = logging.getLogger(__name__)
 
 class MediaIndexer:
     def __init__(self):
-        logger.info(f"Loading embedding model: {settings.embedding.model_name}")
-        self.model = SentenceTransformer(settings.embedding.model_name)
+        logger.info(f"Connecting to Ollama embeddings [{settings.embedding.model_name}] at {settings.embedding.host}")
+        self.model = OllamaEmbeddingClient()
         self.supported_exts = {".mp4", ".mkv", ".avi", ".webm", ".mp3", ".m4a", ".flv"}
-
+        
     def fetch_jellyfin_metadata(self, filename_search: str) -> dict:
         jf = settings.jellyfin
         if not jf.enabled or not jf.api_key or not jf.url:
