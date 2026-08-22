@@ -430,6 +430,12 @@ class DirectoryTreeScanner:
         rel_path = file_entry["path"]
         abs_path = self.mount_path / rel_path
 
+        # --- NEW: extract actress for songs ---
+        actress = None
+        if self.media_type == "songs":
+            parts = rel_path.split('/')
+            actress = parts[0] if parts else ""
+
         folder = file_entry.get("folder")
         if folder is None:
             folder = self._resolve_folder(rel_path)
@@ -439,6 +445,10 @@ class DirectoryTreeScanner:
         normalized_title = normalize_text(abs_path.stem)
 
         local_meta = build_media_metadata(str(abs_path), jf_metadata)
+        # Optionally add actress to local_meta as well
+        if actress:
+            local_meta["actress"] = actress
+
         file_path = jf_metadata.get("path") or str(abs_path)
 
         title_for_embedding = (
@@ -467,11 +477,12 @@ class DirectoryTreeScanner:
             "media_type": self.media_type,
             "metadata": local_meta,
             "jellyfin": jf_metadata,
+            "actress": actress,          # <-- NEW field
         }
 
         return {
-            "text": text_to_embed, 
-            "payload": payload, 
+            "text": text_to_embed,
+            "payload": payload,
             "jellyfin": jf_metadata,
             "abs_path": str(abs_path),
             "mtime": file_entry.get("mtime", 0.0),
@@ -733,7 +744,8 @@ class DirectoryTreeScanner:
                 detector = DuplicateDetector(
                     qdrant_client=self.qdrant,
                     collection_name=self.collection_name,
-                    similarity_threshold=settings.duplicates.similarity_threshold
+                    similarity_threshold=settings.duplicates.similarity_threshold,
+                    media_type=self.media_type          # <-- pass the mount's media_type
                 )
                 detector.detect_for_mount(self.mount_name, str(self.mount_path))
                 self._emit("Duplicate detection completed.")

@@ -97,6 +97,19 @@ document.addEventListener("DOMContentLoaded", () => {
     const LIBRARY_IDB_STORE = "browse_cache";
     let libraryIdbPromise = null;
 
+    function getRelativePath(fullPath, mountName) {
+        // Find the mount root path from MOUNT_REGISTRY (which we have as availableMounts)
+        // We can get mount path from the mount list; we need to compute relative path.
+        // Since we have mount name, we can look up mount path from the global MOUNT_REGISTRY or from the mount object.
+        // For simplicity, we'll try to strip the mount path if we know it.
+        // In the frontend we don't have full mount paths, but we can store them.
+        // Instead, we can just display the file name with parent folder.
+        const parts = fullPath.split(/[\\/]+/);
+        // Show last 3 parts if possible, else show all
+        const showParts = parts.slice(-3);
+        return showParts.join('/');
+    }
+
     function openLibraryIdb() {
         if (!("indexedDB" in window)) return Promise.resolve(null);
         if (libraryIdbPromise) return libraryIdbPromise;
@@ -687,6 +700,8 @@ document.addEventListener("DOMContentLoaded", () => {
             ? [`${entry.item_count}${entry.count_capped ? "+" : ""} item${entry.item_count === 1 ? "" : "s"}`]
             : [entry.duration, entry.resolution, entry.size_human].filter(Boolean);
 
+        const dupTag = entry.duplicate_count ? `<span class="dup-tag" data-file-path="${escapeHtml(entry.file_path)}">${entry.duplicate_count} Duplicates</span> / ` : '';
+
         const actionsHtml = isFolder ? "" : `
                     <div class="library-card-actions">
                         <button class="library-tile-icon-btn icon-rename" data-action="rename" title="Rename">
@@ -709,6 +724,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="library-card ${isFolder ? "is-folder" : "is-file"}" data-idx="${idx}" title="${escapeHtml(entry.name)}">
                 <div class="library-card-thumb">
                     ${thumbHtml}
+                    ${isFolder ? dupTag : ""}
                     ${isFolder ? `<span class="library-card-count-badge">${entry.item_count}${entry.count_capped ? "+" : ""}</span>` : ""}
                     ${actionsHtml}
                 </div>
@@ -1782,9 +1798,23 @@ document.addEventListener("DOMContentLoaded", () => {
     function openRenameModal(item, source = "search") {
         renameTarget = item;
         renameSource = source;
-        renameCurrent.innerText = item.file_name;
-        renameSuggestion.innerText = suggestName(item);
-        renameInput.value = item.file_name;
+
+        // Use appropriate fields for library vs search items
+        const fileName = item.file_name || item.name || "";
+        const filePath = item.file_path || item.path || "";
+        const mount = item.mount || "";
+
+        renameCurrent.innerText = fileName;
+
+        // Build a temporary item for the suggestion logic
+        const tempItem = {
+            file_name: fileName,
+            file_path: filePath,
+            mount: mount
+        };
+        renameSuggestion.innerText = suggestName(tempItem);
+
+        renameInput.value = fileName;
         modalRename.classList.remove("hidden");
         renameInput.focus();
     }
@@ -1817,8 +1847,14 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast("File name cannot contain path separators.", "error");
             return;
         }
-        if (newName === item.file_name) {
+        if (newName === item.file_name && newName === item.name) {
             showToast("New name is identical to the current name.", "warn");
+            return;
+        }
+
+        const oldPath = item.file_path || item.path || "";
+        if (!oldPath) {
+            showToast("No file path available for renaming.", "error");
             return;
         }
 
@@ -1826,7 +1862,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const res = await fetch("/api/actions/rename", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ old_path: item.file_path, new_name: newName })
+                body: JSON.stringify({ old_path: oldPath, new_name: newName })
             });
             const data = await res.json();
 
@@ -1896,8 +1932,14 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         if (!ok) return;
 
+        const filePath = item.file_path || item.path || "";
+        if (!filePath) {
+            showToast("No file path found for this item.", "error");
+            return;
+        }
+
         try {
-            const res = await fetch(`/api/actions/file?path=${encodeURIComponent(item.file_path)}`, { method: "DELETE" });
+            const res = await fetch(`/api/actions/file?path=${encodeURIComponent(filePath)}`, { method: "DELETE" });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
                 showToast(`Delete failed: ${data.detail || res.statusText}`, "error", 8000);
@@ -2190,6 +2232,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         document.getElementById("library-duplicates-section").style.display = "block";
+
         // group by group_key
         const groupMap = {};
         groups.forEach(row => {
@@ -2197,15 +2240,29 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!groupMap[key]) groupMap[key] = [];
             groupMap[key].push(row);
         });
+
         let html = "";
         for (const [groupKey, entries] of Object.entries(groupMap)) {
+            // Sort: canonical first (file_path === canonical_file_path)
+            entries.sort((a, b) => {
+                const aIsCanonical = (a.file_path === a.canonical_file_path);
+                const bIsCanonical = (b.file_path === b.canonical_file_path);
+                if (aIsCanonical && !bIsCanonical) return -1;
+                if (!aIsCanonical && bIsCanonical) return 1;
+                return 0;
+            });
+
             html += `<div class="duplicate-group" data-group-key="${escapeHtml(groupKey)}">`;
             html += `<div class="duplicate-group-header">Group: ${escapeHtml(groupKey)}</div>`;
-            html += `<table class="vscode-table"><thead><tr><th>File</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+            html += `<table class="vscode-table"><thead><tr><th>File</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
             entries.forEach(entry => {
+                const isCanonical = (entry.file_path === entry.canonical_file_path);
                 const status = entry.status || 'PENDING_REVIEW';
+                const relPath = getRelativePath(entry.file_path, entry.mount);
+                const typeLabel = isCanonical ? '<span class="badge-original">Original</span>' : 'Duplicate';
                 html += `<tr data-file-path="${escapeHtml(entry.file_path)}">`;
-                html += `<td>${escapeHtml(entry.file_name)}</td>`;
+                html += `<td title="${escapeHtml(entry.file_path)}">${escapeHtml(relPath)}</td>`;
+                html += `<td>${typeLabel}</td>`;
                 html += `<td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>`;
                 html += `<td>
                     <button class="btn btn-secondary dup-action" data-action="CONFIRM_DUPLICATE">Confirm Duplicate</button>
@@ -2217,7 +2274,8 @@ document.addEventListener("DOMContentLoaded", () => {
             html += `</tbody></table></div>`;
         }
         container.innerHTML = html;
-        // Attach event listeners to action buttons
+
+        // Re-attach event listeners (same as before)
         container.querySelectorAll(".dup-action").forEach(btn => {
             btn.addEventListener("click", async (e) => {
                 const tr = btn.closest("tr");
@@ -2226,7 +2284,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 try {
                     await updateDuplicateAction(filePath, action);
                     showToast(`Action ${action} applied to ${filePath}`, "success");
-                    // Refresh duplicates for this folder
                     const freshGroups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
                     renderDuplicatesGroups(freshGroups, document.getElementById("library-duplicates-content"));
                 } catch (err) {
@@ -2257,21 +2314,7 @@ document.addEventListener("DOMContentLoaded", () => {
         expandRow.classList.add("dup-expand-row");
         const td = document.createElement("td");
         td.colSpan = 7; // adjust to match total columns
-        let html = `<div class="dup-expand-content"><strong>Duplicate Group</strong><table class="vscode-table"><thead><tr><th>File</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
-        data.entries.forEach(entry => {
-            const status = entry.status || 'PENDING_REVIEW';
-            html += `<tr data-file-path="${escapeHtml(entry.file_path)}">`;
-            html += `<td>${escapeHtml(entry.file_name)}</td>`;
-            html += `<td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>`;
-            html += `<td>
-                <button class="btn btn-secondary dup-action" data-action="CONFIRM_DUPLICATE">Confirm Duplicate</button>
-                <button class="btn btn-secondary dup-action" data-action="CONFIRM_UNIQUE">Confirm Unique</button>
-                <button class="btn btn-secondary dup-action" data-action="AUTO_RESOLVED">Auto-resolve</button>
-            </td>`;
-            html += `</tr>`;
-        });
-        html += `</tbody></table></div>`;
-        td.innerHTML = html;
+        renderDuplicateEntries(data.entries, td); // <-- use this
         expandRow.appendChild(td);
         row.parentNode.insertBefore(expandRow, row.nextSibling);
         // Attach actions inside expansion
@@ -2307,11 +2350,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Helper to render duplicate entries into a td
     function renderDuplicateEntries(entries, container) {
-        let html = `<div class="dup-expand-content"><strong>Duplicate Group</strong><table class="vscode-table"><thead><tr><th>File</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+        // Sort: canonical first
+        entries.sort((a, b) => {
+            const aIsCanonical = (a.file_path === a.canonical_file_path);
+            const bIsCanonical = (b.file_path === b.canonical_file_path);
+            if (aIsCanonical && !bIsCanonical) return -1;
+            if (!aIsCanonical && bIsCanonical) return 1;
+            return 0;
+        });
+
+        let html = `<div class="dup-expand-content"><strong>Duplicate Group</strong><table class="vscode-table"><thead><tr><th>File</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
         entries.forEach(entry => {
+            const isCanonical = (entry.file_path === entry.canonical_file_path);
             const status = entry.status || 'PENDING_REVIEW';
+            const relPath = getRelativePath(entry.file_path, entry.mount);
+            const typeLabel = isCanonical ? '<span class="badge-original">Original</span>' : 'Duplicate';
             html += `<tr data-file-path="${escapeHtml(entry.file_path)}">`;
-            html += `<td>${escapeHtml(entry.file_name)}</td>`;
+            html += `<td title="${escapeHtml(entry.file_path)}">${escapeHtml(relPath)}</td>`;
+            html += `<td>${typeLabel}</td>`;
             html += `<td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>`;
             html += `<td>
                 <button class="btn btn-secondary dup-action" data-action="CONFIRM_DUPLICATE">Confirm Duplicate</button>
@@ -2322,6 +2378,5 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         html += `</tbody></table></div>`;
         container.innerHTML = html;
-        // Re-attach action listeners (they will be handled by the outer delegation)
     }
 });

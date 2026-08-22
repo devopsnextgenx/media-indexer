@@ -10,28 +10,35 @@ logger = logging.getLogger(__name__)
 
 class DuplicateDetector:
     def __init__(self, qdrant_client: QdrantClient, collection_name: str,
-                 similarity_threshold: float = 0.85):
+                 similarity_threshold: float = 0.85,
+                 media_type: str = "auto"):       # <-- new parameter
         self.qdrant = qdrant_client
         self.collection_name = collection_name
         self.similarity_threshold = similarity_threshold
+        self.media_type = media_type
 
     def detect_for_mount(self, mount_name: str, mount_path: str):
-        """Run duplicate detection for all folders under a mount."""
-        # Get tracked files from MySQL
         files_map = mysql_db_instance.get_tracked_files_map(mount_name)
         if not files_map:
             logger.info(f"No files found for mount {mount_name}")
             return
 
-        # Group by folder (relative path directory)
+        # Group by folder (relative path directory) – for songs, group by actress (first component)
         folders: Dict[str, List[str]] = {}
         for rel_path, rec in files_map.items():
-            folder = os.path.dirname(rel_path)  # relative folder
+            if self.media_type == "songs":
+                # actress is the first part of the relative path
+                parts = rel_path.split('/')
+                folder = parts[0] if parts else ""   # could be empty if file is directly under mount
+            else:
+                folder = os.path.dirname(rel_path)   # immediate parent folder for other types
             folders.setdefault(folder, []).append(rel_path)
 
         logger.info(f"Detecting duplicates for mount {mount_name} across {len(folders)} folders")
         for folder, rel_paths in folders.items():
-            self._process_folder(mount_name, mount_path, folder, rel_paths, files_map)
+            # skip empty folder (files directly under mount) if you want
+            if folder:
+                self._process_folder(mount_name, mount_path, folder, rel_paths, files_map)
 
     def _process_folder(self, mount_name: str, mount_path: str, folder: str,
                         rel_paths: List[str], files_map: Dict[str, Dict]):
@@ -122,8 +129,21 @@ class DuplicateDetector:
             canonical_full = os.path.join(mount_path, canonical_rel)
             canonical_file = files_map[canonical_rel]
             canonical_name = os.path.basename(canonical_rel)
-            canonical_metadata = {}  # optional
 
+            # Insert the canonical file itself (as the original)
+            mysql_db_instance.insert_duplicate_group(
+                group_key=group_key,
+                file_path=canonical_full,
+                file_name=canonical_name,
+                mount=mount_name,
+                vector_id=canonical_file.get('vector_id'),
+                similarity_score=1.0,
+                canonical_file_path=canonical_full,
+                metadata={},
+                status='PENDING_REVIEW'
+            )
+
+            # Insert each duplicate file
             for idx in cluster[1:]:
                 rel = rel_list[idx]
                 full_path = os.path.join(mount_path, rel)
@@ -137,7 +157,8 @@ class DuplicateDetector:
                     vector_id=file_info.get('vector_id'),
                     similarity_score=float(similarity),
                     canonical_file_path=canonical_full,
-                    metadata=canonical_metadata  # we can enrich later
+                    metadata={},
+                    status='PENDING_REVIEW'
                 )
 
         logger.info(f"Folder {folder}: created {sum(len(g)-1 for g in groups)} duplicate entries")
