@@ -727,17 +727,65 @@ body {
 }
 
 .library-card.is-folder .library-card-thumb img {
-    opacity: 0.5;
+    opacity: 0.9;
 }
 
 .library-card.is-folder .library-card-thumb::after {
-    content: "\1F4C1";
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
     font-size: calc(var(--card-size) * 0.4);
     filter: drop-shadow(0 1px 2px rgba(0,0,0,0.8));
+}
+
+.library-card-actions {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 2;
+}
+
+.library-card:hover .library-card-actions,
+.library-card:focus-within .library-card-actions {
+    opacity: 1;
+}
+
+@media (hover: none) {
+    .library-card-actions {
+        opacity: 1;
+    }
+}
+
+.library-tile-icon-btn {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #ddd;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.library-tile-icon-btn.icon-rename:hover {
+    background: #4ec9b0;
+    border-color: #4ec9b0;
+    color: #121212;
+}
+
+.library-tile-icon-btn.icon-delete:hover {
+    background: var(--danger-red);
+    border-color: var(--danger-red);
+    color: #fff;
 }
 
 .library-card-count-badge {

@@ -81,13 +81,13 @@ document.addEventListener("DOMContentLoaded", () => {
     let libraryItems = [];          // accumulated items for the current folder (across pages)
     let librarySort = "name";
     let librarySortDir = "asc";
-    let cardSize = "m";
+    const CARD_SIZE_PX = { xs: 96, s: 126, m: 150, l: 270, xl: 420 };
+    const SAVED_CARD_SIZE = localStorage.getItem("library_card_size");
+    let cardSize = (SAVED_CARD_SIZE && CARD_SIZE_PX.hasOwnProperty(SAVED_CARD_SIZE)) ? SAVED_CARD_SIZE : "m";
     let libraryRequestToken = 0;    // guards against out-of-order responses when navigating fast
     // Short-lived client cache so breadcrumb "back" navigation doesn't re-hit the server
     const libraryPageCache = new Map(); // key: `${mount}::${path}::${sort}::${sortDir}` -> {items, hasMore, total}
     const LIBRARY_CLIENT_CACHE_TTL = 20000;
-
-    const CARD_SIZE_PX = { xs: 32, s: 42, m: 50, l: 90, xl: 140 };
 
     // ==========================================
     // IndexedDB cache for Library browse responses
@@ -681,11 +681,30 @@ document.addEventListener("DOMContentLoaded", () => {
             ? [`${entry.item_count}${entry.count_capped ? "+" : ""} item${entry.item_count === 1 ? "" : "s"}`]
             : [entry.resolution, entry.size_human, entry.folder_name].filter(Boolean);
 
+        const actionsHtml = isFolder ? "" : `
+                    <div class="library-card-actions">
+                        <button class="library-tile-icon-btn icon-rename" data-action="rename" title="Rename">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 20h9"></path>
+                                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+                            </svg>
+                        </button>
+                        <button class="library-tile-icon-btn icon-delete" data-action="delete" title="Delete">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                <line x1="10" y1="11" x2="10" y2="17"></line>
+                                <line x1="14" y1="11" x2="14" y2="17"></line>
+                            </svg>
+                        </button>
+                    </div>`;
+
         return `
             <div class="library-card ${isFolder ? "is-folder" : "is-file"}" data-idx="${idx}" title="${escapeHtml(entry.name)}">
                 <div class="library-card-thumb">
                     ${thumbHtml}
                     ${isFolder ? `<span class="library-card-count-badge">${entry.item_count}${entry.count_capped ? "+" : ""}</span>` : ""}
+                    ${actionsHtml}
                 </div>
                 <div class="library-card-body">
                     <div class="library-card-name">${escapeHtml(entry.name)}</div>
@@ -716,6 +735,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Folders open on double-click; files open the player on a single click.
     libraryGrid.addEventListener("click", (e) => {
+        const actionBtn = e.target.closest(".library-tile-icon-btn");
+        if (actionBtn) {
+            e.stopPropagation();
+            const actionCard = actionBtn.closest(".library-card");
+            const actionIdx = Number(actionCard?.dataset.idx);
+            const actionEntry = libraryItems[actionIdx];
+            if (!actionEntry) return;
+
+            if (actionBtn.dataset.action === "rename") {
+                openRenameModal(actionEntry, "library");
+            } else if (actionBtn.dataset.action === "delete") {
+                deleteLibraryEntry(actionEntry);
+            }
+            return;
+        }
+
         const card = e.target.closest(".library-card");
         if (!card) return;
         const idx = Number(card.dataset.idx);
@@ -850,12 +885,18 @@ document.addEventListener("DOMContentLoaded", () => {
         loadLibrary({ reset: true });
     });
 
+    // Reflect the restored (or default) card size in the UI immediately, so the
+    // active button and grid sizing match what will actually be rendered.
+    cardSizeGroup.querySelectorAll(".card-size-btn").forEach((b) => b.classList.toggle("active", b.dataset.size === cardSize));
+    libraryGrid.style.setProperty("--card-size", `${CARD_SIZE_PX[cardSize]}px`);
+
     cardSizeGroup.addEventListener("click", (e) => {
         const btn = e.target.closest(".card-size-btn");
         if (!btn) return;
         cardSize = btn.dataset.size;
         cardSizeGroup.querySelectorAll(".card-size-btn").forEach((b) => b.classList.toggle("active", b === btn));
         libraryGrid.style.setProperty("--card-size", `${CARD_SIZE_PX[cardSize]}px`);
+        localStorage.setItem("library_card_size", cardSize);
     });
 
     btnLibraryRefresh.addEventListener("click", async () => {
@@ -1603,6 +1644,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const renameApply = document.getElementById("rename-apply");
     const renameClose = document.getElementById("rename-close");
     let renameTarget = null;
+    let renameSource = "search"; // "search" | "library" — controls which view refreshes after a rename
 
     function splitExtension(fileName) {
         const dot = fileName.lastIndexOf(".");
@@ -1627,8 +1669,9 @@ document.addEventListener("DOMContentLoaded", () => {
         return `${tidy(base)}${ext}`;
     }
 
-    function openRenameModal(item) {
+    function openRenameModal(item, source = "search") {
         renameTarget = item;
+        renameSource = source;
         renameCurrent.innerText = item.file_name;
         renameSuggestion.innerText = suggestName(item);
         renameInput.value = item.file_name;
@@ -1687,7 +1730,11 @@ document.addEventListener("DOMContentLoaded", () => {
             } else {
                 showToast(`Renamed to ${newName}, but no index entry was found to update. Re-scan to sync.`, "warn", 8000);
             }
-            performSearch();
+            if (renameSource === "library") {
+                loadLibrary({ reset: true });
+            } else {
+                performSearch();
+            }
         } catch (err) {
             showToast(`Rename failed: ${err.message}`, "error", 8000);
         }
@@ -1695,7 +1742,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     window.renameMedia = (index) => {
         const item = currentResults[index];
-        if (item) openRenameModal(item);
+        if (item) openRenameModal(item, "search");
     };
 
     window.deleteMedia = async (index) => {
@@ -1728,6 +1775,34 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast(`Delete failed: ${err.message}`, "error", 8000);
         }
     };
+
+    async function deleteLibraryEntry(item) {
+        const ok = await askConfirm({
+            title: "Delete file from disk",
+            message: `This permanently deletes the file from disk and cannot be undone.<br/><br/>
+                      <strong>${escapeHtml(item.file_name)}</strong><br/>
+                      <span style="color:#888">${escapeHtml(item.file_path)}</span>`,
+            okLabel: "Delete from disk"
+        });
+        if (!ok) return;
+
+        try {
+            const res = await fetch(`/api/actions/file?path=${encodeURIComponent(item.file_path)}`, { method: "DELETE" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast(`Delete failed: ${data.detail || res.statusText}`, "error", 8000);
+                return;
+            }
+            if (data.index_removed) {
+                showToast(`Deleted ${item.file_name} from disk and removed it from the index.`, "success");
+            } else {
+                showToast(`Deleted ${item.file_name} from disk, but no index entry was found to remove.`, "warn", 8000);
+            }
+            loadLibrary({ reset: true });
+        } catch (err) {
+            showToast(`Delete failed: ${err.message}`, "error", 8000);
+        }
+    }
 
     window.cleanRecord = async (index) => {
         const item = currentResults[index];
@@ -1779,18 +1854,28 @@ document.addEventListener("DOMContentLoaded", () => {
     tabBtnSearch?.addEventListener("click", () => activateTab(tabBtnSearch, tabPanelSearch));
 
     let libraryLoadedOnce = false;
-    tabBtnLibrary?.addEventListener("click", () => {
-        activateTab(tabBtnLibrary, tabPanelLibrary);
+    function ensureLibraryLoaded() {
         if (!libraryLoadedOnce) {
             libraryLoadedOnce = true;
             loadLibrary({ reset: true });
         }
+    }
+
+    tabBtnLibrary?.addEventListener("click", () => {
+        activateTab(tabBtnLibrary, tabPanelLibrary);
+        ensureLibraryLoaded();
     });
 
     tabBtnDownloads?.addEventListener("click", () => {
         activateTab(tabBtnDownloads, tabPanelDownloads);
         fetchDownloads();
     });
+
+    // Library is the default active tab on page load (see index.html), so the
+    // click handler above never fires on its own — load its data now too.
+    if (tabPanelLibrary?.classList.contains("active")) {
+        ensureLibraryLoaded();
+    }
 
     // Download API Handlers
     async function fetchDownloads() {
