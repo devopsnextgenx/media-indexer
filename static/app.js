@@ -1289,12 +1289,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const playerLoopBtn = document.getElementById("player-loop");
     const playerPrevBtn = document.getElementById("player-prev");
     const playerNextBtn = document.getElementById("player-next");
+    const libraryShuffleBtn = document.getElementById("library-shuffle");
+    const libraryLoopBtn = document.getElementById("library-loop");
+    const libraryPlayFolderBtn = document.getElementById("library-play-folder");
 
     let currentPlaylist = [];
     let playOrder = [];
     let orderPos = -1;
-    let shuffleOn = false;
-    let loopMode = "off"; // off | all | one
+    let shuffleOn = localStorage.getItem("player_shuffle") === "true";
+    let loopMode = localStorage.getItem("player_loop") || "off"; // off | all | one
 
     function buildPlayOrder(playlist, startIndex, shuffle) {
         const indices = playlist.map((_, i) => i);
@@ -1306,6 +1309,44 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         return [startIndex, ...rest];
     }
+
+    // Keeps both the overlay-player controls and the Library toolbar controls
+    // in sync, since they share the same shuffle/loop state.
+    function applyShuffleUI() {
+        [playerShuffleBtn, libraryShuffleBtn].forEach((btn) => btn.classList.toggle("active", shuffleOn));
+    }
+
+    function applyLoopUI() {
+        const label = loopMode === "one" ? "&#128257;<sub>1</sub>" : "&#128257;";
+        [playerLoopBtn, libraryLoopBtn].forEach((btn) => {
+            btn.dataset.mode = loopMode;
+            btn.title = `Loop: ${loopMode}`;
+            btn.classList.toggle("active", loopMode !== "off");
+            btn.innerHTML = label;
+        });
+    }
+
+    function setShuffle(value) {
+        shuffleOn = value;
+        localStorage.setItem("player_shuffle", String(shuffleOn));
+        applyShuffleUI();
+        if (currentPlaylist.length > 1) {
+            const currentItem = currentPlaylist[playOrder[orderPos]];
+            const currentIdx = currentPlaylist.indexOf(currentItem);
+            playOrder = buildPlayOrder(currentPlaylist, currentIdx, shuffleOn);
+            orderPos = 0;
+            updateQueueInfo();
+        }
+    }
+
+    function cycleLoop() {
+        loopMode = loopMode === "off" ? "all" : loopMode === "all" ? "one" : "off";
+        localStorage.setItem("player_loop", loopMode);
+        applyLoopUI();
+    }
+
+    applyShuffleUI();
+    applyLoopUI();
 
     function updateQueueInfo() {
         playerQueueInfo.textContent = currentPlaylist.length > 1
@@ -1345,6 +1386,16 @@ document.addEventListener("DOMContentLoaded", () => {
         openPlayer(playlist[index], playlist, index);
     }
 
+    // "Play Folder" button: queues every file in the currently viewed folder only.
+    function playCurrentFolder() {
+        const files = libraryItems.filter((i) => i.type === "file");
+        if (!files.length) {
+            showToast("No files in this folder.", "warn");
+            return;
+        }
+        openLibraryPlayer(files, 0);
+    }
+
     function nextTrack() {
         if (!currentPlaylist.length) return;
         if (orderPos < playOrder.length - 1) {
@@ -1367,25 +1418,13 @@ document.addEventListener("DOMContentLoaded", () => {
         playCurrentTrack();
     }
 
-    playerShuffleBtn.addEventListener("click", () => {
-        shuffleOn = !shuffleOn;
-        playerShuffleBtn.classList.toggle("active", shuffleOn);
-        if (currentPlaylist.length > 1) {
-            const currentItem = currentPlaylist[playOrder[orderPos]];
-            const currentIdx = currentPlaylist.indexOf(currentItem);
-            playOrder = buildPlayOrder(currentPlaylist, currentIdx, shuffleOn);
-            orderPos = 0;
-            updateQueueInfo();
-        }
-    });
+    playerShuffleBtn.addEventListener("click", () => setShuffle(!shuffleOn));
+    libraryShuffleBtn.addEventListener("click", () => setShuffle(!shuffleOn));
 
-    playerLoopBtn.addEventListener("click", () => {
-        loopMode = loopMode === "off" ? "all" : loopMode === "all" ? "one" : "off";
-        playerLoopBtn.dataset.mode = loopMode;
-        playerLoopBtn.title = `Loop: ${loopMode}`;
-        playerLoopBtn.classList.toggle("active", loopMode !== "off");
-        playerLoopBtn.innerHTML = loopMode === "one" ? "&#128257;<sub>1</sub>" : "&#128257;";
-    });
+    playerLoopBtn.addEventListener("click", cycleLoop);
+    libraryLoopBtn.addEventListener("click", cycleLoop);
+
+    libraryPlayFolderBtn.addEventListener("click", playCurrentFolder);
 
     playerPrevBtn.addEventListener("click", prevTrack);
     playerNextBtn.addEventListener("click", nextTrack);

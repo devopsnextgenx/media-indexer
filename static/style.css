@@ -788,6 +788,12 @@ body {
     color: #fff;
 }
 
+.library-playback-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
 .library-card-count-badge {
     position: absolute;
     bottom: 4px;
