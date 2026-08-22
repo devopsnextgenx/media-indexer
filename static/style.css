@@ -327,7 +327,6 @@ body {
 
 .folder-tag {
     font-size: 0.68rem;
-    line-height: 1;
     padding: 3px 6px;
     border: 1px solid currentColor;
     border-radius: 10px;
@@ -1290,3 +1289,58 @@ body {
 .status-badge.downloading { background: rgba(14, 99, 156, 0.2); color: #4ec9b0; border: 1px solid #4ec9b0; }
 .status-badge.completed { background: rgba(35, 209, 96, 0.2); color: var(--success-green); border: 1px solid var(--success-green); }
 .status-badge.failed { background: rgba(241, 70, 104, 0.2); color: var(--danger-red); border: 1px solid var(--danger-red); }
+
+/* Duplicates sections */
+.library-duplicates-section {
+    margin-top: 20px;
+    border-top: 1px solid var(--border-color);
+    padding-top: 10px;
+}
+.library-duplicates-section h3 {
+    color: var(--text-active);
+    font-size: 1rem;
+    margin: 0 0 10px 0;
+}
+.duplicate-group {
+    background: var(--panel-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin-bottom: 10px;
+}
+.duplicate-group-header {
+    font-weight: bold;
+    color: #aaa;
+    margin-bottom: 6px;
+    font-size: 0.9rem;
+}
+.dup-expand-row td {
+    padding: 10px;
+    background: #1e1e24;
+}
+.dup-expand-content {
+    background: #1e1e24;
+    padding: 8px;
+}
+.dup-expand-content table {
+    margin-top: 6px;
+}
+.duplicates-empty {
+    color: #888;
+    font-style: italic;
+}
+
+.dup-tag {
+    display: inline-block;
+    font-size: 0.68rem;
+    padding: 3px 8px;
+    border: 1px solid #d7a600;      /* amber/orange */
+    border-radius: 10px;
+    color: #d7a600;
+    background: rgba(215, 166, 0, 0.08);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.dup-tag:hover {
+    background: rgba(215, 166, 0, 0.2);
+}

@@ -80,6 +80,10 @@ class RedisConfig(BaseModel):
     db: int = 0
     password: str | None = None
 
+class DuplicatesConfig(BaseModel):
+    enabled: bool = True
+    similarity_threshold: float = 0.85
+
 # Update AppConfig class
 class AppConfig(BaseModel):
     server: ServerConfig = ServerConfig()
@@ -93,6 +97,8 @@ class AppConfig(BaseModel):
     jellyfin: JellyfinConfig = JellyfinConfig()
     downloads: DownloadsConfig = DownloadsConfig()
     indexing: IndexingConfig = IndexingConfig()
+    duplicates: DuplicatesConfig = DuplicatesConfig()
+
 
 def load_config(config_path: str = "config.yml") -> AppConfig:
     if os.path.exists(config_path):

@@ -727,6 +727,19 @@ class DirectoryTreeScanner:
         job_info["current_index"] = total_files
         job_info["current_file"] = None
         self._save_manifest(manifest)
+        if settings.duplicates.enabled:
+            try:
+                from media_indexer.duplicates import DuplicateDetector
+                detector = DuplicateDetector(
+                    qdrant_client=self.qdrant,
+                    collection_name=self.collection_name,
+                    similarity_threshold=settings.duplicates.similarity_threshold
+                )
+                detector.detect_for_mount(self.mount_name, str(self.mount_path))
+                self._emit("Duplicate detection completed.")
+            except Exception as e:
+                logging.error(f"Duplicate detection failed: {e}", exc_info=True)
+                self._emit(f"Duplicate detection error: {e}", "error")
 
     async def stream_progress(self) -> AsyncGenerator[str, None]:
         last_seq = 0

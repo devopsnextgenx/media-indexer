@@ -625,10 +625,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (!tags.length) return "";
 
-        return `<div class="folder-tags">` + tags.map((tag, i) => {
-            const color = FOLDER_TAG_COLORS[i % FOLDER_TAG_COLORS.length];
-            return `<span class="folder-tag" style="border-color:${color};color:${color};">${escapeHtml(tag)}</span>`;
-        }).join("") + `</div>`;
+        // <!-- Duplicate tag (new) -->
+        
+        return `<div class="folder-tags">` +
+            `<span class="dup-tag" data-file-path="${escapeHtml(item.file_path)}">Duplicates</span>` + 
+                tags.map((tag, i) => {
+                const color = FOLDER_TAG_COLORS[i % FOLDER_TAG_COLORS.length];
+                return `<span class="folder-tag" style="border-color:${color};color:${color};">${escapeHtml(tag)}</span>`;
+            }).join("")  +
+            `</div>`;
     }
 
     // ==========================================
@@ -798,6 +803,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 libraryHasMore = cached.hasMore;
                 renderBreadcrumb(cached.breadcrumb);
                 renderLibraryGrid(false);
+                const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 updateLibraryCount(cached.total);
                 return;
             }
@@ -811,6 +818,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 libraryHasMore = idbCached.hasMore;
                 renderBreadcrumb(idbCached.breadcrumb);
                 renderLibraryGrid(false);
+                const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 updateLibraryCount(idbCached.total);
                 libraryPageCache.set(cacheKey, { ...idbCached, cachedAt: Date.now() });
                 return;
@@ -841,6 +850,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
             renderBreadcrumb(data.breadcrumb);
             renderLibraryGrid(!reset);
+            const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+            renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
             updateLibraryCount(data.total);
 
             const cacheEntry = {
@@ -1633,7 +1644,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function renderResults(items) {
         currentResults = items || [];
-
         if (currentResults.length === 0) {
             resultsBody.innerHTML = `<tr><td colspan="7" class="empty-state">No semantic matches found.</td></tr>`;
             return;
@@ -1657,7 +1667,6 @@ document.addEventListener("DOMContentLoaded", () => {
                     <div class="db-identifiers" style="margin-top: 6px; font-size: 11px; color: #888; display: flex; align-items: center; gap: 6px;">
                         <span><strong>Vector ID:</strong> <code>${escapeHtml(vectorId)}</code></span> | 
                         <span><strong>MySQL ID:</strong> <code>${escapeHtml(mysqlId)}</code></span>
-                        
                         <button class="btn-icon-clean" onclick="cleanRecord(${idx})" title="Clean index (Remove from DBs, keep disk file)">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <polyline points="3 6 5 6 21 6"></polyline>
@@ -1668,7 +1677,6 @@ document.addEventListener("DOMContentLoaded", () => {
                         </button>
                     </div>
                 </td>
-                <!-- REMOVED: <td class="col-mount">${escapeHtml(item.mount)}</td> -->
                 <td class="col-resolution">${escapeHtml(item.resolution || item.metadata?.resolution || 'N/A')}<br/>
                     <small style="color:#888;">${escapeHtml(item.quality || item.metadata?.quality || '')}</small></td>
                 <td class="col-duration">${escapeHtml(item.duration_formatted || item.metadata?.duration_formatted || 'N/A')}</td>
@@ -1676,6 +1684,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td class="col-score"><span style="color:var(--success-green);">${escapeHtml(item.score)}</span></td>
                 <td class="col-actions">
                     <div class="row-actions">
+                        <!-- Dup button removed -->
                         <button class="btn btn-secondary" onclick="playMedia(${idx})">Play</button>
                         <button class="btn btn-secondary" onclick="renameMedia(${idx})">Rename</button>
                         <button class="btn btn-danger" onclick="deleteMedia(${idx})">Delete</button>
@@ -2133,4 +2142,186 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast(`Delete failed: ${err.message}`, "error");
         }
     };
+
+    async function fetchDuplicatesForFolder(mount, path) {
+        try {
+            const params = new URLSearchParams({ mount, path });
+            const res = await fetch(`/api/admin/duplicates/folder?${params.toString()}`);
+            if (!res.ok) return [];
+            const data = await res.json();
+            return data.items || [];
+        } catch (err) {
+            console.error("Failed to fetch duplicates for folder:", err);
+            return [];
+        }
+    }
+
+    async function fetchDuplicatesForFile(filePath) {
+        try {
+            const params = new URLSearchParams({ file_path: filePath });
+            const res = await fetch(`/api/admin/duplicates/file?${params.toString()}`);
+            if (!res.ok) return null;
+            return await res.json();
+        } catch (err) {
+            console.error("Failed to fetch duplicates for file:", err);
+            return null;
+        }
+    }
+
+    async function updateDuplicateAction(filePath, action) {
+        try {
+            const res = await fetch("/api/admin/duplicates/action", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ file_path: filePath, action })
+            });
+            if (!res.ok) throw new Error("Failed to update duplicate status");
+            return await res.json();
+        } catch (err) {
+            console.error("Failed to update duplicate action:", err);
+            throw err;
+        }
+    }
+
+    function renderDuplicatesGroups(groups, container) {
+        if (!groups || groups.length === 0) {
+            container.innerHTML = "<div class='duplicates-empty'>No duplicate groups found in this folder.</div>";
+            document.getElementById("library-duplicates-section").style.display = "none";
+            return;
+        }
+        document.getElementById("library-duplicates-section").style.display = "block";
+        // group by group_key
+        const groupMap = {};
+        groups.forEach(row => {
+            const key = row.group_key;
+            if (!groupMap[key]) groupMap[key] = [];
+            groupMap[key].push(row);
+        });
+        let html = "";
+        for (const [groupKey, entries] of Object.entries(groupMap)) {
+            html += `<div class="duplicate-group" data-group-key="${escapeHtml(groupKey)}">`;
+            html += `<div class="duplicate-group-header">Group: ${escapeHtml(groupKey)}</div>`;
+            html += `<table class="vscode-table"><thead><tr><th>File</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+            entries.forEach(entry => {
+                const status = entry.status || 'PENDING_REVIEW';
+                html += `<tr data-file-path="${escapeHtml(entry.file_path)}">`;
+                html += `<td>${escapeHtml(entry.file_name)}</td>`;
+                html += `<td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>`;
+                html += `<td>
+                    <button class="btn btn-secondary dup-action" data-action="CONFIRM_DUPLICATE">Confirm Duplicate</button>
+                    <button class="btn btn-secondary dup-action" data-action="CONFIRM_UNIQUE">Confirm Unique</button>
+                    <button class="btn btn-secondary dup-action" data-action="AUTO_RESOLVED">Auto-resolve</button>
+                </td>`;
+                html += `</tr>`;
+            });
+            html += `</tbody></table></div>`;
+        }
+        container.innerHTML = html;
+        // Attach event listeners to action buttons
+        container.querySelectorAll(".dup-action").forEach(btn => {
+            btn.addEventListener("click", async (e) => {
+                const tr = btn.closest("tr");
+                const filePath = tr.dataset.filePath;
+                const action = btn.dataset.action;
+                try {
+                    await updateDuplicateAction(filePath, action);
+                    showToast(`Action ${action} applied to ${filePath}`, "success");
+                    // Refresh duplicates for this folder
+                    const freshGroups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                    renderDuplicatesGroups(freshGroups, document.getElementById("library-duplicates-content"));
+                } catch (err) {
+                    showToast(`Failed to update: ${err.message}`, "error");
+                }
+            });
+        });
+    }
+
+    document.addEventListener("click", async (e) => {
+        const btn = e.target.closest(".dup-tag");
+        if (!btn) return;
+        const filePath = btn.dataset.filePath;
+        const row = btn.closest("tr");
+        // Toggle expansion if already open
+        const nextRow = row.nextElementSibling;
+        if (nextRow && nextRow.classList.contains("dup-expand-row")) {
+            nextRow.remove();
+            return;
+        }
+        const data = await fetchDuplicatesForFile(filePath);
+        if (!data || !data.entries || data.entries.length === 0) {
+            showToast("No duplicate group found for this file.", "info");
+            return;
+        }
+        // Create expansion row
+        const expandRow = document.createElement("tr");
+        expandRow.classList.add("dup-expand-row");
+        const td = document.createElement("td");
+        td.colSpan = 7; // adjust to match total columns
+        let html = `<div class="dup-expand-content"><strong>Duplicate Group</strong><table class="vscode-table"><thead><tr><th>File</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+        data.entries.forEach(entry => {
+            const status = entry.status || 'PENDING_REVIEW';
+            html += `<tr data-file-path="${escapeHtml(entry.file_path)}">`;
+            html += `<td>${escapeHtml(entry.file_name)}</td>`;
+            html += `<td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>`;
+            html += `<td>
+                <button class="btn btn-secondary dup-action" data-action="CONFIRM_DUPLICATE">Confirm Duplicate</button>
+                <button class="btn btn-secondary dup-action" data-action="CONFIRM_UNIQUE">Confirm Unique</button>
+                <button class="btn btn-secondary dup-action" data-action="AUTO_RESOLVED">Auto-resolve</button>
+            </td>`;
+            html += `</tr>`;
+        });
+        html += `</tbody></table></div>`;
+        td.innerHTML = html;
+        expandRow.appendChild(td);
+        row.parentNode.insertBefore(expandRow, row.nextSibling);
+        // Attach actions inside expansion
+        expandRow.querySelectorAll(".dup-action").forEach(btn => {
+            btn.addEventListener("click", async (e) => {
+                const tr = btn.closest("tr");
+                const filePath = tr.dataset.filePath;
+                const action = btn.dataset.action;
+                try {
+                    await updateDuplicateAction(filePath, action);
+                    showToast(`Action ${action} applied to ${filePath}`, "success");
+                    // Refresh expansion: re-fetch and re-render the expansion content
+                    const updatedData = await fetchDuplicatesForFile(filePath);
+                    if (updatedData) {
+                        const expandRow = tr.closest(".dup-expand-row");
+                        if (expandRow) {
+                            const td = expandRow.querySelector("td");
+                            // re-build html (same as above) and set innerHTML
+                            // We'll reuse the same generation code or simply reload the row by calling the same render logic.
+                            // For simplicity, we can just re-fetch and replace the content.
+                            // We'll wrap the rendering in a small function or inline.
+                            // ...
+                            // We'll create a helper to render duplicate entries into a container.
+                            renderDuplicateEntries(updatedData.entries, td);
+                        }
+                    }
+                } catch (err) {
+                    showToast(`Failed to update: ${err.message}`, "error");
+                }
+            });
+        });
+    });
+
+    // Helper to render duplicate entries into a td
+    function renderDuplicateEntries(entries, container) {
+        let html = `<div class="dup-expand-content"><strong>Duplicate Group</strong><table class="vscode-table"><thead><tr><th>File</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+        entries.forEach(entry => {
+            const status = entry.status || 'PENDING_REVIEW';
+            html += `<tr data-file-path="${escapeHtml(entry.file_path)}">`;
+            html += `<td>${escapeHtml(entry.file_name)}</td>`;
+            html += `<td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>`;
+            html += `<td>
+                <button class="btn btn-secondary dup-action" data-action="CONFIRM_DUPLICATE">Confirm Duplicate</button>
+                <button class="btn btn-secondary dup-action" data-action="CONFIRM_UNIQUE">Confirm Unique</button>
+                <button class="btn btn-secondary dup-action" data-action="AUTO_RESOLVED">Auto-resolve</button>
+            </td>`;
+            html += `</tr>`;
+        });
+        html += `</tbody></table></div>`;
+        container.innerHTML = html;
+        // Re-attach action listeners (they will be handled by the outer delegation)
+    }
 });

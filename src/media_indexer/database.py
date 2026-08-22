@@ -180,6 +180,8 @@ class MySQLDatabase:
             self._ensure_table()
             self._ensure_download_tracker_table()
             self._ensure_indexing_jobs_table()
+            self._ensure_duplicate_groups_table()
+
 
     def _get_connection(self):
         if not self.enabled:
@@ -276,6 +278,195 @@ class MySQLDatabase:
             logger.info("MySQL 'indexing_jobs' table initialized.")
         except Exception as e:
             logger.error(f"Failed to create MySQL indexing_jobs table: {e}")
+
+        
+    def _ensure_duplicate_groups_table(self):
+        conn = self._get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS duplicate_groups (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        group_key VARCHAR(1024) NOT NULL COMMENT 'Full folder path (container)',
+                        file_path VARCHAR(1024) NOT NULL,
+                        file_name VARCHAR(255) NOT NULL,
+                        mount VARCHAR(255),
+                        vector_id VARCHAR(255),
+                        similarity_score FLOAT DEFAULT 0,
+                        canonical_file_path VARCHAR(1024),
+                        status ENUM('PENDING_REVIEW', 'CONFIRMED_DUPLICATE', 'CONFIRMED_UNIQUE', 'AUTO_RESOLVED') DEFAULT 'PENDING_REVIEW',
+                        metadata_json LONGTEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_group_file (group_key(255), file_path(255)),
+                        INDEX idx_group_key (group_key(255)),
+                        INDEX idx_status (status)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
+            conn.close()
+            logger.info("MySQL 'duplicate_groups' table initialized.")
+        except Exception as e:
+            logger.error(f"Failed to create duplicate_groups table: {e}")
+
+    def insert_duplicate_group(self, group_key: str, file_path: str, file_name: str,
+                            mount: str, vector_id: str, similarity_score: float,
+                            canonical_file_path: str, metadata: dict = None,
+                            status: str = "PENDING_REVIEW"):
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            meta_str = json.dumps(metadata) if metadata else None
+            with conn.cursor() as cursor:
+                query = """
+                    INSERT INTO duplicate_groups
+                    (group_key, file_path, file_name, mount, vector_id,
+                    similarity_score, canonical_file_path, metadata_json, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        similarity_score = VALUES(similarity_score),
+                        canonical_file_path = VALUES(canonical_file_path),
+                        status = VALUES(status),
+                        metadata_json = VALUES(metadata_json),
+                        updated_at = CURRENT_TIMESTAMP
+                """
+                cursor.execute(query, (group_key, file_path, file_name, mount, vector_id,
+                                    similarity_score, canonical_file_path, meta_str, status))
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to insert duplicate group: {e}")
+            return False
+
+    def update_duplicate_status_by_file_path(self, file_path: str, status: str) -> bool:
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("UPDATE duplicate_groups SET status=%s WHERE file_path=%s", (status, file_path))
+                updated = cursor.rowcount > 0
+            conn.close()
+            return updated
+        except Exception as e:
+            logger.error(f"Failed to update duplicate status: {e}")
+            return False
+
+    def get_duplicate_groups(self, group_key: str = None, mount: str = None,
+                            status: str = None, limit: int = 100, offset: int = 0) -> list:
+        if not self.enabled:
+            return []
+        conn = self._get_connection()
+        if not conn:
+            return []
+        try:
+            conditions = []
+            params = []
+            if group_key:
+                conditions.append("group_key = %s")
+                params.append(group_key)
+            if mount:
+                conditions.append("mount = %s")
+                params.append(mount)
+            if status:
+                conditions.append("status = %s")
+                params.append(status)
+            where = " AND ".join(conditions) if conditions else "1"
+            query = f"SELECT * FROM duplicate_groups WHERE {where} ORDER BY group_key, similarity_score DESC LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to fetch duplicate groups: {e}")
+            return []
+
+    def get_duplicate_group_by_group_key(self, group_key: str) -> list:
+        return self.get_duplicate_groups(group_key=group_key)
+
+    def delete_duplicate_groups_by_group_key(self, group_key: str) -> int:
+        if not self.enabled:
+            return 0
+        conn = self._get_connection()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM duplicate_groups WHERE group_key = %s", (group_key,))
+                deleted = cursor.rowcount
+            conn.close()
+            return deleted
+        except Exception as e:
+            logger.error(f"Failed to delete duplicate groups by group_key: {e}")
+            return 0
+
+    def truncate_duplicate_groups(self) -> int:
+        if not self.enabled:
+            return 0
+        conn = self._get_connection()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) AS cnt FROM duplicate_groups")
+                count = (cursor.fetchone() or {}).get("cnt", 0)
+                cursor.execute("TRUNCATE TABLE duplicate_groups")
+            conn.close()
+            logger.info(f"Truncated 'duplicate_groups' table ({count} rows removed)")
+            return count
+        except Exception as e:
+            logger.error(f"Failed to truncate duplicate_groups: {e}")
+            return 0
+
+    def get_duplicate_groups_by_folder(self, folder_path: str, status: str = None, limit: int = 100, offset: int = 0) -> list:
+        """Return duplicate entries whose group_key starts with folder_path."""
+        if not self.enabled:
+            return []
+        conn = self._get_connection()
+        if not conn:
+            return []
+        try:
+            conditions = ["group_key LIKE %s"]
+            params = [folder_path + '%']
+            if status:
+                conditions.append("status = %s")
+                params.append(status)
+            query = f"SELECT * FROM duplicate_groups WHERE {' AND '.join(conditions)} ORDER BY group_key, similarity_score DESC LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to fetch duplicate groups by folder: {e}")
+            return []
+
+    def get_duplicate_group_by_file_path(self, file_path: str) -> list:
+        """Return all duplicate entries matching the exact file_path (usually one)."""
+        if not self.enabled:
+            return []
+        conn = self._get_connection()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM duplicate_groups WHERE file_path = %s", (file_path,))
+                rows = cursor.fetchall()
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to fetch duplicate group by file_path: {e}")
+            return []
+
 
     def upsert_job_record(self, job_info: dict):
         if not self.enabled:

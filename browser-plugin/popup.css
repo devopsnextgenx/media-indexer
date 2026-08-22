@@ -152,7 +152,6 @@ body {
 .folder-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
 .folder-tag {
     font-size: 0.65rem;
-    line-height: 1;
     padding: 3px 6px;
     border: 1px solid currentColor;
     border-radius: 10px;
