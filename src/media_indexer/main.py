@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
 from media_indexer.config import settings
-from media_indexer.database import db_instance, mysql_db_instance
+from media_indexer.database import db_instance, mysql_db_instance, redis_db_instance
 from media_indexer.search import search_engine
 from media_indexer.actions import MediaActions
 from media_indexer.utils import extract_media_metadata
@@ -193,14 +193,14 @@ def resolve_media_path(path: str) -> str:
 # ==========================================
 
 # Caches recursive folder summaries (file count + a representative cover file)
-# so that opening a folder with a huge tree doesn't re-walk the disk on every
-# request. Keyed by absolute directory path -> (cached_at, summary_dict).
+# computed from the Redis-cached mount tree, so opening a folder with a huge
+# tree doesn't re-walk that JSON structure on every request. Keyed by
+# "mount::rel_path" -> (cached_at, summary_dict).
 _LIBRARY_SUMMARY_CACHE: dict[str, tuple[float, dict]] = {}
-LIBRARY_CACHE_TTL = 60  # seconds
-# Stops the recursive walk after this many directory entries so a folder with
-# tens of thousands of files can't stall a request; the UI shows "N+" instead.
+LIBRARY_CACHE_TTL = 30  # seconds
+# Stops the recursive tree walk after this many nodes so a folder with tens of
+# thousands of files can't stall a request; the UI shows "N+" instead.
 FOLDER_SCAN_CAP = 20000
-IGNORED_LIBRARY_SUFFIXES = (".yml", ".yaml", ".part", ".ytdl", ".tmp")
 
 
 def _human_size(num_bytes) -> Optional[str]:
@@ -222,87 +222,92 @@ def _resolution_label(width, height) -> Optional[str]:
     return None
 
 
-def _scan_folder_summary(abs_path: str) -> dict:
-    """Recursively counts files under abs_path and picks a representative
-    cover file, capped for performance and cached for LIBRARY_CACHE_TTL."""
+def _find_tree_node(tree: dict, rel_path: str) -> Optional[dict]:
+    """Descends the Redis-cached mount tree to the folder node at rel_path,
+    entirely in-memory (no disk access)."""
+    if not tree:
+        return None
+    node = tree
+    for part in [p for p in (rel_path or "").split("/") if p]:
+        match = None
+        for child in node.get("children", []):
+            if child.get("type") == "folder" and child.get("name") == part:
+                match = child
+                break
+        if match is None:
+            return None
+        node = match
+    return node
+
+
+def _summarize_tree_node(node: dict, cache_key: str) -> dict:
+    """Recursively counts files under a tree node and picks a representative
+    cover file, entirely from the cached Redis tree. Capped for performance
+    and cached for LIBRARY_CACHE_TTL."""
     now = time.time()
-    cached = _LIBRARY_SUMMARY_CACHE.get(abs_path)
+    cached = _LIBRARY_SUMMARY_CACHE.get(cache_key)
     if cached and now - cached[0] < LIBRARY_CACHE_TTL:
         return cached[1]
 
     file_count = 0
-    cover_path = None
+    cover_node = None
     capped = False
     visited = 0
-    stack = [abs_path]
+    stack = [node]
 
     while stack and not capped:
         current = stack.pop()
-        try:
-            with os.scandir(current) as it:
-                for entry in it:
-                    if entry.name.startswith("."):
-                        continue
-                    visited += 1
-                    if visited > FOLDER_SCAN_CAP:
-                        capped = True
-                        break
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(entry.path)
-                    elif entry.is_file(follow_symlinks=False) and not entry.name.lower().endswith(
-                        IGNORED_LIBRARY_SUFFIXES
-                    ):
-                        file_count += 1
-                        if cover_path is None:
-                            cover_path = entry.path
-        except OSError:
-            continue
+        for child in current.get("children", []):
+            visited += 1
+            if visited > FOLDER_SCAN_CAP:
+                capped = True
+                break
+            if child.get("type") == "folder":
+                stack.append(child)
+            else:
+                file_count += 1
+                # Prefer a cover file that actually has Jellyfin artwork
+                if cover_node is None:
+                    cover_node = child
+                elif not cover_node.get("primary_image_tag") and child.get("primary_image_tag"):
+                    cover_node = child
 
-    summary = {"file_count": file_count, "cover_path": cover_path, "capped": capped}
-    _LIBRARY_SUMMARY_CACHE[abs_path] = (now, summary)
+    summary = {"file_count": file_count, "cover_node": cover_node, "capped": capped}
+    _LIBRARY_SUMMARY_CACHE[cache_key] = (now, summary)
     return summary
 
 
-def _cover_metadata(scanner, mount_root: str, cover_path: Optional[str]) -> dict:
-    """Looks up cached Jellyfin metadata for a folder's representative file,
-    entirely from the scanner's in-memory cache (no disk/ffprobe access)."""
-    if not scanner or not cover_path:
-        return {}
-    rel_dir = os.path.relpath(os.path.dirname(cover_path), mount_root)
-    rel_dir = "" if rel_dir == "." else rel_dir
-    file_name = os.path.basename(cover_path)
-    rel_file = os.path.join(rel_dir, file_name) if rel_dir else file_name
-    folder_key = scanner._resolve_folder(rel_file)
-    return scanner._lookup_metadata(folder_key, file_name)
+def _library_folder_entry(name: str, path: str, mount: str, node: dict, cache_key: str) -> dict:
+    summary = _summarize_tree_node(node, cache_key)
+    cover = summary["cover_node"] or {}
+    return {
+        "type": "folder",
+        "name": name,
+        "path": path,
+        "mount": mount,
+        "item_count": summary["file_count"],
+        "count_capped": summary["capped"],
+        "jellyfin_id": cover.get("jellyfin_id"),
+        "primary_image_tag": cover.get("primary_image_tag"),
+    }
 
 
-def _library_file_entry(scanner, mount_name: str, mount_root: str, rel_dir: str, entry: "os.DirEntry") -> dict:
-    rel_path = os.path.join(rel_dir, entry.name) if rel_dir else entry.name
-    meta = {}
-    if scanner:
-        folder_key = scanner._resolve_folder(rel_path)
-        meta = scanner._lookup_metadata(folder_key, entry.name)
-
-    size_bytes = meta.get("size")
-    if not size_bytes:
-        try:
-            size_bytes = entry.stat(follow_symlinks=False).st_size
-        except OSError:
-            size_bytes = None
-
+def _library_file_entry(mount_name: str, mount_root: str, rel_dir: str, node: dict) -> dict:
+    rel_path = node.get("path") or (os.path.join(rel_dir, node["name"]) if rel_dir else node["name"])
+    size_bytes = node.get("size")
     return {
         "type": "file",
-        "name": entry.name,
+        "name": node["name"],
         "path": rel_path,
-        "file_path": entry.path,
+        "file_path": os.path.join(mount_root, rel_path),
         "mount": mount_name,
         "folder_name": os.path.basename(rel_dir) if rel_dir else mount_name,
-        "resolution": _resolution_label(meta.get("width"), meta.get("height")),
+        "resolution": _resolution_label(node.get("width"), node.get("height")),
         "size_bytes": size_bytes,
         "size_human": _human_size(size_bytes),
-        "duration": meta.get("duration"),
-        "jellyfin_id": meta.get("jellyfin_id"),
-        "primary_image_tag": meta.get("primary_image_tag"),
+        "duration": node.get("duration"),
+        "jellyfin_id": node.get("jellyfin_id"),
+        "primary_image_tag": node.get("primary_image_tag"),
     }
 
 
@@ -316,23 +321,24 @@ def browse_library(
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
 ):
     """Lists the folders and files at one level of a mount, for the Library tab's
-    breadcrumb/card browser. Folders always sort ahead of files."""
+    breadcrumb/card browser. Reads entirely from the Redis-cached tree built
+    during indexing — no disk walking on the request path. Folders always
+    sort ahead of files."""
     entries: list[dict] = []
 
     if not mount or mount == "all":
         for name, mnt in MOUNT_REGISTRY.items():
-            summary = _scan_folder_summary(mnt.path)
-            cover_meta = _cover_metadata(scanners.get(name), mnt.path, summary["cover_path"])
-            entries.append({
-                "type": "folder",
-                "name": name,
-                "path": "",
-                "mount": name,
-                "item_count": summary["file_count"],
-                "count_capped": summary["capped"],
-                "jellyfin_id": cover_meta.get("jellyfin_id"),
-                "primary_image_tag": cover_meta.get("primary_image_tag"),
-            })
+            tree = redis_db_instance.get_mount_tree(name)
+            if tree:
+                entries.append(_library_folder_entry(name, "", name, tree, f"{name}::"))
+            else:
+                # Mount hasn't been scanned yet (no cached tree in Redis) —
+                # show it as an empty folder rather than erroring out.
+                entries.append({
+                    "type": "folder", "name": name, "path": "", "mount": name,
+                    "item_count": 0, "count_capped": False,
+                    "jellyfin_id": None, "primary_image_tag": None,
+                })
         breadcrumb = []
     else:
         mnt = MOUNT_REGISTRY.get(mount)
@@ -342,39 +348,23 @@ def browse_library(
         safe_rel = os.path.normpath(path or "").replace("\\", "/").strip("/")
         safe_rel = "" if safe_rel in (".", "") else safe_rel
 
-        mount_root = os.path.realpath(mnt.path)
-        target_dir = os.path.realpath(os.path.join(mount_root, safe_rel))
-        if os.path.commonpath([target_dir, mount_root]) != mount_root:
-            raise HTTPException(status_code=403, detail="Path outside of mount root")
-        if not os.path.isdir(target_dir):
+        mount_root = mnt.path
+        tree = redis_db_instance.get_mount_tree(mount)
+        if tree is None:
+            raise HTTPException(status_code=404, detail=f"Mount '{mount}' has not been indexed yet")
+
+        node = _find_tree_node(tree, safe_rel)
+        if node is None:
             raise HTTPException(status_code=404, detail="Folder not found")
 
-        scanner = scanners.get(mount)
-
-        try:
-            with os.scandir(target_dir) as it:
-                for entry in it:
-                    if entry.name.startswith("."):
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        summary = _scan_folder_summary(entry.path)
-                        cover_meta = _cover_metadata(scanner, mount_root, summary["cover_path"])
-                        entries.append({
-                            "type": "folder",
-                            "name": entry.name,
-                            "path": os.path.join(safe_rel, entry.name) if safe_rel else entry.name,
-                            "mount": mount,
-                            "item_count": summary["file_count"],
-                            "count_capped": summary["capped"],
-                            "jellyfin_id": cover_meta.get("jellyfin_id"),
-                            "primary_image_tag": cover_meta.get("primary_image_tag"),
-                        })
-                    elif entry.is_file(follow_symlinks=False) and not entry.name.lower().endswith(
-                        IGNORED_LIBRARY_SUFFIXES
-                    ):
-                        entries.append(_library_file_entry(scanner, mount, mount_root, safe_rel, entry))
-        except OSError as e:
-            raise HTTPException(status_code=500, detail=f"Failed to read directory: {e}")
+        for child in node.get("children", []):
+            if child.get("type") == "folder":
+                child_rel = os.path.join(safe_rel, child["name"]) if safe_rel else child["name"]
+                entries.append(
+                    _library_folder_entry(child["name"], child_rel, mount, child, f"{mount}::{child_rel}")
+                )
+            else:
+                entries.append(_library_file_entry(mount, mount_root, safe_rel, child))
 
         breadcrumb = [{"label": mount, "mount": mount, "path": ""}]
         accum = ""
@@ -637,6 +627,15 @@ def clean_index(
         db_instance.reset_collection() if mode == "recreate" else db_instance.truncate_collection()
     )
 
+    # MySQL: wipe processed_files only. download_tracker and indexing_jobs
+    # are separate tables and are intentionally left untouched.
+    removed_mysql_rows = mysql_db_instance.truncate_processed_files()
+
+    # Redis: drop every cached mount tree so the Library tab doesn't keep
+    # serving stale folder/file data after a clean.
+    cleared_redis_trees = redis_db_instance.clear_all_mount_trees()
+    _LIBRARY_SUMMARY_CACHE.clear()
+
     cleared = []
     if clear_manifests:
         for scanner in scanners.values():
@@ -650,6 +649,8 @@ def clean_index(
         "mode": mode,
         "collection": COLLECTION_NAME,
         "deleted_points": removed,
+        "mysql_processed_files_removed": removed_mysql_rows,
+        "redis_mount_trees_cleared": cleared_redis_trees,
         "cleared_manifests": cleared,
         "remaining_points": db_instance.count_items(),
     }

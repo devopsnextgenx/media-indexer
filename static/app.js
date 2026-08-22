@@ -90,6 +90,72 @@ document.addEventListener("DOMContentLoaded", () => {
     const CARD_SIZE_PX = { xs: 32, s: 42, m: 50, l: 90, xl: 140 };
 
     // ==========================================
+    // IndexedDB cache for Library browse responses
+    // (faster repeat lookups across page reloads; server stays source of truth)
+    // ==========================================
+    const LIBRARY_IDB_NAME = "media_indexer_library";
+    const LIBRARY_IDB_STORE = "browse_cache";
+    let libraryIdbPromise = null;
+
+    function openLibraryIdb() {
+        if (!("indexedDB" in window)) return Promise.resolve(null);
+        if (libraryIdbPromise) return libraryIdbPromise;
+        libraryIdbPromise = new Promise((resolve) => {
+            try {
+                const req = indexedDB.open(LIBRARY_IDB_NAME, 1);
+                req.onupgradeneeded = () => {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains(LIBRARY_IDB_STORE)) {
+                        db.createObjectStore(LIBRARY_IDB_STORE, { keyPath: "cache_key" });
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => resolve(null);
+            } catch {
+                resolve(null);
+            }
+        });
+        return libraryIdbPromise;
+    }
+
+    async function idbGetLibraryCache(cacheKey) {
+        try {
+            const db = await openLibraryIdb();
+            if (!db) return null;
+            return await new Promise((resolve) => {
+                const tx = db.transaction(LIBRARY_IDB_STORE, "readonly");
+                const req = tx.objectStore(LIBRARY_IDB_STORE).get(cacheKey);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => resolve(null);
+            });
+        } catch {
+            return null;
+        }
+    }
+
+    async function idbSetLibraryCache(cacheKey, entry) {
+        try {
+            const db = await openLibraryIdb();
+            if (!db) return;
+            const tx = db.transaction(LIBRARY_IDB_STORE, "readwrite");
+            tx.objectStore(LIBRARY_IDB_STORE).put({ cache_key: cacheKey, ...entry });
+        } catch {
+            // best-effort only; IndexedDB being unavailable shouldn't break browsing
+        }
+    }
+
+    async function idbClearLibraryCache() {
+        try {
+            const db = await openLibraryIdb();
+            if (!db) return;
+            const tx = db.transaction(LIBRARY_IDB_STORE, "readwrite");
+            tx.objectStore(LIBRARY_IDB_STORE).clear();
+        } catch {
+            // best-effort only
+        }
+    }
+
+    // ==========================================
     // LocalStorage History Controllers
     // ==========================================
 
@@ -699,6 +765,20 @@ document.addEventListener("DOMContentLoaded", () => {
                 updateLibraryCount(cached.total);
                 return;
             }
+
+            // Fall back to IndexedDB so a previously-browsed folder renders
+            // instantly even after a full page reload, before hitting the server.
+            const idbCached = await idbGetLibraryCache(cacheKey);
+            if (idbCached) {
+                libraryItems = idbCached.items;
+                libraryOffset = idbCached.items.length;
+                libraryHasMore = idbCached.hasMore;
+                renderBreadcrumb(idbCached.breadcrumb);
+                renderLibraryGrid(false);
+                updateLibraryCount(idbCached.total);
+                libraryPageCache.set(cacheKey, { ...idbCached, cachedAt: Date.now() });
+                return;
+            }
         }
 
         libraryLoading = true;
@@ -727,13 +807,15 @@ document.addEventListener("DOMContentLoaded", () => {
             renderLibraryGrid(!reset);
             updateLibraryCount(data.total);
 
-            libraryPageCache.set(cacheKey, {
+            const cacheEntry = {
                 items: libraryItems,
                 hasMore: libraryHasMore,
                 total: data.total,
                 breadcrumb: data.breadcrumb,
                 cachedAt: Date.now(),
-            });
+            };
+            libraryPageCache.set(cacheKey, cacheEntry);
+            idbSetLibraryCache(cacheKey, cacheEntry);
         } catch (err) {
             if (reset) libraryGrid.innerHTML = `<div class="library-empty" style="color:var(--danger-red)">${escapeHtml(err.message)}</div>`;
             showToast(`Library load failed: ${err.message}`, "error");
@@ -776,8 +858,9 @@ document.addEventListener("DOMContentLoaded", () => {
         libraryGrid.style.setProperty("--card-size", `${CARD_SIZE_PX[cardSize]}px`);
     });
 
-    btnLibraryRefresh.addEventListener("click", () => {
+    btnLibraryRefresh.addEventListener("click", async () => {
         libraryPageCache.clear();
+        await idbClearLibraryCache();
         loadLibrary({ reset: true });
     });
 

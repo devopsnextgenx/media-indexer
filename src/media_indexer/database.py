@@ -179,6 +179,7 @@ class MySQLDatabase:
         if self.enabled:
             self._ensure_table()
             self._ensure_download_tracker_table()
+            self._ensure_indexing_jobs_table()
 
     def _get_connection(self):
         if not self.enabled:
@@ -512,6 +513,26 @@ class MySQLDatabase:
             logger.error(f"Failed deleting records: {e}")
             return 0
 
+    def truncate_processed_files(self) -> int:
+        """Wipes the processed_files table only, for a clean re-index.
+        download_tracker and indexing_jobs are intentionally left untouched."""
+        if not self.enabled:
+            return 0
+        conn = self._get_connection()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) AS cnt FROM processed_files")
+                removed = (cursor.fetchone() or {}).get("cnt", 0)
+                cursor.execute("TRUNCATE TABLE processed_files")
+            conn.close()
+            logger.info(f"Truncated 'processed_files' table ({removed} rows removed)")
+            return removed
+        except Exception as e:
+            logger.error(f"Failed to truncate processed_files table: {e}")
+            return 0
+
 class RedisDatabase:
     def __init__(self):
         self.cfg = getattr(settings, "redis", None)
@@ -554,7 +575,17 @@ class RedisDatabase:
             logger.error(f"Failed to fetch Redis mount tree for {mount_name}: {e}")
             return None
 
-    def update_node_metadata(self, mount_name: str, rel_path: str, vector_id: str, jellyfin_id: str = None, primary_image_tag: str = None):
+    def update_node_metadata(
+        self,
+        mount_name: str,
+        rel_path: str,
+        vector_id: str,
+        jellyfin_id: str = None,
+        primary_image_tag: str = None,
+        width: int = None,
+        height: int = None,
+        duration: str = None,
+    ):
         """Updates individual file node attributes in the cached tree."""
         tree = self.get_mount_tree(mount_name)
         if not tree:
@@ -574,6 +605,12 @@ class RedisDatabase:
                             child["jellyfin_id"] = jellyfin_id
                         if primary_image_tag:
                             child["primary_image_tag"] = primary_image_tag
+                        if width:
+                            child["width"] = width
+                        if height:
+                            child["height"] = height
+                        if duration:
+                            child["duration"] = duration
                         found = True
                         break
             else:
@@ -590,6 +627,19 @@ class RedisDatabase:
 
         if found:
             self.set_mount_tree(mount_name, tree)
+
+    def clear_all_mount_trees(self) -> int:
+        """Deletes every cached mount:tree:* key, e.g. as part of a full index clean."""
+        if not self.enabled or not self.client:
+            return 0
+        try:
+            keys = list(self.client.scan_iter(match="mount:tree:*"))
+            if keys:
+                self.client.delete(*keys)
+            return len(keys)
+        except Exception as e:
+            logger.error(f"Failed to clear Redis mount trees: {e}")
+            return 0
 
 db_instance = VectorDatabase()
 mysql_db_instance = MySQLDatabase()

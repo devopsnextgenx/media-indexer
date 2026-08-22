@@ -217,7 +217,10 @@ class DirectoryTreeScanner:
                 "status": entry.get("status", "PENDING"),
                 "vector_id": entry.get("vector_id"),
                 "jellyfin_id": entry.get("jellyfin_id"),
-                "primary_image_tag": entry.get("primary_image_tag")
+                "primary_image_tag": entry.get("primary_image_tag"),
+                "width": entry.get("width"),
+                "height": entry.get("height"),
+                "duration": entry.get("duration"),
             }
             folder_map[parent_dir]["children"].append(file_node)
 
@@ -641,13 +644,19 @@ class DirectoryTreeScanner:
                         job_info["added_files"] += 1
 
                     jf_meta = data.get("jellyfin", {})
-                    jf_id = jf_meta.get("jf_id")
+                    # Jellyfin's own client normalizes to "jellyfin_id"; the legacy
+                    # indexer.py path used "jf_id". Accept either so the id isn't
+                    # silently dropped depending on which metadata source populated it.
+                    jf_id = jf_meta.get("jellyfin_id") or jf_meta.get("jf_id")
                     primary_tag = jf_meta.get("primary_image_tag")
 
                     # Update in-memory manifest tree node
                     file_entry["vector_id"] = point_id
                     file_entry["jellyfin_id"] = jf_id
                     file_entry["primary_image_tag"] = primary_tag
+                    file_entry["width"] = jf_meta.get("width")
+                    file_entry["height"] = jf_meta.get("height")
+                    file_entry["duration"] = jf_meta.get("duration")
                     file_entry["status"] = "INDEXED"
 
                     mysql_db_instance.upsert_file_record(
@@ -670,7 +679,10 @@ class DirectoryTreeScanner:
                         rel_path=file_entry["path"],
                         vector_id=point_id,
                         jellyfin_id=jf_id,
-                        primary_image_tag=primary_tag
+                        primary_image_tag=primary_tag,
+                        width=file_entry["width"],
+                        height=file_entry["height"],
+                        duration=file_entry["duration"],
                     )
 
                     job_info["processed_files"] += 1
