@@ -611,14 +611,14 @@ document.addEventListener("DOMContentLoaded", () => {
         }[c]));
     }
 
-    const FOLDER_TAG_COLORS = ["#e67e22", "#2ecc71", "#3b82f6", "#e74c3c"];
+    const FOLDER_TAG_COLORS = ["#e67e22", "#2ecc71", "#3b82f6", "#e74c3c", "#9b59b6", "#f1c40f", "#1abc9c", "#34495e"];
 
     function folderTagsHtml(item) {
         const tags = [];
         if (item.mount) {
             tags.push(item.mount);
         }
-        
+
         if (Array.isArray(item.folder_tags)) {
             tags.push(...[...item.folder_tags].reverse());
         }
