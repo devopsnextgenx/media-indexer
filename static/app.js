@@ -618,8 +618,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (item.mount) {
             tags.push(item.mount);
         }
+        
         if (Array.isArray(item.folder_tags)) {
-            tags.push(...item.folder_tags);
+            tags.push(...[...item.folder_tags].reverse());
         }
 
         if (!tags.length) return "";
