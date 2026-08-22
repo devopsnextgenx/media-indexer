@@ -1388,13 +1388,74 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // "Play Folder" button: queues every file in the currently viewed folder only.
-    function playCurrentFolder() {
-        const files = libraryItems.filter((i) => i.type === "file");
-        if (!files.length) {
-            showToast("No files in this folder.", "warn");
-            return;
+    async function playCurrentFolder() {
+        const files = [];
+
+        // Add files directly inside the current folder.
+        files.push(...libraryItems.filter((i) => i.type === "file"));
+
+        // Recursively browse all subfolders and collect their files.
+        async function collectFolderFiles(mount, path) {
+            let offset = 0;
+            const limit = LIBRARY_PAGE_SIZE;
+
+            while (true) {
+                const params = new URLSearchParams({
+                    mount,
+                    path,
+                    offset,
+                    limit,
+                    sort: "name",
+                    sort_dir: "asc",
+                });
+
+                const res = await fetch(`/api/library/browse?${params.toString()}`);
+                const data = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(data.detail || `Failed to browse ${path}`);
+                }
+
+                for (const item of data.items || []) {
+                    if (item.type === "file") {
+                        files.push(item);
+                    } else if (item.type === "folder") {
+                        await collectFolderFiles(item.mount, item.path);
+                    }
+                }
+
+                if (!data.has_more) break;
+
+                offset += (data.items || []).length;
+
+                // Safety guard against a broken API response.
+                if (!data.items?.length) break;
+            }
         }
-        openLibraryPlayer(files, 0);
+
+        try {
+            const folders = libraryItems.filter((i) => i.type === "folder");
+
+            for (const folder of folders) {
+                await collectFolderFiles(folder.mount, folder.path);
+            }
+
+            if (!files.length) {
+                showToast("No files in this folder or its subfolders.", "warn");
+                return;
+            }
+
+            // Play everything found recursively.
+            openLibraryPlayer(files, 0);
+
+            showToast(
+                `Playing ${files.length} file${files.length === 1 ? "" : "s"} from this folder and subfolders.`,
+                "success"
+            );
+        } catch (err) {
+            console.error("Failed to build recursive playback queue:", err);
+            showToast(`Unable to build playback queue: ${err.message}`, "error");
+        }
     }
 
     function nextTrack() {
