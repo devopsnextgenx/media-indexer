@@ -1,8 +1,10 @@
 import os
+import time
 import httpx
 import uvicorn
 import json
 import asyncio
+from typing import Optional
 from fastapi import BackgroundTasks, FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -184,6 +186,229 @@ def resolve_media_path(path: str) -> str:
     if not os.path.isfile(real_path):
         raise HTTPException(status_code=404, detail="File not found")
     return real_path
+
+
+# ==========================================
+# Library Browser (folder/breadcrumb view)
+# ==========================================
+
+# Caches recursive folder summaries (file count + a representative cover file)
+# so that opening a folder with a huge tree doesn't re-walk the disk on every
+# request. Keyed by absolute directory path -> (cached_at, summary_dict).
+_LIBRARY_SUMMARY_CACHE: dict[str, tuple[float, dict]] = {}
+LIBRARY_CACHE_TTL = 60  # seconds
+# Stops the recursive walk after this many directory entries so a folder with
+# tens of thousands of files can't stall a request; the UI shows "N+" instead.
+FOLDER_SCAN_CAP = 20000
+IGNORED_LIBRARY_SUFFIXES = (".yml", ".yaml", ".part", ".ytdl", ".tmp")
+
+
+def _human_size(num_bytes) -> Optional[str]:
+    if not num_bytes:
+        return None
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return None
+
+
+def _resolution_label(width, height) -> Optional[str]:
+    if height:
+        return f"{int(height)}p"
+    if width:
+        return f"{int(width)}w"
+    return None
+
+
+def _scan_folder_summary(abs_path: str) -> dict:
+    """Recursively counts files under abs_path and picks a representative
+    cover file, capped for performance and cached for LIBRARY_CACHE_TTL."""
+    now = time.time()
+    cached = _LIBRARY_SUMMARY_CACHE.get(abs_path)
+    if cached and now - cached[0] < LIBRARY_CACHE_TTL:
+        return cached[1]
+
+    file_count = 0
+    cover_path = None
+    capped = False
+    visited = 0
+    stack = [abs_path]
+
+    while stack and not capped:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    if entry.name.startswith("."):
+                        continue
+                    visited += 1
+                    if visited > FOLDER_SCAN_CAP:
+                        capped = True
+                        break
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                    elif entry.is_file(follow_symlinks=False) and not entry.name.lower().endswith(
+                        IGNORED_LIBRARY_SUFFIXES
+                    ):
+                        file_count += 1
+                        if cover_path is None:
+                            cover_path = entry.path
+        except OSError:
+            continue
+
+    summary = {"file_count": file_count, "cover_path": cover_path, "capped": capped}
+    _LIBRARY_SUMMARY_CACHE[abs_path] = (now, summary)
+    return summary
+
+
+def _cover_metadata(scanner, mount_root: str, cover_path: Optional[str]) -> dict:
+    """Looks up cached Jellyfin metadata for a folder's representative file,
+    entirely from the scanner's in-memory cache (no disk/ffprobe access)."""
+    if not scanner or not cover_path:
+        return {}
+    rel_dir = os.path.relpath(os.path.dirname(cover_path), mount_root)
+    rel_dir = "" if rel_dir == "." else rel_dir
+    file_name = os.path.basename(cover_path)
+    rel_file = os.path.join(rel_dir, file_name) if rel_dir else file_name
+    folder_key = scanner._resolve_folder(rel_file)
+    return scanner._lookup_metadata(folder_key, file_name)
+
+
+def _library_file_entry(scanner, mount_name: str, mount_root: str, rel_dir: str, entry: "os.DirEntry") -> dict:
+    rel_path = os.path.join(rel_dir, entry.name) if rel_dir else entry.name
+    meta = {}
+    if scanner:
+        folder_key = scanner._resolve_folder(rel_path)
+        meta = scanner._lookup_metadata(folder_key, entry.name)
+
+    size_bytes = meta.get("size")
+    if not size_bytes:
+        try:
+            size_bytes = entry.stat(follow_symlinks=False).st_size
+        except OSError:
+            size_bytes = None
+
+    return {
+        "type": "file",
+        "name": entry.name,
+        "path": rel_path,
+        "file_path": entry.path,
+        "mount": mount_name,
+        "folder_name": os.path.basename(rel_dir) if rel_dir else mount_name,
+        "resolution": _resolution_label(meta.get("width"), meta.get("height")),
+        "size_bytes": size_bytes,
+        "size_human": _human_size(size_bytes),
+        "duration": meta.get("duration"),
+        "jellyfin_id": meta.get("jellyfin_id"),
+        "primary_image_tag": meta.get("primary_image_tag"),
+    }
+
+
+@app.get("/api/library/browse", tags=["Library"])
+def browse_library(
+    mount: str = Query(None, description="Mount name; omit or 'all' to list mounts as top-level libraries"),
+    path: str = Query("", description="Relative folder path within the mount"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=1000),
+    sort: str = Query("name", pattern="^(name|size|resolution|duration)$"),
+    sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
+):
+    """Lists the folders and files at one level of a mount, for the Library tab's
+    breadcrumb/card browser. Folders always sort ahead of files."""
+    entries: list[dict] = []
+
+    if not mount or mount == "all":
+        for name, mnt in MOUNT_REGISTRY.items():
+            summary = _scan_folder_summary(mnt.path)
+            cover_meta = _cover_metadata(scanners.get(name), mnt.path, summary["cover_path"])
+            entries.append({
+                "type": "folder",
+                "name": name,
+                "path": "",
+                "mount": name,
+                "item_count": summary["file_count"],
+                "count_capped": summary["capped"],
+                "jellyfin_id": cover_meta.get("jellyfin_id"),
+                "primary_image_tag": cover_meta.get("primary_image_tag"),
+            })
+        breadcrumb = []
+    else:
+        mnt = MOUNT_REGISTRY.get(mount)
+        if not mnt:
+            raise HTTPException(status_code=404, detail=f"Mount '{mount}' not registered")
+
+        safe_rel = os.path.normpath(path or "").replace("\\", "/").strip("/")
+        safe_rel = "" if safe_rel in (".", "") else safe_rel
+
+        mount_root = os.path.realpath(mnt.path)
+        target_dir = os.path.realpath(os.path.join(mount_root, safe_rel))
+        if os.path.commonpath([target_dir, mount_root]) != mount_root:
+            raise HTTPException(status_code=403, detail="Path outside of mount root")
+        if not os.path.isdir(target_dir):
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+        scanner = scanners.get(mount)
+
+        try:
+            with os.scandir(target_dir) as it:
+                for entry in it:
+                    if entry.name.startswith("."):
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        summary = _scan_folder_summary(entry.path)
+                        cover_meta = _cover_metadata(scanner, mount_root, summary["cover_path"])
+                        entries.append({
+                            "type": "folder",
+                            "name": entry.name,
+                            "path": os.path.join(safe_rel, entry.name) if safe_rel else entry.name,
+                            "mount": mount,
+                            "item_count": summary["file_count"],
+                            "count_capped": summary["capped"],
+                            "jellyfin_id": cover_meta.get("jellyfin_id"),
+                            "primary_image_tag": cover_meta.get("primary_image_tag"),
+                        })
+                    elif entry.is_file(follow_symlinks=False) and not entry.name.lower().endswith(
+                        IGNORED_LIBRARY_SUFFIXES
+                    ):
+                        entries.append(_library_file_entry(scanner, mount, mount_root, safe_rel, entry))
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read directory: {e}")
+
+        breadcrumb = [{"label": mount, "mount": mount, "path": ""}]
+        accum = ""
+        for part in [p for p in safe_rel.split("/") if p]:
+            accum = f"{accum}/{part}" if accum else part
+            breadcrumb.append({"label": part, "mount": mount, "path": accum})
+
+    def sort_key(e: dict):
+        if sort == "size":
+            return e["item_count"] if e["type"] == "folder" else (e.get("size_bytes") or 0)
+        if sort == "resolution":
+            return e["item_count"] if e["type"] == "folder" else (e.get("resolution") or "")
+        if sort == "duration":
+            return e["item_count"] if e["type"] == "folder" else (e.get("duration") or "")
+        return e["name"].lower()
+
+    reverse = sort_dir == "desc"
+    folders = sorted([e for e in entries if e["type"] == "folder"], key=sort_key, reverse=reverse)
+    files = sorted([e for e in entries if e["type"] == "file"], key=sort_key, reverse=reverse)
+    ordered = folders + files
+
+    total = len(ordered)
+    page = ordered[offset: offset + limit]
+
+    return {
+        "mount": mount or "all",
+        "path": path or "",
+        "breadcrumb": breadcrumb,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(page) < total,
+        "items": page,
+    }
 
 
 @app.get("/", include_in_schema=False)
@@ -459,6 +684,8 @@ async def start_scan(
     scanner = scanners.get(mount_name)
     if not scanner:
         raise HTTPException(status_code=404, detail=f"Mount '{mount_name}' not registered")
+
+    _LIBRARY_SUMMARY_CACHE.clear()
 
     async def run_pipeline():
         # If incremental_scan is requested, make sure rescan_disk is False

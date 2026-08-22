@@ -41,6 +41,17 @@ document.addEventListener("DOMContentLoaded", () => {
     const resultsSortDirBtn = document.getElementById("results-sort-dir");
     const resultsCount = document.getElementById("results-count");
 
+    // Library tab elements
+    const libraryBreadcrumb = document.getElementById("library-breadcrumb");
+    const libraryGrid = document.getElementById("library-grid");
+    const librarySentinel = document.getElementById("library-sentinel");
+    const libraryLoadingEl = document.getElementById("library-loading");
+    const libraryCountEl = document.getElementById("library-count");
+    const librarySortSelect = document.getElementById("library-sort");
+    const librarySortDirBtn = document.getElementById("library-sort-dir");
+    const cardSizeGroup = document.getElementById("card-size-group");
+    const btnLibraryRefresh = document.getElementById("btn-library-refresh");
+
     const MAX_LOG_LINES = 5000;
     const MAX_HISTORY = 15;
 
@@ -59,6 +70,24 @@ document.addEventListener("DOMContentLoaded", () => {
     let downloadStatusFilter = "all";
     let downloadSortField = "created_at";
     let downloadSortDir = "desc";
+
+    // Library tab state
+    let libraryMount = "all";
+    let libraryPath = "";
+    let libraryOffset = 0;
+    const LIBRARY_PAGE_SIZE = 150;
+    let libraryHasMore = false;
+    let libraryLoading = false;
+    let libraryItems = [];          // accumulated items for the current folder (across pages)
+    let librarySort = "name";
+    let librarySortDir = "asc";
+    let cardSize = "m";
+    let libraryRequestToken = 0;    // guards against out-of-order responses when navigating fast
+    // Short-lived client cache so breadcrumb "back" navigation doesn't re-hit the server
+    const libraryPageCache = new Map(); // key: `${mount}::${path}::${sort}::${sortDir}` -> {items, hasMore, total}
+    const LIBRARY_CLIENT_CACHE_TTL = 20000;
+
+    const CARD_SIZE_PX = { xs: 32, s: 42, m: 50, l: 90, xl: 140 };
 
     // ==========================================
     // LocalStorage History Controllers
@@ -535,6 +564,223 @@ document.addEventListener("DOMContentLoaded", () => {
         }).join("") + `</div>`;
     }
 
+    // ==========================================
+    // Library Tab (breadcrumb folder/card browser)
+    // ==========================================
+
+    function libraryThumbnailUrl(entry) {
+        const jellyfinId = entry.jellyfin_id;
+        if (!jellyfinId) return null;
+        const size = Math.max(64, CARD_SIZE_PX[cardSize] * 2);
+        const params = new URLSearchParams({ jellyfin_id: jellyfinId, width: size, height: size });
+        if (entry.primary_image_tag) params.set("tag", entry.primary_image_tag);
+        return `/api/media/thumbnail?${params.toString()}`;
+    }
+
+    function libraryCacheKey(mount, path, sort, sortDir) {
+        return `${mount}::${path}::${sort}::${sortDir}`;
+    }
+
+    function renderBreadcrumb(breadcrumb) {
+        if (!breadcrumb || !breadcrumb.length) {
+            libraryBreadcrumb.innerHTML = `<span class="breadcrumb-item active" data-mount="all" data-path="">All Mounts</span>`;
+            return;
+        }
+
+        const parts = [`<span class="breadcrumb-item" data-mount="all" data-path="">All Mounts</span>`];
+        breadcrumb.forEach((crumb, idx) => {
+            const isLast = idx === breadcrumb.length - 1;
+            parts.push(`<span class="breadcrumb-sep">/</span>`);
+            parts.push(
+                `<span class="breadcrumb-item${isLast ? " active" : ""}" data-mount="${escapeHtml(crumb.mount)}" data-path="${escapeHtml(crumb.path)}">${escapeHtml(crumb.label)}</span>`
+            );
+        });
+        libraryBreadcrumb.innerHTML = parts.join("");
+    }
+
+    libraryBreadcrumb.addEventListener("click", (e) => {
+        const target = e.target.closest(".breadcrumb-item");
+        if (!target || target.classList.contains("active")) return;
+        navigateLibrary(target.dataset.mount, target.dataset.path || "");
+    });
+
+    function libraryCardHtml(entry, idx) {
+        const isFolder = entry.type === "folder";
+        const thumbSrc = libraryThumbnailUrl(entry);
+        const thumbHtml = thumbSrc
+            ? `<img src="${thumbSrc}" alt="" loading="lazy" onerror="this.remove()"/>`
+            : "";
+
+        const metaBits = isFolder
+            ? [`${entry.item_count}${entry.count_capped ? "+" : ""} item${entry.item_count === 1 ? "" : "s"}`]
+            : [entry.resolution, entry.size_human, entry.folder_name].filter(Boolean);
+
+        return `
+            <div class="library-card ${isFolder ? "is-folder" : "is-file"}" data-idx="${idx}" title="${escapeHtml(entry.name)}">
+                <div class="library-card-thumb">
+                    ${thumbHtml}
+                    ${isFolder ? `<span class="library-card-count-badge">${entry.item_count}${entry.count_capped ? "+" : ""}</span>` : ""}
+                </div>
+                <div class="library-card-body">
+                    <div class="library-card-name">${escapeHtml(entry.name)}</div>
+                    <div class="library-card-meta">${metaBits.map(escapeHtml).join(" \u2022 ")}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderLibraryGrid(append) {
+        if (!append) libraryGrid.innerHTML = "";
+
+        if (!libraryItems.length) {
+            libraryGrid.innerHTML = `<div class="library-empty">This folder is empty.</div>`;
+            return;
+        }
+
+        const startIdx = append ? libraryGrid.querySelectorAll(".library-card").length : 0;
+        const freshItems = append ? libraryItems.slice(startIdx) : libraryItems;
+        const html = freshItems.map((entry, i) => libraryCardHtml(entry, startIdx + i)).join("");
+
+        if (append) {
+            libraryGrid.insertAdjacentHTML("beforeend", html);
+        } else {
+            libraryGrid.innerHTML = html;
+        }
+    }
+
+    // Folders open on double-click; files open the player on a single click.
+    libraryGrid.addEventListener("click", (e) => {
+        const card = e.target.closest(".library-card");
+        if (!card) return;
+        const idx = Number(card.dataset.idx);
+        const entry = libraryItems[idx];
+        if (!entry) return;
+
+        if (entry.type === "file") {
+            const playlist = libraryItems.filter((i) => i.type === "file");
+            const playIdx = playlist.indexOf(entry);
+            openLibraryPlayer(playlist, playIdx);
+        } else {
+            libraryGrid.querySelectorAll(".library-card.selected").forEach((el) => el.classList.remove("selected"));
+            card.classList.add("selected");
+        }
+    });
+
+    libraryGrid.addEventListener("dblclick", (e) => {
+        const card = e.target.closest(".library-card.is-folder");
+        if (!card) return;
+        const idx = Number(card.dataset.idx);
+        const entry = libraryItems[idx];
+        if (entry) navigateLibrary(entry.mount, entry.path);
+    });
+
+    function navigateLibrary(mount, path) {
+        libraryMount = mount;
+        libraryPath = path || "";
+        loadLibrary({ reset: true });
+    }
+
+    async function loadLibrary({ reset }) {
+        if (reset) {
+            libraryOffset = 0;
+            libraryItems = [];
+        }
+        if (libraryLoading) return;
+
+        const cacheKey = libraryCacheKey(libraryMount, libraryPath, librarySort, librarySortDir);
+        if (reset) {
+            const cached = libraryPageCache.get(cacheKey);
+            if (cached && Date.now() - cached.cachedAt < LIBRARY_CLIENT_CACHE_TTL) {
+                libraryItems = cached.items;
+                libraryOffset = cached.items.length;
+                libraryHasMore = cached.hasMore;
+                renderBreadcrumb(cached.breadcrumb);
+                renderLibraryGrid(false);
+                updateLibraryCount(cached.total);
+                return;
+            }
+        }
+
+        libraryLoading = true;
+        libraryLoadingEl.classList.remove("hidden");
+        const token = ++libraryRequestToken;
+
+        try {
+            const params = new URLSearchParams({
+                mount: libraryMount,
+                path: libraryPath,
+                offset: libraryOffset,
+                limit: LIBRARY_PAGE_SIZE,
+                sort: librarySort,
+                sort_dir: librarySortDir,
+            });
+            const res = await fetch(`/api/library/browse?${params.toString()}`);
+            const data = await res.json();
+            if (token !== libraryRequestToken) return; // a newer navigation superseded this request
+            if (!res.ok) throw new Error(data.detail || "Failed to load folder");
+
+            libraryItems = reset ? data.items : libraryItems.concat(data.items);
+            libraryOffset = libraryItems.length;
+            libraryHasMore = data.has_more;
+
+            renderBreadcrumb(data.breadcrumb);
+            renderLibraryGrid(!reset);
+            updateLibraryCount(data.total);
+
+            libraryPageCache.set(cacheKey, {
+                items: libraryItems,
+                hasMore: libraryHasMore,
+                total: data.total,
+                breadcrumb: data.breadcrumb,
+                cachedAt: Date.now(),
+            });
+        } catch (err) {
+            if (reset) libraryGrid.innerHTML = `<div class="library-empty" style="color:var(--danger-red)">${escapeHtml(err.message)}</div>`;
+            showToast(`Library load failed: ${err.message}`, "error");
+        } finally {
+            libraryLoading = false;
+            libraryLoadingEl.classList.add("hidden");
+        }
+    }
+
+    function updateLibraryCount(total) {
+        libraryCountEl.textContent = total ? `${libraryItems.length} / ${total} items` : "";
+    }
+
+    // Infinite scroll: fetch the next page only once the sentinel enters view,
+    // instead of loading (or rendering) an entire huge folder up front.
+    const libraryObserver = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting && libraryHasMore && !libraryLoading) {
+            loadLibrary({ reset: false });
+        }
+    }, { rootMargin: "300px" });
+    libraryObserver.observe(librarySentinel);
+
+    librarySortSelect.addEventListener("change", () => {
+        librarySort = librarySortSelect.value;
+        loadLibrary({ reset: true });
+    });
+
+    librarySortDirBtn.addEventListener("click", () => {
+        librarySortDir = librarySortDir === "asc" ? "desc" : "asc";
+        librarySortDirBtn.dataset.dir = librarySortDir;
+        librarySortDirBtn.innerHTML = librarySortDir === "asc" ? "&#8593; Asc" : "&#8595; Desc";
+        loadLibrary({ reset: true });
+    });
+
+    cardSizeGroup.addEventListener("click", (e) => {
+        const btn = e.target.closest(".card-size-btn");
+        if (!btn) return;
+        cardSize = btn.dataset.size;
+        cardSizeGroup.querySelectorAll(".card-size-btn").forEach((b) => b.classList.toggle("active", b === btn));
+        libraryGrid.style.setProperty("--card-size", `${CARD_SIZE_PX[cardSize]}px`);
+    });
+
+    btnLibraryRefresh.addEventListener("click", () => {
+        libraryPageCache.clear();
+        loadLibrary({ reset: true });
+    });
+
     // ---------- Scan console ----------
 
     function formatLogTime(iso) {
@@ -906,15 +1152,45 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function streamUrl(item) {
-        const jellyfinId = item.jellyfin?.jellyfin_id || item.jellyfin?.jf_id;
+        const jellyfinId = item.jellyfin?.jellyfin_id || item.jellyfin?.jf_id || item.jellyfin_id;
         if (jellyfinId) {
             return `/api/media/jellyfin/stream?jellyfin_id=${encodeURIComponent(jellyfinId)}`;
         }
         return `/api/media/stream?path=${encodeURIComponent(item.file_path)}`;
     }
 
-    function openPlayer(item) {
-        playerTitle.innerText = item.normalized_title || item.file_name;
+    // ---- Playback queue: playlist, shuffle, loop, next/prev ----
+    const playerQueueInfo = document.getElementById("player-queue-info");
+    const playerShuffleBtn = document.getElementById("player-shuffle");
+    const playerLoopBtn = document.getElementById("player-loop");
+    const playerPrevBtn = document.getElementById("player-prev");
+    const playerNextBtn = document.getElementById("player-next");
+
+    let currentPlaylist = [];
+    let playOrder = [];
+    let orderPos = -1;
+    let shuffleOn = false;
+    let loopMode = "off"; // off | all | one
+
+    function buildPlayOrder(playlist, startIndex, shuffle) {
+        const indices = playlist.map((_, i) => i);
+        if (!shuffle) return indices;
+        const rest = indices.filter((i) => i !== startIndex);
+        for (let i = rest.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [rest[i], rest[j]] = [rest[j], rest[i]];
+        }
+        return [startIndex, ...rest];
+    }
+
+    function updateQueueInfo() {
+        playerQueueInfo.textContent = currentPlaylist.length > 1
+            ? `${orderPos + 1} / ${playOrder.length}`
+            : "";
+    }
+
+    function renderPlayerItem(item) {
+        playerTitle.innerText = item.normalized_title || item.file_name || item.name;
         const resolution = item.resolution || item.metadata?.resolution || "";
         const sizeHuman = item.size_human || item.metadata?.file_size_human || "";
         playerMeta.innerText = [resolution, sizeHuman].filter(Boolean).join(" \u2022 ");
@@ -922,7 +1198,82 @@ document.addEventListener("DOMContentLoaded", () => {
         playerOverlay.classList.remove("hidden");
         playerVideo.volume = Number(playerVolume.value);
         playerVideo.play().catch(() => {});
+        updateQueueInfo();
     }
+
+    function playCurrentTrack() {
+        const item = currentPlaylist[playOrder[orderPos]];
+        if (item) renderPlayerItem(item);
+    }
+
+    // Single-item playback (used by the search tab's "Play" button).
+    function openPlayer(item, playlist, index) {
+        currentPlaylist = playlist || [item];
+        const startIdx = index !== undefined ? index : Math.max(0, currentPlaylist.indexOf(item));
+        playOrder = buildPlayOrder(currentPlaylist, startIdx, shuffleOn);
+        orderPos = 0;
+        playCurrentTrack();
+    }
+
+    // Playback from a Library folder: builds the queue from every file currently
+    // shown in that folder so Next/Prev/Shuffle/Loop can move between them.
+    function openLibraryPlayer(playlist, index) {
+        openPlayer(playlist[index], playlist, index);
+    }
+
+    function nextTrack() {
+        if (!currentPlaylist.length) return;
+        if (orderPos < playOrder.length - 1) {
+            orderPos++;
+        } else if (loopMode === "all") {
+            orderPos = 0;
+        } else {
+            return;
+        }
+        playCurrentTrack();
+    }
+
+    function prevTrack() {
+        if (!currentPlaylist.length) return;
+        if (orderPos > 0) {
+            orderPos--;
+        } else if (loopMode === "all") {
+            orderPos = playOrder.length - 1;
+        }
+        playCurrentTrack();
+    }
+
+    playerShuffleBtn.addEventListener("click", () => {
+        shuffleOn = !shuffleOn;
+        playerShuffleBtn.classList.toggle("active", shuffleOn);
+        if (currentPlaylist.length > 1) {
+            const currentItem = currentPlaylist[playOrder[orderPos]];
+            const currentIdx = currentPlaylist.indexOf(currentItem);
+            playOrder = buildPlayOrder(currentPlaylist, currentIdx, shuffleOn);
+            orderPos = 0;
+            updateQueueInfo();
+        }
+    });
+
+    playerLoopBtn.addEventListener("click", () => {
+        loopMode = loopMode === "off" ? "all" : loopMode === "all" ? "one" : "off";
+        playerLoopBtn.dataset.mode = loopMode;
+        playerLoopBtn.title = `Loop: ${loopMode}`;
+        playerLoopBtn.classList.toggle("active", loopMode !== "off");
+        playerLoopBtn.innerHTML = loopMode === "one" ? "&#128257;<sub>1</sub>" : "&#128257;";
+    });
+
+    playerPrevBtn.addEventListener("click", prevTrack);
+    playerNextBtn.addEventListener("click", nextTrack);
+
+    playerVideo.addEventListener("ended", () => {
+        if (loopMode === "one") {
+            playerVideo.currentTime = 0;
+            playerVideo.play().catch(() => {});
+            return;
+        }
+        nextTrack();
+    });
 
     function closePlayer() {
         if (document.fullscreenElement) document.exitFullscreen?.();
@@ -930,6 +1281,9 @@ document.addEventListener("DOMContentLoaded", () => {
         playerVideo.removeAttribute("src");
         playerVideo.load();
         playerOverlay.classList.add("hidden");
+        currentPlaylist = [];
+        playOrder = [];
+        orderPos = -1;
     }
 
     playerClose.addEventListener("click", closePlayer);
@@ -1325,22 +1679,33 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Navigation Tab Switcher
     const tabBtnSearch = document.getElementById("tab-btn-search");
+    const tabBtnLibrary = document.getElementById("tab-btn-library");
     const tabBtnDownloads = document.getElementById("tab-btn-downloads");
     const tabPanelSearch = document.getElementById("tab-panel-search");
+    const tabPanelLibrary = document.getElementById("tab-panel-library");
     const tabPanelDownloads = document.getElementById("tab-panel-downloads");
 
-    tabBtnSearch?.addEventListener("click", () => {
-        tabBtnSearch.classList.add("active");
-        tabBtnDownloads.classList.remove("active");
-        tabPanelSearch.classList.add("active");
-        tabPanelDownloads.classList.remove("active");
+    const allTabBtns = [tabBtnSearch, tabBtnLibrary, tabBtnDownloads];
+    const allTabPanels = [tabPanelSearch, tabPanelLibrary, tabPanelDownloads];
+
+    function activateTab(btn, panel) {
+        allTabBtns.forEach((b) => b?.classList.toggle("active", b === btn));
+        allTabPanels.forEach((p) => p?.classList.toggle("active", p === panel));
+    }
+
+    tabBtnSearch?.addEventListener("click", () => activateTab(tabBtnSearch, tabPanelSearch));
+
+    let libraryLoadedOnce = false;
+    tabBtnLibrary?.addEventListener("click", () => {
+        activateTab(tabBtnLibrary, tabPanelLibrary);
+        if (!libraryLoadedOnce) {
+            libraryLoadedOnce = true;
+            loadLibrary({ reset: true });
+        }
     });
 
     tabBtnDownloads?.addEventListener("click", () => {
-        tabBtnDownloads.classList.add("active");
-        tabBtnSearch.classList.remove("active");
-        tabPanelDownloads.classList.add("active");
-        tabPanelSearch.classList.remove("active");
+        activateTab(tabBtnDownloads, tabPanelDownloads);
         fetchDownloads();
     });
 

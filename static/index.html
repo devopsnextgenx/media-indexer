@@ -30,12 +30,51 @@
 
     <main class="container">
         <div class="nav-tabs">
-            <button id="tab-btn-search" class="tab-btn active">Media Explorer</button>
+            <button id="tab-btn-library" class="tab-btn active">Library</button>
+            <button id="tab-btn-search" class="tab-btn">Media Explorer</button>
             <button id="tab-btn-downloads" class="tab-btn">Downloads Manager</button>
         </div>
 
-        <!-- Tab 1: Media Explorer View -->
-        <div id="tab-panel-search" class="tab-panel active">
+        <!-- Tab: Library View (breadcrumb folder/card browser) -->
+        <div id="tab-panel-library" class="tab-panel active">
+            <div class="library-toolbar">
+                <div id="library-breadcrumb" class="library-breadcrumb">
+                    <span class="breadcrumb-item active" data-mount="all" data-path="">All Mounts</span>
+                </div>
+
+                <div class="library-toolbar-controls">
+                    <span id="library-count" class="results-count"></span>
+
+                    <label class="results-sort-label" for="library-sort">Sort:</label>
+                    <select id="library-sort" class="results-sort-select">
+                        <option value="name">Name</option>
+                        <option value="size">Size</option>
+                        <option value="resolution">Resolution</option>
+                        <option value="duration">Duration</option>
+                    </select>
+                    <button id="library-sort-dir" class="btn btn-secondary" data-dir="asc">&#8593; Asc</button>
+
+                    <div class="card-size-group" id="card-size-group">
+                        <button class="card-size-btn" data-size="xs">XS</button>
+                        <button class="card-size-btn" data-size="s">S</button>
+                        <button class="card-size-btn active" data-size="m">M</button>
+                        <button class="card-size-btn" data-size="l">L</button>
+                        <button class="card-size-btn" data-size="xl">XL</button>
+                    </div>
+
+                    <button id="btn-library-refresh" class="btn btn-secondary" title="Refresh this folder">&#8635; Refresh</button>
+                </div>
+            </div>
+
+            <section class="library-grid-container">
+                <div id="library-grid" class="library-grid" style="--card-size: 50px;"></div>
+                <div id="library-sentinel" class="library-sentinel"></div>
+                <div id="library-loading" class="library-loading hidden">Loading&hellip;</div>
+            </section>
+        </div>
+
+        <!-- Tab: Media Explorer View -->
+        <div id="tab-panel-search" class="tab-panel">
             <!-- Live SSE Progress / Status Stream -->
             <section id="scan-console" class="scan-console hidden">
                 <div class="scan-console-head">
@@ -111,7 +150,7 @@
             </section>
         </div> <!-- Correct closure for tab-panel-search -->
 
-        <!-- Tab 2: Downloads View -->
+        <!-- Tab: Downloads View -->
         <div id="tab-panel-downloads" class="tab-panel">
             <div class="results-toolbar">
                 <div class="downloads-filter-group">
@@ -228,13 +267,18 @@
             <div class="player-topbar">
                 <span id="player-title">Now Playing</span>
                 <span id="player-meta" class="player-meta"></span>
+                <span id="player-queue-info" class="player-meta"></span>
                 <button id="player-close" class="player-btn" title="Close (Esc)">&times;</button>
             </div>
 
             <video id="player-video" playsinline preload="metadata"></video>
 
             <div class="player-controls">
+                <button id="player-shuffle" class="player-btn" title="Shuffle">&#128256;</button>
+                <button id="player-prev" class="player-btn" title="Previous">&#9198;</button>
                 <button id="player-play" class="player-btn" title="Play / Pause">&#9654;</button>
+                <button id="player-next" class="player-btn" title="Next">&#9197;</button>
+                <button id="player-loop" class="player-btn" data-mode="off" title="Loop: off">&#128257;</button>
 
                 <span id="player-current" class="player-time">00:00</span>
                 <input type="range" id="player-progress" class="player-range" value="0" min="0" max="100" step="0.1" />
