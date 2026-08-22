@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import time
 from typing import Any, AsyncGenerator, Deque, Dict, List, Optional
-import uuid
 import yaml
 import logging
 
@@ -16,7 +15,7 @@ from qdrant_client.models import PointStruct, VectorParams, Distance
 
 from media_indexer.jellyfin import JellyfinClient
 from media_indexer.config import settings
-from media_indexer.database import db_instance, mysql_db_instance
+from media_indexer.database import db_instance, mysql_db_instance, redis_db_instance
 from media_indexer.utils import build_media_metadata, normalize_text, generate_file_id
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -173,6 +172,76 @@ class DirectoryTreeScanner:
             logging.error(f"Error checking/creating Qdrant collection: {e}")
             return False
 
+    def _build_nested_tree(self, flat_entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Converts flat disk entries into a true nested tree hierarchy for library rendering."""
+        root = {
+            "name": self.mount_name,
+            "type": "folder",
+            "path": "",
+            "children": []
+        }
+
+        folder_map = {"": root}
+
+        for entry in flat_entries:
+            rel_parts = Path(entry["path"]).parts
+            curr_path = ""
+            
+            # Ensure folder chain exists in nested hierarchy
+            for i in range(len(rel_parts) - 1):
+                part = rel_parts[i]
+                parent_path = curr_path
+                curr_path = f"{curr_path}/{part}" if curr_path else part
+
+                if curr_path not in folder_map:
+                    dir_node = {
+                        "name": part,
+                        "type": "folder",
+                        "path": curr_path,
+                        "children": []
+                    }
+                    folder_map[curr_path] = dir_node
+                    folder_map[parent_path]["children"].append(dir_node)
+
+            # Insert file node
+            file_name = rel_parts[-1]
+            parent_dir = str(Path(entry["path"]).parent)
+            parent_dir = "" if parent_dir == "." else parent_dir
+
+            file_node = {
+                "name": file_name,
+                "type": "file",
+                "path": entry["path"],
+                "size": entry.get("size", 0),
+                "mtime": entry.get("mtime", 0.0),
+                "status": entry.get("status", "PENDING"),
+                "vector_id": entry.get("vector_id"),
+                "jellyfin_id": entry.get("jellyfin_id"),
+                "primary_image_tag": entry.get("primary_image_tag")
+            }
+            folder_map[parent_dir]["children"].append(file_node)
+
+        return root
+
+    def _save_manifest(self, data: Dict[str, Any]):
+        data["job_info"]["last_updated"] = datetime.now(timezone.utc).isoformat()
+        
+        # Sync Job Metadata to MySQL
+        mysql_db_instance.upsert_job_record(data["job_info"])
+
+        # Sync Nested Tree to Redis
+        nested_tree = self._build_nested_tree(data["tree"])
+        redis_db_instance.set_mount_tree(self.mount_name, nested_tree)
+
+        temp_manifest_path = self.manifest_path.with_suffix(".tmp")
+        try:
+            with open(temp_manifest_path, "w") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            temp_manifest_path.replace(self.manifest_path)
+        except Exception:
+            if temp_manifest_path.exists():
+                temp_manifest_path.unlink()
+
     @staticmethod
     def _is_missing_collection_error(exc: Exception) -> bool:
         message = str(exc).lower()
@@ -251,20 +320,6 @@ class DirectoryTreeScanner:
 
         _walk(directory)
         return tree_entries
-
-    def _save_manifest(self, data: Dict[str, Any]):
-        data["job_info"]["last_updated"] = datetime.now(
-            timezone.utc
-        ).isoformat()
-        
-        temp_manifest_path = self.manifest_path.with_suffix(".tmp")
-        try:
-            with open(temp_manifest_path, "w") as f:
-                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-            temp_manifest_path.replace(self.manifest_path)
-        except Exception:
-            if temp_manifest_path.exists():
-                temp_manifest_path.unlink()
 
     def load_or_create_manifest(
         self, force_rescan: bool = False, incremental_scan: bool = False
@@ -585,6 +640,16 @@ class DirectoryTreeScanner:
                     else:
                         job_info["added_files"] += 1
 
+                    jf_meta = data.get("jellyfin", {})
+                    jf_id = jf_meta.get("jf_id")
+                    primary_tag = jf_meta.get("primary_image_tag")
+
+                    # Update in-memory manifest tree node
+                    file_entry["vector_id"] = point_id
+                    file_entry["jellyfin_id"] = jf_id
+                    file_entry["primary_image_tag"] = primary_tag
+                    file_entry["status"] = "INDEXED"
+
                     mysql_db_instance.upsert_file_record(
                         file_id=point_id,
                         file_path=payload["file_path"],
@@ -595,13 +660,21 @@ class DirectoryTreeScanner:
                         mtime=data.get("mtime", 0.0),
                         status="INDEXED",
                         vector_id=point_id,
-                        jellyfin_id=data["jellyfin"].get("jf_id"),
+                        jellyfin_id=jf_id,
                         metadata=payload.get("metadata")
+                    )
+
+                    # Dynamically patch individual node in Redis cache
+                    redis_db_instance.update_node_metadata(
+                        mount_name=self.mount_name,
+                        rel_path=file_entry["path"],
+                        vector_id=point_id,
+                        jellyfin_id=jf_id,
+                        primary_image_tag=primary_tag
                     )
 
                     job_info["processed_files"] += 1
                     
-                    # Change total_files to total_remaining so log displays [1/5] instead of [5413/5417]
                     self._emit(
                         f"[{job_info['processed_files']}/{total_remaining}] {op}ED {file_entry['path']}"
                     )

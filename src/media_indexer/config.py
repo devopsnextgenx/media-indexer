@@ -73,11 +73,20 @@ class IndexingConfig(BaseModel):
     log_buffer: int = Field(default=5000, ge=100, le=100000)
     auto_scan: AutoScanConfig = AutoScanConfig()
 
+class RedisConfig(BaseModel):
+    enabled: bool = True
+    host: str = "host.docker.internal"
+    port: int = 6379
+    db: int = 0
+    password: str | None = None
+
+# Update AppConfig class
 class AppConfig(BaseModel):
     server: ServerConfig = ServerConfig()
     mounts: MountsConfig = MountsConfig()
     vectordb: VectorDBConfig = VectorDBConfig()
     mysql: MySQLConfig = MySQLConfig()
+    redis: RedisConfig = RedisConfig() # Added Redis config
     embedding: EmbeddingConfig = EmbeddingConfig()
     llm: LLMConfig = LLMConfig()
     logging: LoggingConfig = LoggingConfig()

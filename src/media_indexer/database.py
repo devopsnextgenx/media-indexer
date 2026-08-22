@@ -3,6 +3,7 @@ import json
 import logging
 from qdrant_client import QdrantClient, models
 from media_indexer.config import settings
+import redis
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,73 @@ class MySQLDatabase:
             logger.info("MySQL 'download_tracker' table initialized.")
         except Exception as e:
             logger.error(f"Failed to create MySQL download_tracker table: {e}")
+            
+    def _ensure_indexing_jobs_table(self):
+        conn = self._get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS indexing_jobs (
+                        job_id VARCHAR(255) PRIMARY KEY,
+                        mount_name VARCHAR(255) NOT NULL,
+                        status VARCHAR(50) DEFAULT 'PENDING',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        total_files INT DEFAULT 0,
+                        processed_files INT DEFAULT 0,
+                        added_files INT DEFAULT 0,
+                        updated_files INT DEFAULT 0,
+                        skipped_files INT DEFAULT 0,
+                        failed_files INT DEFAULT 0,
+                        cleaned_orphans INT DEFAULT 0,
+                        eta_seconds INT DEFAULT 0,
+                        error_message TEXT,
+                        INDEX idx_mount_status (mount_name, status)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
+            conn.close()
+            logger.info("MySQL 'indexing_jobs' table initialized.")
+        except Exception as e:
+            logger.error(f"Failed to create MySQL indexing_jobs table: {e}")
 
+    def upsert_job_record(self, job_info: dict):
+        if not self.enabled:
+            return
+        conn = self._get_connection()
+        if not conn:
+            return
+        try:
+            query = """
+                INSERT INTO indexing_jobs 
+                (job_id, mount_name, status, total_files, processed_files, added_files, updated_files, skipped_files, failed_files, cleaned_orphans, eta_seconds, error_message)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    status = VALUES(status),
+                    total_files = VALUES(total_files),
+                    processed_files = VALUES(processed_files),
+                    added_files = VALUES(added_files),
+                    updated_files = VALUES(updated_files),
+                    skipped_files = VALUES(skipped_files),
+                    failed_files = VALUES(failed_files),
+                    cleaned_orphans = VALUES(cleaned_orphans),
+                    eta_seconds = VALUES(eta_seconds),
+                    error_message = VALUES(error_message);
+            """
+            with conn.cursor() as cursor:
+                cursor.execute(query, (
+                    job_info["job_id"], job_info["mount_name"], job_info["status"],
+                    job_info.get("total_files", 0), job_info.get("processed_files", 0),
+                    job_info.get("added_files", 0), job_info.get("updated_files", 0),
+                    job_info.get("skipped_files", 0), job_info.get("failed_files", 0),
+                    job_info.get("cleaned_orphans", 0), job_info.get("eta_seconds", 0),
+                    job_info.get("error")
+                ))
+            conn.close()
+        except Exception as e:
+            logger.error(f"MySQL upsert job failed for {job_info.get('job_id')}: {e}")
+            
     def add_or_update_download_entry(self, entry: str) -> str:
         """
         Adds entry or updates timestamp.
@@ -444,6 +511,86 @@ class MySQLDatabase:
         except Exception as e:
             logger.error(f"Failed deleting records: {e}")
             return 0
-        
+
+class RedisDatabase:
+    def __init__(self):
+        self.cfg = getattr(settings, "redis", None)
+        self.enabled = getattr(self.cfg, "enabled", False) if self.cfg else False
+        self.client = None
+        if self.enabled:
+            try:
+                self.client = redis.Redis(
+                    host=self.cfg.host,
+                    port=self.cfg.port,
+                    db=self.cfg.db,
+                    password=self.cfg.password,
+                    decode_responses=True
+                )
+                self.client.ping()
+                logger.info("Redis database connection established successfully.")
+            except Exception as e:
+                logger.warning(f"Redis connection failed: {e}")
+                self.enabled = False
+
+    def set_mount_tree(self, mount_name: str, tree_data: dict):
+        """Stores mount nested tree structure in Redis."""
+        if not self.enabled or not self.client:
+            return
+        try:
+            key = f"mount:tree:{mount_name}"
+            self.client.set(key, json.dumps(tree_data))
+        except Exception as e:
+            logger.error(f"Failed to set Redis mount tree for {mount_name}: {e}")
+
+    def get_mount_tree(self, mount_name: str) -> dict | None:
+        """Retrieves mount nested tree structure from Redis."""
+        if not self.enabled or not self.client:
+            return None
+        try:
+            key = f"mount:tree:{mount_name}"
+            data = self.client.get(key)
+            return json.loads(data) if data else None
+        except Exception as e:
+            logger.error(f"Failed to fetch Redis mount tree for {mount_name}: {e}")
+            return None
+
+    def update_node_metadata(self, mount_name: str, rel_path: str, vector_id: str, jellyfin_id: str = None, primary_image_tag: str = None):
+        """Updates individual file node attributes in the cached tree."""
+        tree = self.get_mount_tree(mount_name)
+        if not tree:
+            return
+
+        parts = [p for p in rel_path.split("/") if p]
+        curr = tree
+        found = False
+
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
+                # Target file node
+                for child in curr.get("children", []):
+                    if child.get("name") == part and child.get("type") == "file":
+                        child["vector_id"] = vector_id
+                        if jellyfin_id:
+                            child["jellyfin_id"] = jellyfin_id
+                        if primary_image_tag:
+                            child["primary_image_tag"] = primary_image_tag
+                        found = True
+                        break
+            else:
+                # Traverse directory level
+                matched_dir = None
+                for child in curr.get("children", []):
+                    if child.get("name") == part and child.get("type") == "folder":
+                        matched_dir = child
+                        break
+                if matched_dir:
+                    curr = matched_dir
+                else:
+                    break
+
+        if found:
+            self.set_mount_tree(mount_name, tree)
+
 db_instance = VectorDatabase()
 mysql_db_instance = MySQLDatabase()
+redis_db_instance = RedisDatabase()

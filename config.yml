@@ -68,6 +68,13 @@ mysql:
   database: medialib
   root_pwd: p@ssw0rd
 
+redis:
+  enabled: true
+  host: "host.docker.internal"
+  port: 6379
+  db: 0
+  password: m1nIspsswd
+
 embedding:
   provider: "ollama"
   host: "http://host.docker.internal:11434"
