@@ -1378,32 +1378,73 @@ document.addEventListener("DOMContentLoaded", () => {
         const downloadsBody = document.getElementById("downloads-body");
         const downloadsCount = document.getElementById("downloads-count");
 
+        if (!downloadsBody) return; // Exit safely if the downloads tab isn't active/loaded
+
         if (!items.length) {
-            downloadsBody.innerHTML = `<tr><td colspan="6" class="empty-state">No matching download tasks.</td></tr>`;
-            downloadsCount.textContent = "";
+            downloadsBody.innerHTML = `<tr><td colspan="7" class="empty-state">No matching download tasks.</td></tr>`;
+            if (downloadsCount) downloadsCount.textContent = "";
             return;
         }
 
-        downloadsCount.textContent = `${items.length} / ${downloadsList.length} items`;
+        if (downloadsCount) {
+            downloadsCount.textContent = `${items.length} / ${downloadsList.length} items`;
+        }
+        
         downloadsBody.innerHTML = items.map((item, idx) => `
             <tr>
                 <td>${idx + 1}</td>
                 <td class="col-details">
-                    <div class="file-title" title="${escapeHtml(item.title || item.url)}">${escapeHtml(item.title || item.url)}</div>
-                    <small class="file-name" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</small>
+                    <div class="file-title" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</div>
+                    <small class="file-name" title="Language: ${escapeHtml(item.language || 'N/A')}">Lang: ${escapeHtml(item.language || 'N/A')}</small>
                 </td>
-                <td><span class="status-badge ${escapeHtml(item.status || 'downloading')}">${escapeHtml(item.status || 'Pending')}</span></td>
-                <td><code>${escapeHtml(item.mount || 'movies')}</code></td>
+                <td><code>${escapeHtml(item.quality || 'N/A')}</code></td>
+                <td><strong>${escapeHtml(item.title || 'N/A')}</strong></td>
+                <td><span class="status-badge ${escapeHtml((item.status || 'pending').toLowerCase())}">${escapeHtml(item.status || 'Pending')}</span></td>
                 <td><small>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : 'N/A')}</small></td>
                 <td class="col-actions">
-                    <div class="row-actions">
-                        ${item.status !== 'completed' ? `<button class="btn btn-secondary" onclick="markDownloadComplete('${item.id}')">Mark Complete</button>` : ''}
-                        <button class="btn btn-danger" onclick="deleteDownload('${item.id}')">Delete</button>
+                    <div class="row-actions" style="display: flex; align-items: center; gap: 6px;">
+                        <button class="btn-icon-clean" onclick="retryDownload('${escapeHtml(item.id)}')" title="Retry download (re-add entry and set pending)">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="23 4 23 10 17 10"></polyline>
+                                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                            </svg>
+                        </button>
+                        ${item.status !== 'COMPLETED' && item.status !== 'completed' ? `<button class="btn btn-secondary" onclick="markDownloadComplete('${escapeHtml(item.id)}')">Mark Complete</button>` : ''}
+                        <button class="btn btn-danger" onclick="deleteDownload('${escapeHtml(item.id)}')">Delete</button>
                     </div>
                 </td>
             </tr>
         `).join("");
     }
+
+    // Attach event listener for the refresh button
+    document.getElementById("btn-refresh-downloads")?.addEventListener("click", () => {
+        fetchDownloads();
+    });
+
+    window.retryDownload = async (entryString) => {
+        try {
+            const res = await fetch("/api/ytdlp/download-entry", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ entry: entryString })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || "Failed to retry download");
+
+            // Force status back to PENDING if necessary
+            await fetch("/api/ytdlp/update-status", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ entry: entryString, status: "PENDING" })
+            });
+
+            showToast("Download entry re-queued as PENDING.", "success");
+            fetchDownloads();
+        } catch (err) {
+            showToast(`Retry failed: ${err.message}`, "error");
+        }
+    };
 
     // Download Table Controls
     document.getElementById("downloads-status-filter")?.addEventListener("change", (e) => {
@@ -1446,7 +1487,11 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!ok) return;
 
         try {
-            const res = await fetch(`/api/actions/downloads/${id}`, { method: "DELETE" });
+            const res = await fetch("/api/actions/downloads/delete", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ entry: id })
+            });
             if (!res.ok) throw new Error("Failed to delete entry");
             showToast("Download record removed.", "success");
             fetchDownloads();
@@ -1454,14 +1499,4 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast(`Delete failed: ${err.message}`, "error");
         }
     };
-});
-
-// Close history dropdown menus on outside click
-document.addEventListener("click", (e) => {
-    if (!searchHistoryMenu.contains(e.target) && !searchHistoryBtn.contains(e.target)) {
-        searchHistoryMenu.classList.add("hidden");
-    }
-    if (!filterHistoryMenu.contains(e.target) && !filterHistoryBtn.contains(e.target)) {
-        filterHistoryMenu.classList.add("hidden");
-    }
 });

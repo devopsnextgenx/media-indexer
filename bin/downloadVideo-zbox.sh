@@ -35,11 +35,27 @@ update_status() {
     local entry_string="$1"
     local status="$2"
 
-    curl -s -X 'POST' \
+    # Send POST request and capture response
+    local response
+    response=$(curl -s -X 'POST' \
       "$API_URL" \
       -H 'accept: application/json' \
       -H 'Content-Type: application/json' \
-      -d "{\"entry\": \"${entry_string}\", \"status\": \"${status}\"}" >/dev/null 2>&1 || true
+      -d "{\"entry\": \"${entry_string}\", \"status\": \"${status}\"}")
+
+    # Parse JSON fields using jq
+    local res_status res_entry
+    res_status=$(echo "$response" | jq -r '.status // empty')
+    res_entry=$(echo "$response" | jq -r '.entry // empty')
+
+    # Log based on API response
+    if [[ "$res_status" == "success" ]]; then
+        local log_message="[INFO] Updated status for entry: ${res_entry:-$entry_string} → $status"
+        echo -e "\n$log_message" | tee -a "$LOG_FILE"
+    else
+        local log_message="[ERROR] Failed to update status for entry: $entry_string. Response: $response"
+        echo -e "\n$log_message" | tee -a "$LOG_FILE"
+    fi
 }
 
 # ─────────────────────────────────────────────

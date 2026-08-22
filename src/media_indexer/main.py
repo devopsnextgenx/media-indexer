@@ -552,7 +552,8 @@ class DownloadEntryRequest(BaseModel):
 class UpdateEntryStatusRequest(BaseModel):
     entry: str
     status: str
-    
+
+
 @app.post("/api/ytdlp/download-entry", tags=["Browser Plugin"])
 def add_download_entry(req: DownloadEntryRequest):
     entry_text = req.entry.strip()
@@ -562,15 +563,9 @@ def add_download_entry(req: DownloadEntryRequest):
     target_dir = "/app/ytdlp"
     target_file = os.path.join(target_dir, "download.txt")
 
-    # Sync with MySQL download_tracker
-    db_status = mysql_db_instance.add_or_update_download_entry(entry_text)
-
-    if db_status == "CONFIRMED":
-        return {
-            "status": "success",
-            "message": "Entry is already confirmed; skipped write.",
-            "entry_status": "CONFIRMED"
-        }
+    # Insert or reset status in MySQL download_tracker back to PENDING
+    mysql_db_instance.add_or_update_download_entry(entry_text)
+    mysql_db_instance.update_download_status(entry_text, "PENDING")
 
     try:
         os.makedirs(target_dir, exist_ok=True)
@@ -581,10 +576,11 @@ def add_download_entry(req: DownloadEntryRequest):
             "status": "success",
             "message": f"Entry logged and written to {target_file}",
             "file": target_file,
-            "entry_status": db_status
+            "entry_status": "PENDING"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write to entry file: {str(e)}")
+
 
 @app.post("/api/ytdlp/update-status", tags=["Browser Plugin"])
 def update_entry_status(req: UpdateEntryStatusRequest):
@@ -604,20 +600,20 @@ def update_entry_status(req: UpdateEntryStatusRequest):
         "updated_status": status_text
     }
 
-@app.delete("/api/ytdlp/download-entry", tags=["Browser Plugin"])
-def remove_download_entry(entry: str = Query(..., description="Target entry string")):
-    entry_text = entry.strip()
-    if not entry_text:
-        raise HTTPException(status_code=400, detail="Entry parameter cannot be empty")
+class DeleteDownloadRequest(BaseModel):
+    entry: str
 
+@app.post("/api/actions/downloads/delete", tags=["Download Tracker"])
+def delete_download_by_body(req: DeleteDownloadRequest):
+    entry_text = req.entry.strip()
+    if not entry_text:
+        raise HTTPException(status_code=400, detail="Entry string cannot be empty")
+        
     removed = mysql_db_instance.remove_download_entry(entry_text)
     if not removed:
-        raise HTTPException(status_code=404, detail="Entry not found or already deleted")
-
-    return {
-        "status": "success",
-        "message": f"Removed entry: {entry_text}"
-    }
+        raise HTTPException(status_code=404, detail="Download entry not found or already deleted")
+        
+    return {"status": "deleted", "entry": entry_text}
 
 @app.delete("/api/actions/clean-record", tags=["Actions"])
 def clean_record_from_index(path: str = Query(..., description="Absolute file path")):

@@ -1013,6 +1013,12 @@ body {
     display: block;
 }
 
+.downloads-filter-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 /* Status Badges */
 .status-badge {
     padding: 3px 8px;
@@ -1022,12 +1028,7 @@ body {
     text-transform: uppercase;
 }
 
+.status-badge.pending { background: rgba(215, 166, 0, 0.2); color: #d7a600; border: 1px solid #d7a600; }
 .status-badge.downloading { background: rgba(14, 99, 156, 0.2); color: #4ec9b0; border: 1px solid #4ec9b0; }
 .status-badge.completed { background: rgba(35, 209, 96, 0.2); color: var(--success-green); border: 1px solid var(--success-green); }
 .status-badge.failed { background: rgba(241, 70, 104, 0.2); color: var(--danger-red); border: 1px solid var(--danger-red); }
-
-.downloads-filter-group {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
