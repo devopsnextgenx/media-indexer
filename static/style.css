@@ -39,6 +39,7 @@ body {
 
 .header-actions {
     display: flex;
+    align-items: center; /* Ensures all direct children align vertically */
     gap: 10px;
 }
 
@@ -148,6 +149,26 @@ body {
 .scan-log-line mark {
     background: #614a00;
     color: #ffd700;
+}
+
+.scan-control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 0 8px;           /* Reduced vertical padding to match button heights */
+    height: 38px;             /* Match the standard button height */
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+/* Ensure controls inside the group fill properly without pushing boundaries */
+.scan-control-group select,
+.scan-control-group button {
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    box-sizing: border-box;
 }
 
 .search-box {

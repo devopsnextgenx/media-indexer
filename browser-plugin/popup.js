@@ -692,7 +692,12 @@ function renderFormats() {
 
     const audio = state.formats.audio_format;
 
-    videos.forEach((fmt) => {
+    // Sort descending by resolution (height) and slice the top 4
+    const topVideos = [...videos]
+        .sort((a, b) => (b.height || 0) - (a.height || 0))
+        .slice(0, 4);
+
+    topVideos.forEach((fmt) => {
         const btn = document.createElement("button");
         btn.className = `fmt-btn fmt-${fmtBucket(fmt.height)}`;
         btn.appendChild(text("span", "", `${fmt.height}p ${fmt.ext || ""}`.trim()));
