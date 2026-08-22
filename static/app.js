@@ -679,7 +679,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const metaBits = isFolder
             ? [`${entry.item_count}${entry.count_capped ? "+" : ""} item${entry.item_count === 1 ? "" : "s"}`]
-            : [entry.resolution, entry.size_human, entry.folder_name].filter(Boolean);
+            : [entry.resolution, entry.size_human, entry.folder_name, entry.duration].filter(Boolean);
 
         const actionsHtml = isFolder ? "" : `
                     <div class="library-card-actions">
