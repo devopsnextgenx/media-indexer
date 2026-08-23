@@ -879,13 +879,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             renderBreadcrumb(data.breadcrumb);
             renderLibraryGrid(!reset);
-            if (libraryMount !== "all") {
-                const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
-                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
-            } else {
-                // Hide the duplicates section when viewing "All Mounts"
-                document.getElementById("library-duplicates-section").style.display = "none";
-            }
+            const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
             renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
             updateLibraryCount(data.total);
 

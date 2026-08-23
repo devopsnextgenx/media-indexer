@@ -1,202 +1,209 @@
+# media_indexer/duplicates.py
 import os
 import re
 import logging
-from typing import Dict, List, Any, Optional
+from collections import defaultdict
+from typing import Dict, List, Any, Optional, Tuple
 from rapidfuzz import fuzz
 
 from media_indexer.database import mysql_db_instance
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Phonetic / transliteration folding (Indic-friendly)
+# ---------------------------------------------------------------------------
+_TRANSLIT = {
+    "aa": "a", "ee": "i", "ii": "i", "oo": "u", "uu": "u",
+    "kh": "k", "ch": "c", "sh": "s", "th": "t", "ph": "p",
+    "dh": "d", "gh": "g", "bh": "b", "jh": "j", "nh": "n",
+    "saath": "sath", "zaalima": "zalima", "deewani": "dewani",
+    "tumhi": "tum hi", "tumho": "tum ho", "raabta": "rabta",
+    "channa": "chana", "mereya": "mereya", "subhanallah": "subhan allah",
+}
+
+def _fold(s: str) -> str:
+    s = s.lower()
+    for k, v in _TRANSLIT.items():
+        s = s.replace(k, v)
+    # loose vowel folding
+    s = s.replace("i", "e").replace("u", "o")
+    return s
+
+def _normalize_filename(filename: str) -> str:
+    name, _ = os.path.splitext(filename)
+    # strip quality / year / common noise
+    name = re.sub(
+        r"\[[^\]]*?(?:1080p|720p|480p|HD|FHD|4K|HDR|x264|HEVC|AAC|MP3|WEB|DL|BRRip|BluRay|Remux|DVDRip)[^\]]*\]",
+        " ", name, flags=re.I
+    )
+    name = re.sub(r"\([^\)]*?(?:19\d{2}|20\d{2})\)", " ", name)
+    name = re.sub(r"\b(?:Official|Video|Song|Music|MV|HD|Full|Movie|Film|Trailer|Teaser|Clip)\b", " ", name, flags=re.I)
+    name = re.sub(r"[^a-zA-Z0-9\s]", " ", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
+
+def _tokenize(text: str) -> List[str]:
+    return [t for t in _fold(text).split() if t]
+
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
+def _token_sim(a: str, b: str) -> float:
+    if a == b:
+        return 1.0
+    return fuzz.ratio(a, b) / 100.0
+
+def _score_pair(tokens_a: List[str], tokens_b: List[str],
+                context: set) -> float:
+    """
+    IDF-weighted core coverage with context exclusion + merge tolerance.
+    Returns 0.0 – 1.0.
+    """
+    if not tokens_a or not tokens_b:
+        return 0.0
+
+    # simple document-frequency inside the two titles (very small)
+    df = defaultdict(int)
+    for t in set(tokens_a) | set(tokens_b):
+        df[t] += 1
+
+    def is_core(t: str) -> bool:
+        return t not in context and df[t] <= 1   # unique to one side → core
+
+    core_a = [t for t in tokens_a if is_core(t)]
+    core_b = [t for t in tokens_b if is_core(t)]
+
+    if not core_a or not core_b:
+        # fall back to full token_set_ratio when everything is context
+        return fuzz.token_set_ratio(" ".join(tokens_a), " ".join(tokens_b)) / 100.0
+
+    # greedy best-match coverage
+    used = set()
+    matched = 0.0
+    for ta in core_a:
+        best = 0.0
+        best_j = -1
+        for j, tb in enumerate(core_b):
+            if j in used:
+                continue
+            s = _token_sim(ta, tb)
+            # allow 2-token merges (tum hi ↔ tumhi)
+            if len(ta) > 3 and len(tb) > 3:
+                s = max(s, _token_sim(ta, tb[:len(ta)]), _token_sim(ta, tb[-len(ta):]))
+            if s > best:
+                best = s
+                best_j = j
+        if best >= 0.78 and best_j >= 0:
+            used.add(best_j)
+            matched += best
+
+    coverage = matched / max(len(core_a), len(core_b))
+    # identity gate: need at least one solid long match or two medium matches
+    if matched < 0.9 and len(core_a) + len(core_b) > 2:
+        if matched < 1.4:
+            coverage *= 0.7
+    return min(1.0, coverage)
+
+# ---------------------------------------------------------------------------
+# Detector
+# ---------------------------------------------------------------------------
 class DuplicateDetector:
     def __init__(self, qdrant_client, collection_name: str,
-                 similarity_threshold: float = 0.85,
+                 similarity_threshold: float = 0.78,
                  media_type: str = "auto"):
-        """
-        Detects duplicate media files within the same folder using filename-based
-        similarity and folder context. The Qdrant client is kept for compatibility
-        but is not used in this implementation.
-        """
-        self.qdrant = qdrant_client
+        self.qdrant = qdrant_client          # kept for API compatibility
         self.collection_name = collection_name
         self.similarity_threshold = similarity_threshold
         self.media_type = media_type
-        self._normalized_cache: Dict[str, str] = {}
 
-    # ---- Helper functions for filename normalisation ----
-    def _normalize_filename(self, filename: str) -> str:
-        """
-        Strip quality tags, codecs, year, common words, and extra spaces.
-        Also folds common Indic transliteration variants.
-        """
-        if filename in self._normalized_cache:
-            return self._normalized_cache[filename]
-
-        # Remove extension
-        name, _ = os.path.splitext(filename)
-
-        # Remove bracketed content that contains typical quality/year patterns
-        # e.g., [1080p], (2015), [HD], [x264], etc.
-        patterns = [
-            r'\[[^\]]*?(?:1080p|720p|480p|HD|FHD|4K|HDR|x264|HEVC|AAC|MP3|WEB|DL|BRRip|BluRay|Remux|DVDRip)[^\]]*\]',
-            r'\([^\)]*?(?:19\d{2}|20\d{2})\)',   # year in parentheses
-            r'\[[^\)]*?(?:19\d{2}|20\d{2})\]',   # year in brackets
-            r'\b(?:Official|Video|Song|Music|MV|HD|Full|Movie|Film|Trailer|Teaser|Clip)\b',
-            r'\b(?:1080p|720p|480p|HD|FHD|4K|HDR|x264|HEVC|AAC|MP3)\b',
-            r'\s+-\s+'  # separators like " - "
-        ]
-        cleaned = name
-        for pat in patterns:
-            cleaned = re.sub(pat, ' ', cleaned, flags=re.IGNORECASE)
-
-        # Remove extra spaces and special characters (keep letters, numbers and spaces)
-        cleaned = re.sub(r'[^a-zA-Z0-9\s]', ' ', cleaned)
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-
-        # Fold common Indic transliteration variants
-        # This is a small dictionary; could be extended.
-        translit_map = {
-            'saath': 'sath', 'zaalima': 'zalima', 'deewani': 'dewani',
-            'tumhi': 'tum hi', 'tum ho': 'tumhi',   # example of joining/splitting
-        }
-        # Tokenise and apply mapping to each token
-        tokens = cleaned.split()
-        folded_tokens = []
-        for t in tokens:
-            t_lower = t.lower()
-            if t_lower in translit_map:
-                folded = translit_map[t_lower]
-                folded_tokens.extend(folded.split())
-            else:
-                folded_tokens.append(t)
-        cleaned = ' '.join(folded_tokens)
-
-        self._normalized_cache[filename] = cleaned
-        return cleaned
-
-    def _similarity(self, text1: str, text2: str) -> float:
-        """
-        Compute token set ratio between two strings, return as float 0..1.
-        """
-        if not text1 or not text2:
-            return 0.0
-        return fuzz.token_set_ratio(text1, text2) / 100.0
-
-    # ---- Main detection logic ----
     def detect_for_mount(self, mount_name: str, mount_path: str):
-        """
-        Scan all files in the mount, group by folder (or actress for songs),
-        and detect duplicate clusters within each folder using filename similarity.
-        """
         files_map = mysql_db_instance.get_tracked_files_map(mount_name)
         if not files_map:
             logger.info(f"No files found for mount {mount_name}")
             return
 
-        # Group by folder (using the same grouping logic as before)
-        folders: Dict[str, List[str]] = {}
-        for rel_path, rec in files_map.items():
+        folders: Dict[str, List[str]] = defaultdict(list)
+        for rel_path in files_map:
             if self.media_type == "songs":
-                # actress is the first component of the relative path
-                parts = rel_path.split('/')
-                folder = parts[0] if parts else ""
+                folder = rel_path.split("/")[0] if "/" in rel_path else ""
             else:
                 folder = os.path.dirname(rel_path)
-            folders.setdefault(folder, []).append(rel_path)
+            if folder:
+                folders[folder].append(rel_path)
 
-        logger.info(f"Detecting duplicates for mount {mount_name} across {len(folders)} folders")
+        logger.info(f"Detecting duplicates for {mount_name} across {len(folders)} folders")
         for folder, rel_paths in folders.items():
-            if folder:  # skip empty folder (files directly under mount)
-                self._process_folder(mount_name, mount_path, folder, rel_paths, files_map)
+            self._process_folder(mount_name, mount_path, folder, rel_paths, files_map)
 
     def _process_folder(self, mount_name: str, mount_path: str, folder: str,
                         rel_paths: List[str], files_map: Dict[str, Dict]):
-        """
-        Process one folder: build normalized representations, compute similarity
-        matrix, cluster by threshold, and insert duplicate groups.
-        """
         if len(rel_paths) < 2:
             return
 
-        # Prepare data for each file: rel_path -> normalized full text (folder + cleaned filename)
-        file_texts: Dict[str, str] = {}
+        # prepare tokens + context (folder name tokens are context)
+        context = set(_tokenize(folder))
+        file_tokens: Dict[str, List[str]] = {}
         for rel in rel_paths:
-            filename = os.path.basename(rel)
-            cleaned_name = self._normalize_filename(filename)
-            # Use folder name as context
-            full_text = f"{folder} {cleaned_name}".strip()
-            file_texts[rel] = full_text
+            cleaned = _normalize_filename(os.path.basename(rel))
+            file_tokens[rel] = _tokenize(cleaned)
 
-        rel_list = list(file_texts.keys())
-        n = len(rel_list)
-
-        # Compute similarity matrix (only upper triangle) – we can use greedy clustering
-        # We'll do simple greedy: for each unvisited i, form cluster with all j>i where sim > threshold
+        # greedy clustering
         visited = set()
         clusters = []
+        rel_list = list(file_tokens.keys())
 
-        for i in range(n):
+        for i, ri in enumerate(rel_list):
             if i in visited:
                 continue
-            cluster_indices = [i]
+            cluster = [ri]
             visited.add(i)
-            for j in range(i + 1, n):
+            for j in range(i + 1, len(rel_list)):
                 if j in visited:
                     continue
-                sim = self._similarity(file_texts[rel_list[i]], file_texts[rel_list[j]])
-                if sim > self.similarity_threshold:
-                    cluster_indices.append(j)
+                score = _score_pair(file_tokens[ri], file_tokens[rel_list[j]], context)
+                if score >= self.similarity_threshold:
+                    cluster.append(rel_list[j])
                     visited.add(j)
-            if len(cluster_indices) > 1:
-                clusters.append([rel_list[idx] for idx in cluster_indices])
+            if len(cluster) > 1:          # only real groups
+                clusters.append(cluster)
 
         if not clusters:
             return
 
-        # Delete previous duplicate entries for this folder
-        group_key = os.path.join(mount_path, folder)  # full container folder path
+        group_key = os.path.join(mount_path, folder).replace("\\", "/")
         mysql_db_instance.delete_duplicate_groups_by_group_key(group_key)
 
-        # For each cluster, insert canonical and duplicates
         for cluster in clusters:
-            # canonical = first file in cluster
             canonical_rel = cluster[0]
-            canonical_full = os.path.join(mount_path, canonical_rel)
-            canonical_file = files_map[canonical_rel]
-            canonical_name = os.path.basename(canonical_rel)
+            canonical_full = os.path.join(mount_path, canonical_rel).replace("\\", "/")
+            canonical_rec = files_map[canonical_rel]
 
-            # Insert canonical file itself (similarity 1.0)
+            # insert canonical (score 1.0)
             mysql_db_instance.insert_duplicate_group(
                 group_key=group_key,
                 file_path=canonical_full,
-                file_name=canonical_name,
+                file_name=os.path.basename(canonical_rel),
                 mount=mount_name,
-                vector_id=canonical_file.get('vector_id'),
+                vector_id=canonical_rec.get("vector_id"),
                 similarity_score=1.0,
                 canonical_file_path=canonical_full,
-                metadata={},
-                status='PENDING_REVIEW'
+                status="PENDING_REVIEW",
             )
 
-            # Insert each duplicate
             for dup_rel in cluster[1:]:
-                dup_full = os.path.join(mount_path, dup_rel)
-                dup_file = files_map[dup_rel]
-                sim = self._similarity(
-                    file_texts[canonical_rel],
-                    file_texts[dup_rel]
-                )
+                dup_full = os.path.join(mount_path, dup_rel).replace("\\", "/")
+                dup_rec = files_map[dup_rel]
+                sim = _score_pair(file_tokens[canonical_rel], file_tokens[dup_rel], context)
                 mysql_db_instance.insert_duplicate_group(
                     group_key=group_key,
                     file_path=dup_full,
                     file_name=os.path.basename(dup_rel),
                     mount=mount_name,
-                    vector_id=dup_file.get('vector_id'),
+                    vector_id=dup_rec.get("vector_id"),
                     similarity_score=float(sim),
                     canonical_file_path=canonical_full,
-                    metadata={},
-                    status='PENDING_REVIEW'
+                    status="PENDING_REVIEW",
                 )
 
-        logger.info(f"Folder {folder}: created {sum(len(c)-1 for c in clusters)} duplicate entries")
-    
+        logger.info(f"Folder {folder}: {len(clusters)} duplicate group(s)")

@@ -885,23 +885,23 @@ def get_duplicates_for_folder(
     groups = mysql_db_instance.get_duplicate_groups_by_folder(full_path, status, limit, offset)
     return {"items": groups, "total": len(groups)}   # total only for this batch
 
+# in main.py – replace the body of get_duplicates_for_file
 @app.get("/api/admin/duplicates/file")
 def get_duplicates_for_file(file_path: str = Query(...), vector_id: str = Query(None)):
-    # If vector_id is provided, use it to find the group
     if vector_id:
         rows = mysql_db_instance.get_duplicate_group_by_vector_id(vector_id)
         if rows:
             group_key = rows[0]["group_key"]
             all_entries = mysql_db_instance.get_duplicate_group_by_group_key(group_key)
             return {"group_key": group_key, "entries": all_entries}
-        # If no rows found for vector_id, fall through to file_path lookup
 
-    # Fallback: look up by file_path
     all_entries = mysql_db_instance.get_duplicate_group_by_file_path(file_path)
     if not all_entries:
-        raise HTTPException(status_code=404, detail="No duplicate group found for the given file")
-    group_key = all_entries[0]["group_key"] if all_entries else None
-    return {"group_key": group_key, "entries": all_entries}
+        return {"group_key": None, "entries": []}   # empty instead of 404
+    group_key = all_entries[0]["group_key"]
+    # expand to the full group so the UI gets every sibling
+    full = mysql_db_instance.get_duplicate_group_by_group_key(group_key)
+    return {"group_key": group_key, "entries": full}
 
 @app.post("/api/admin/duplicates/action", tags=["Admin"])
 def update_duplicate_action(body: dict):
