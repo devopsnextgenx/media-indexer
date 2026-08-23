@@ -594,6 +594,7 @@ async function startDownload(videoFormat, audioFormat) {
 
         try {
             await api("POST", "/api/ytdlp/download-entry", { entry: downloadEntry, title: state.pageTitle || "" });
+            toast(`Added download entry ${downloadEntry} for ${state.pageTitle || "Unknown Title"}`, "success");
         } catch (err) {
             toast(`Failed to save entry: ${err.message}`, "error");
         }
