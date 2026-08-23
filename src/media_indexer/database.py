@@ -468,6 +468,26 @@ class MySQLDatabase:
             return []
 
 
+    def get_duplicate_group_by_vector_id(self, vector_id: str) -> list:
+        """Return duplicate group entries matching a specific vector_id."""
+        if not self.enabled:
+            return []
+        conn = self._get_connection()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM duplicate_groups WHERE vector_id = %s",
+                    (vector_id,)
+                )
+                rows = cursor.fetchall()
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to fetch duplicate group by vector_id: {e}")
+            return []
+
     def upsert_job_record(self, job_info: dict):
         if not self.enabled:
             return

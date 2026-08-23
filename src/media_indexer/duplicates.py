@@ -1,136 +1,171 @@
 import os
+import re
 import logging
-import numpy as np
 from typing import Dict, List, Any, Optional
-from qdrant_client import QdrantClient
+from rapidfuzz import fuzz
+
 from media_indexer.database import mysql_db_instance
-from media_indexer.config import settings
 
 logger = logging.getLogger(__name__)
 
 class DuplicateDetector:
-    def __init__(self, qdrant_client: QdrantClient, collection_name: str,
+    def __init__(self, qdrant_client, collection_name: str,
                  similarity_threshold: float = 0.85,
-                 media_type: str = "auto"):       # <-- new parameter
+                 media_type: str = "auto"):
+        """
+        Detects duplicate media files within the same folder using filename-based
+        similarity and folder context. The Qdrant client is kept for compatibility
+        but is not used in this implementation.
+        """
         self.qdrant = qdrant_client
         self.collection_name = collection_name
         self.similarity_threshold = similarity_threshold
         self.media_type = media_type
+        self._normalized_cache: Dict[str, str] = {}
 
+    # ---- Helper functions for filename normalisation ----
+    def _normalize_filename(self, filename: str) -> str:
+        """
+        Strip quality tags, codecs, year, common words, and extra spaces.
+        Also folds common Indic transliteration variants.
+        """
+        if filename in self._normalized_cache:
+            return self._normalized_cache[filename]
+
+        # Remove extension
+        name, _ = os.path.splitext(filename)
+
+        # Remove bracketed content that contains typical quality/year patterns
+        # e.g., [1080p], (2015), [HD], [x264], etc.
+        patterns = [
+            r'\[[^\]]*?(?:1080p|720p|480p|HD|FHD|4K|HDR|x264|HEVC|AAC|MP3|WEB|DL|BRRip|BluRay|Remux|DVDRip)[^\]]*\]',
+            r'\([^\)]*?(?:19\d{2}|20\d{2})\)',   # year in parentheses
+            r'\[[^\)]*?(?:19\d{2}|20\d{2})\]',   # year in brackets
+            r'\b(?:Official|Video|Song|Music|MV|HD|Full|Movie|Film|Trailer|Teaser|Clip)\b',
+            r'\b(?:1080p|720p|480p|HD|FHD|4K|HDR|x264|HEVC|AAC|MP3)\b',
+            r'\s+-\s+'  # separators like " - "
+        ]
+        cleaned = name
+        for pat in patterns:
+            cleaned = re.sub(pat, ' ', cleaned, flags=re.IGNORECASE)
+
+        # Remove extra spaces and special characters (keep letters, numbers and spaces)
+        cleaned = re.sub(r'[^a-zA-Z0-9\s]', ' ', cleaned)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+        # Fold common Indic transliteration variants
+        # This is a small dictionary; could be extended.
+        translit_map = {
+            'saath': 'sath', 'zaalima': 'zalima', 'deewani': 'dewani',
+            'tumhi': 'tum hi', 'tum ho': 'tumhi',   # example of joining/splitting
+        }
+        # Tokenise and apply mapping to each token
+        tokens = cleaned.split()
+        folded_tokens = []
+        for t in tokens:
+            t_lower = t.lower()
+            if t_lower in translit_map:
+                folded = translit_map[t_lower]
+                folded_tokens.extend(folded.split())
+            else:
+                folded_tokens.append(t)
+        cleaned = ' '.join(folded_tokens)
+
+        self._normalized_cache[filename] = cleaned
+        return cleaned
+
+    def _similarity(self, text1: str, text2: str) -> float:
+        """
+        Compute token set ratio between two strings, return as float 0..1.
+        """
+        if not text1 or not text2:
+            return 0.0
+        return fuzz.token_set_ratio(text1, text2) / 100.0
+
+    # ---- Main detection logic ----
     def detect_for_mount(self, mount_name: str, mount_path: str):
+        """
+        Scan all files in the mount, group by folder (or actress for songs),
+        and detect duplicate clusters within each folder using filename similarity.
+        """
         files_map = mysql_db_instance.get_tracked_files_map(mount_name)
         if not files_map:
             logger.info(f"No files found for mount {mount_name}")
             return
 
-        # Group by folder (relative path directory) – for songs, group by actress (first component)
+        # Group by folder (using the same grouping logic as before)
         folders: Dict[str, List[str]] = {}
         for rel_path, rec in files_map.items():
             if self.media_type == "songs":
-                # actress is the first part of the relative path
+                # actress is the first component of the relative path
                 parts = rel_path.split('/')
-                folder = parts[0] if parts else ""   # could be empty if file is directly under mount
+                folder = parts[0] if parts else ""
             else:
-                folder = os.path.dirname(rel_path)   # immediate parent folder for other types
+                folder = os.path.dirname(rel_path)
             folders.setdefault(folder, []).append(rel_path)
 
         logger.info(f"Detecting duplicates for mount {mount_name} across {len(folders)} folders")
         for folder, rel_paths in folders.items():
-            # skip empty folder (files directly under mount) if you want
-            if folder:
+            if folder:  # skip empty folder (files directly under mount)
                 self._process_folder(mount_name, mount_path, folder, rel_paths, files_map)
 
     def _process_folder(self, mount_name: str, mount_path: str, folder: str,
                         rel_paths: List[str], files_map: Dict[str, Dict]):
+        """
+        Process one folder: build normalized representations, compute similarity
+        matrix, cluster by threshold, and insert duplicate groups.
+        """
         if len(rel_paths) < 2:
             return
 
-        # Build mapping from rel_path to vector_id and vector
-        vector_ids = []
-        rel_to_vid = {}
+        # Prepare data for each file: rel_path -> normalized full text (folder + cleaned filename)
+        file_texts: Dict[str, str] = {}
         for rel in rel_paths:
-            vid = files_map[rel].get('vector_id')
-            if vid:
-                vector_ids.append(vid)
-                rel_to_vid[rel] = vid
+            filename = os.path.basename(rel)
+            cleaned_name = self._normalize_filename(filename)
+            # Use folder name as context
+            full_text = f"{folder} {cleaned_name}".strip()
+            file_texts[rel] = full_text
 
-        if len(vector_ids) < 2:
-            return
-
-        # Retrieve vectors from Qdrant
-        try:
-            points = self.qdrant.retrieve(
-                collection_name=self.collection_name,
-                ids=vector_ids,
-                with_vectors=True,
-                with_payload=False
-            )
-        except Exception as e:
-            logger.warning(f"Failed to retrieve vectors for folder {folder}: {e}")
-            return
-
-        id_to_vec = {p.id: p.vector for p in points if p.vector is not None}
-        if len(id_to_vec) < 2:
-            return
-
-        # Map rel_path -> vector
-        rel_to_vec = {}
-        for rel, vid in rel_to_vid.items():
-            if vid in id_to_vec:
-                rel_to_vec[rel] = id_to_vec[vid]
-
-        if len(rel_to_vec) < 2:
-            return
-
-        # Build list of vectors and corresponding rel_paths
-        vec_list = []
-        rel_list = []
-        for rel, vec in rel_to_vec.items():
-            vec_list.append(vec)
-            rel_list.append(rel)
-
-        # Normalize and compute cosine similarity
-        vecs = np.array(vec_list)
-        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-        # Avoid division by zero
-        norms = np.where(norms == 0, 1e-10, norms)
-        vecs = vecs / norms
-        sim_matrix = np.dot(vecs, vecs.T)
-
-        # Greedy clustering
-        visited = set()
-        groups = []
+        rel_list = list(file_texts.keys())
         n = len(rel_list)
+
+        # Compute similarity matrix (only upper triangle) – we can use greedy clustering
+        # We'll do simple greedy: for each unvisited i, form cluster with all j>i where sim > threshold
+        visited = set()
+        clusters = []
+
         for i in range(n):
             if i in visited:
                 continue
-            cluster = [i]
+            cluster_indices = [i]
             visited.add(i)
-            for j in range(i+1, n):
+            for j in range(i + 1, n):
                 if j in visited:
                     continue
-                if sim_matrix[i][j] > self.similarity_threshold:
-                    cluster.append(j)
+                sim = self._similarity(file_texts[rel_list[i]], file_texts[rel_list[j]])
+                if sim > self.similarity_threshold:
+                    cluster_indices.append(j)
                     visited.add(j)
-            if len(cluster) > 1:
-                groups.append(cluster)
+            if len(cluster_indices) > 1:
+                clusters.append([rel_list[idx] for idx in cluster_indices])
 
-        if not groups:
+        if not clusters:
             return
 
-        # For each group, insert into duplicate_groups (and remove previous entries for this folder)
-        group_key = os.path.join(mount_path, folder)  # full container folder path
         # Delete previous duplicate entries for this folder
+        group_key = os.path.join(mount_path, folder)  # full container folder path
         mysql_db_instance.delete_duplicate_groups_by_group_key(group_key)
 
-        for cluster in groups:
-            canonical_idx = cluster[0]
-            canonical_rel = rel_list[canonical_idx]
+        # For each cluster, insert canonical and duplicates
+        for cluster in clusters:
+            # canonical = first file in cluster
+            canonical_rel = cluster[0]
             canonical_full = os.path.join(mount_path, canonical_rel)
             canonical_file = files_map[canonical_rel]
             canonical_name = os.path.basename(canonical_rel)
 
-            # Insert the canonical file itself (as the original)
+            # Insert canonical file itself (similarity 1.0)
             mysql_db_instance.insert_duplicate_group(
                 group_key=group_key,
                 file_path=canonical_full,
@@ -143,22 +178,25 @@ class DuplicateDetector:
                 status='PENDING_REVIEW'
             )
 
-            # Insert each duplicate file
-            for idx in cluster[1:]:
-                rel = rel_list[idx]
-                full_path = os.path.join(mount_path, rel)
-                file_info = files_map[rel]
-                similarity = sim_matrix[canonical_idx][idx]
+            # Insert each duplicate
+            for dup_rel in cluster[1:]:
+                dup_full = os.path.join(mount_path, dup_rel)
+                dup_file = files_map[dup_rel]
+                sim = self._similarity(
+                    file_texts[canonical_rel],
+                    file_texts[dup_rel]
+                )
                 mysql_db_instance.insert_duplicate_group(
                     group_key=group_key,
-                    file_path=full_path,
-                    file_name=os.path.basename(rel),
+                    file_path=dup_full,
+                    file_name=os.path.basename(dup_rel),
                     mount=mount_name,
-                    vector_id=file_info.get('vector_id'),
-                    similarity_score=float(similarity),
+                    vector_id=dup_file.get('vector_id'),
+                    similarity_score=float(sim),
                     canonical_file_path=canonical_full,
                     metadata={},
                     status='PENDING_REVIEW'
                 )
 
-        logger.info(f"Folder {folder}: created {sum(len(g)-1 for g in groups)} duplicate entries")
+        logger.info(f"Folder {folder}: created {sum(len(c)-1 for c in clusters)} duplicate entries")
+    

@@ -641,7 +641,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // <!-- Duplicate tag (new) -->
         
         return `<div class="folder-tags">` +
-            `<span class="dup-tag" data-file-path="${escapeHtml(item.file_path)}">Duplicates</span>` + 
+                `<span class="dup-tag" data-file-path="${escapeHtml(item.file_path)}" data-vector-id="${escapeHtml(item.id || item.vector_id)}">Duplicates</span>` + 
                 tags.map((tag, i) => {
                 const color = FOLDER_TAG_COLORS[i % FOLDER_TAG_COLORS.length];
                 return `<span class="folder-tag" style="border-color:${color};color:${color};">${escapeHtml(tag)}</span>`;
@@ -701,7 +701,8 @@ document.addEventListener("DOMContentLoaded", () => {
             : [entry.duration, entry.resolution, entry.size_human].filter(Boolean);
 
         const dupTag = entry.duplicate_count ? `<span class="dup-tag" data-file-path="${escapeHtml(entry.file_path)}">${entry.duplicate_count} Duplicates</span> / ` : '';
-
+        // <span class="dup-tag" data-file-path="${escapeHtml(item.file_path)}" data-vector-id="${escapeHtml(item.id || item.vector_id)}"> ${entry.duplicate_count}Duplicates</span>
+        
         const actionsHtml = isFolder ? "" : `
                     <div class="library-card-actions">
                         <button class="library-tile-icon-btn icon-rename" data-action="rename" title="Rename">
@@ -819,7 +820,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 libraryHasMore = cached.hasMore;
                 renderBreadcrumb(cached.breadcrumb);
                 renderLibraryGrid(false);
-                const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                if (libraryMount !== "all") {
+                    const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                    renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
+                } else {
+                    // Hide the duplicates section when viewing "All Mounts"
+                    document.getElementById("library-duplicates-section").style.display = "none";
+                }
                 renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 updateLibraryCount(cached.total);
                 return;
@@ -834,7 +841,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 libraryHasMore = idbCached.hasMore;
                 renderBreadcrumb(idbCached.breadcrumb);
                 renderLibraryGrid(false);
-                const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                if (libraryMount !== "all") {
+                    const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                    renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
+                } else {
+                    // Hide the duplicates section when viewing "All Mounts"
+                    document.getElementById("library-duplicates-section").style.display = "none";
+                }
                 renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 updateLibraryCount(idbCached.total);
                 libraryPageCache.set(cacheKey, { ...idbCached, cachedAt: Date.now() });
@@ -866,7 +879,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
             renderBreadcrumb(data.breadcrumb);
             renderLibraryGrid(!reset);
-            const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+            if (libraryMount !== "all") {
+                const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
+            } else {
+                // Hide the duplicates section when viewing "All Mounts"
+                document.getElementById("library-duplicates-section").style.display = "none";
+            }
             renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
             updateLibraryCount(data.total);
 
@@ -2186,6 +2205,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     async function fetchDuplicatesForFolder(mount, path) {
+        if (mount === "all") return [];   // no duplicates at the top level
         try {
             const params = new URLSearchParams({ mount, path });
             const res = await fetch(`/api/admin/duplicates/folder?${params.toString()}`);
@@ -2198,9 +2218,10 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    async function fetchDuplicatesForFile(filePath) {
+    async function fetchDuplicatesForFile(filePath, vectorId) {
         try {
             const params = new URLSearchParams({ file_path: filePath });
+            if (vectorId) params.append("vector_id", vectorId);
             const res = await fetch(`/api/admin/duplicates/file?${params.toString()}`);
             if (!res.ok) return null;
             return await res.json();
@@ -2297,6 +2318,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const btn = e.target.closest(".dup-tag");
         if (!btn) return;
         const filePath = btn.dataset.filePath;
+        const vectorId = btn.dataset.vectorId;   // ← retrieve from dataset
         const row = btn.closest("tr");
         // Toggle expansion if already open
         const nextRow = row.nextElementSibling;
@@ -2304,7 +2326,7 @@ document.addEventListener("DOMContentLoaded", () => {
             nextRow.remove();
             return;
         }
-        const data = await fetchDuplicatesForFile(filePath);
+        const data = await fetchDuplicatesForFile(filePath, vectorId);  // pass vectorId
         if (!data || !data.entries || data.entries.length === 0) {
             showToast("No duplicate group found for this file.", "info");
             return;
