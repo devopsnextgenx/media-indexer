@@ -631,8 +631,7 @@ def clean_index(
 
     # MySQL: wipe processed_files only. download_tracker and indexing_jobs
     # are separate tables and are intentionally left untouched.
-    removed_mysql_rows = mysql_db_instance.truncate_processed_files()
-    removed_duplicates = mysql_db_instance.truncate_duplicate_groups()   # new
+    truncate_tables = mysql_db_instance.truncate_tables()
 
     # Redis: drop every cached mount tree so the Library tab doesn't keep
     # serving stale folder/file data after a clean.
@@ -652,8 +651,7 @@ def clean_index(
         "mode": mode,
         "collection": COLLECTION_NAME,
         "deleted_points": removed,
-        "mysql_processed_files_removed": removed_mysql_rows,
-        "mysql_duplicate_groups_removed": removed_duplicates,
+        "truncate_tables": truncate_tables,
         "redis_mount_trees_cleared": cleared_redis_trees,
         "cleared_manifests": cleared,
         "remaining_points": db_instance.count_items(),
@@ -859,82 +857,86 @@ def clean_record_from_index(path: str = Query(..., description="Absolute file pa
 @app.get("/api/admin/duplicates/groups", tags=["Admin"])
 def list_duplicate_groups(
     mount: str = Query(None),
-    status: str = Query(None, regex="^(PENDING_REVIEW|CONFIRMED_DUPLICATE|CONFIRMED_UNIQUE|AUTO_RESOLVED)$"),
+    folder: str = Query(None, description="Filter by folder path prefix (e.g. /media/storage/songs/Artist)"),
+    status: str = Query(None, regex="^(PENDING|DUPLICATE|REJECTED)$"),  # candidate status
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
-    rows = mysql_db_instance.get_duplicate_groups(mount=mount, status=status, limit=limit, offset=offset)
-    return {"total": len(rows), "items": rows}
+    groups = mysql_db_instance.get_duplicate_groups(
+        mount=mount, folder=folder, status=status, limit=limit, offset=offset
+    )
+    # Optionally compute total count without limit/offset for pagination metadata
+    return {"items": groups, "total": len(groups)}
+
 
 @app.get("/api/admin/duplicates/group", tags=["Admin"])
-def get_duplicate_group(group_key: str = Query(...)):
-    entries = mysql_db_instance.get_duplicate_group_by_group_key(group_key)
-    if not entries:
+def get_duplicate_group(group_id: str = Query(...)):
+    group = mysql_db_instance.get_duplicate_group_by_id(group_id)
+    if not group:
         raise HTTPException(status_code=404, detail="Group not found")
-    return {"group_key": group_key, "entries": entries}
+    return group
 
 @app.get("/api/admin/duplicates/folder", tags=["Admin"])
 def get_duplicates_for_folder(
     mount: str = Query(...),
     path: str = Query(""),
-    status: str = Query(None, regex="^(PENDING_REVIEW|CONFIRMED_DUPLICATE|CONFIRMED_UNIQUE|AUTO_RESOLVED)$"),
+    status: str = Query(None, regex="^(PENDING|DUPLICATE|REJECTED)$"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
     mnt = MOUNT_REGISTRY.get(mount)
     if not mnt:
         raise HTTPException(status_code=404, detail="Mount not found")
-    full_path = os.path.join(mnt.path, path).replace("\\", "/")
-    groups = mysql_db_instance.get_duplicate_groups_by_folder(full_path, status, limit, offset)
-    return {"items": groups, "total": len(groups)}   # total only for this batch
+    folder_path = os.path.join(mnt.path, path).replace("\\", "/")
+    groups = mysql_db_instance.get_duplicate_groups(
+        mount=mount, folder=folder_path, status=status, limit=limit, offset=offset
+    )
+    return {"items": groups, "total": len(groups)}
 
-# in main.py – replace the body of get_duplicates_for_file
-@app.get("/api/admin/duplicates/file")
-def get_duplicates_for_file(file_path: str = Query(...), vector_id: str = Query(None)):
-    if vector_id:
-        rows = mysql_db_instance.get_duplicate_group_by_vector_id(vector_id)
-        if rows:
-            group_key = rows[0]["group_key"]
-            all_entries = mysql_db_instance.get_duplicate_group_by_group_key(group_key)
-            return {"group_key": group_key, "entries": all_entries}
-
-    all_entries = mysql_db_instance.get_duplicate_group_by_file_path(file_path)
-    if not all_entries:
-        return {"group_key": None, "entries": []}   # empty instead of 404
-    group_key = all_entries[0]["group_key"]
-    # expand to the full group so the UI gets every sibling
-    full = mysql_db_instance.get_duplicate_group_by_group_key(group_key)
-    return {"group_key": group_key, "entries": full}
+@app.get("/api/admin/duplicates/file", tags=["Admin"])
+def get_duplicates_for_file(
+    file_path: str = Query(...),
+):
+    group = mysql_db_instance.get_duplicate_group_by_file(file_path)
+    if not group:
+        return {"group_id": None, "entries": []}   # empty instead of 404
+    return group
 
 @app.post("/api/admin/duplicates/action", tags=["Admin"])
 def update_duplicate_action(body: dict):
     file_path = body.get("file_path")
-    action = body.get("action")  # CONFIRM_DUPLICATE, CONFIRM_UNIQUE, AUTO_RESOLVED
+    action = body.get("action")  # DUPLICATE, REJECTED (status values)
     if not file_path or not action:
         raise HTTPException(status_code=400, detail="Missing file_path or action")
-    if action not in ("CONFIRM_DUPLICATE", "CONFIRM_UNIQUE", "AUTO_RESOLVED"):
-        raise HTTPException(status_code=400, detail="Invalid action")
-    success = mysql_db_instance.update_duplicate_status_by_file_path(file_path, action)
+    if action not in ("DUPLICATE", "REJECTED"):
+        raise HTTPException(status_code=400, detail="Invalid action; must be DUPLICATE or REJECTED")
+    success = mysql_db_instance.update_candidate_status(file_path, action)
     if not success:
-        raise HTTPException(status_code=404, detail="Entry not found or update failed")
+        raise HTTPException(status_code=404, detail="Candidate not found or update failed")
     return {"status": "updated", "file_path": file_path, "new_status": action}
 
 @app.post("/api/admin/duplicates/detect", tags=["Admin"])
 def trigger_duplicate_detection(mount: str = Query(None)):
-    """Runs duplicate detection for a specific mount, or all mounts if omitted."""
     if mount:
         if mount not in scanners:
             raise HTTPException(status_code=404, detail="Mount not found")
-        detector = DuplicateDetector(qdrant_client, COLLECTION_NAME,
-                                     similarity_threshold=settings.duplicates.similarity_threshold)
+        detector = DuplicateDetector(
+            qdrant_client, COLLECTION_NAME,
+            similarity_threshold=settings.duplicates.similarity_threshold,
+            media_type=MOUNT_REGISTRY[mount].media_type
+        )
         detector.detect_for_mount(mount, MOUNT_REGISTRY[mount].path)
         return {"status": "success", "mount": mount}
     else:
         for name, mnt in MOUNT_REGISTRY.items():
-            detector = DuplicateDetector(qdrant_client, COLLECTION_NAME,
-                                         similarity_threshold=settings.duplicates.similarity_threshold)
+            detector = DuplicateDetector(
+                qdrant_client, COLLECTION_NAME,
+                similarity_threshold=settings.duplicates.similarity_threshold,
+                media_type=mnt.media_type
+            )
             detector.detect_for_mount(name, mnt.path)
         return {"status": "success", "message": "Duplicate detection run for all mounts"}
+
 
 @app.on_event("startup")
 def setup_cron():

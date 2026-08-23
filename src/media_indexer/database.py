@@ -177,11 +177,102 @@ class MySQLDatabase:
         self.cfg = getattr(settings, "mysql", None)
         self.enabled = getattr(self.cfg, "enabled", False) if self.cfg else False
         if self.enabled:
-            self._ensure_table()
+            self._ensure_tables()
             self._ensure_download_tracker_table()
             self._ensure_indexing_jobs_table()
-            self._ensure_duplicate_groups_table()
 
+    # ----------------------------------------------------------------------
+    # Table definitions (one place)
+    # ----------------------------------------------------------------------
+    def _get_table_definitions(self) -> dict:
+        return {
+            "processed_files": """
+                CREATE TABLE IF NOT EXISTS processed_files (
+                    id VARCHAR(255) PRIMARY KEY,
+                    file_path VARCHAR(1024) NOT NULL,
+                    file_name VARCHAR(255) NOT NULL,
+                    relative_path VARCHAR(1024),
+                    mount VARCHAR(255),
+                    file_size BIGINT DEFAULT 0,
+                    mtime DOUBLE DEFAULT 0,
+                    status VARCHAR(50) DEFAULT 'PENDING',
+                    vector_id VARCHAR(255),
+                    jellyfin_id VARCHAR(255),
+                    metadata_json LONGTEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_file_path (file_path(255)),
+                    INDEX idx_mount (mount)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
+            "duplicate_groups": """
+                CREATE TABLE IF NOT EXISTS duplicate_groups (
+                    group_id VARCHAR(80) PRIMARY KEY,
+                    title_key VARCHAR(512),
+                    member_count INT DEFAULT 0,
+                    mount VARCHAR(255),
+                    folder_path VARCHAR(1024),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_mount (mount),
+                    INDEX idx_folder (folder_path(255))
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
+            "duplicate_group_candidates": """
+                CREATE TABLE IF NOT EXISTS duplicate_group_candidates (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    group_id VARCHAR(80) NOT NULL,
+                    file_id VARCHAR(255) NOT NULL,
+                    full_path VARCHAR(1024) NOT NULL,
+                    mount VARCHAR(255),
+                    title_score DECIMAL(5,1),
+                    movie_score DECIMAL(5,1),
+                    artist_score DECIMAL(5,1),
+                    overall_score DECIMAL(5,1),
+                    confidence ENUM('HIGH','MEDIUM','LOW') DEFAULT 'LOW',
+                    status ENUM('PENDING','DUPLICATE','REJECTED') DEFAULT 'PENDING',
+                    stats_json JSON,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_group_file (group_id, file_id),
+                    INDEX idx_group_id (group_id),
+                    INDEX idx_mount (mount),
+                    INDEX idx_full_path (full_path(255)),
+                    CONSTRAINT fk_candidate_group FOREIGN KEY (group_id)
+                        REFERENCES duplicate_groups(group_id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
+            "token_stats": """
+                CREATE TABLE IF NOT EXISTS token_stats (
+                    phonetic_code VARCHAR(32) PRIMARY KEY,
+                    example_word VARCHAR(255),
+                    tier ENUM('title','movie','artist') DEFAULT 'title',
+                    doc_frequency INT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
+        }
+
+    def _ensure_tables(self):
+        """Create (or recreate) duplicate‑related tables with the latest schema.
+        This drops and re‑creates the tables managed by this module to ensure
+        columns like `mount` exist. Existing data in these tables will be lost.
+        """
+        conn = self._get_connection()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cursor:
+                # Drop and recreate duplicate‑related tables to guarantee new schema
+                tables_to_recreate = ["duplicate_groups", "duplicate_group_candidates", "token_stats"]
+                for table in tables_to_recreate:
+                    cursor.execute(f"DROP TABLE IF EXISTS {table}")
+                # Now create all tables from definitions (including processed_files)
+                for name, ddl in self._get_table_definitions().items():
+                    cursor.execute(ddl)
+            conn.close()
+            logger.info("MySQL duplicate‑related tables recreated with latest schema.")
+        except Exception as e:
+            logger.error(f"Failed to create MySQL tables: {e}")
 
     def _get_connection(self):
         if not self.enabled:
@@ -201,35 +292,9 @@ class MySQLDatabase:
             logger.warning(f"MySQL connection error: {e}")
             return None
 
-    def _ensure_table(self):
-        conn = self._get_connection()
-        if not conn:
-            return
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS processed_files (
-                        id VARCHAR(255) PRIMARY KEY,
-                        file_path VARCHAR(1024) NOT NULL,
-                        file_name VARCHAR(255) NOT NULL,
-                        relative_path VARCHAR(1024),
-                        mount VARCHAR(255),
-                        file_size BIGINT DEFAULT 0,
-                        mtime DOUBLE DEFAULT 0,
-                        status VARCHAR(50) DEFAULT 'PENDING',
-                        vector_id VARCHAR(255),
-                        jellyfin_id VARCHAR(255),
-                        metadata_json LONGTEXT,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        INDEX idx_file_path (file_path(255)),
-                        INDEX idx_mount (mount)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-                """)
-            conn.close()
-            logger.info("MySQL 'processed_files' table initialized.")
-        except Exception as e:
-            logger.error(f"Failed to create MySQL processed_files table: {e}")
-
+    # ----------------------------------------------------------------------
+    # Download tracker & indexing jobs (unchanged)
+    # ----------------------------------------------------------------------
     def _ensure_download_tracker_table(self):
         conn = self._get_connection()
         if not conn:
@@ -280,283 +345,222 @@ class MySQLDatabase:
         except Exception as e:
             logger.error(f"Failed to create MySQL indexing_jobs table: {e}")
 
-        
-    def _ensure_duplicate_groups_table(self):
+    # ----------------------------------------------------------------------
+    # Duplicate groups – new schema methods
+    # ----------------------------------------------------------------------
+    def insert_duplicate_group(self, group_id: str, title_key: str,
+                               member_count: int, mount: str, folder_path: str) -> bool:
+        if not self.enabled:
+            return False
         conn = self._get_connection()
         if not conn:
-            return
+            return False
         try:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS duplicate_groups (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        group_key VARCHAR(1024) NOT NULL COMMENT 'Full folder path (container)',
-                        file_path VARCHAR(1024) NOT NULL,
-                        file_name VARCHAR(255) NOT NULL,
-                        mount VARCHAR(255),
-                        vector_id VARCHAR(255),
-                        similarity_score FLOAT DEFAULT 0,
-                        canonical_file_path VARCHAR(1024),
-                        status ENUM('PENDING_REVIEW', 'CONFIRMED_DUPLICATE', 'CONFIRMED_UNIQUE', 'AUTO_RESOLVED') DEFAULT 'PENDING_REVIEW',
-                        metadata_json LONGTEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        UNIQUE KEY uk_group_file (group_key(255), file_path(255)),
-                        INDEX idx_group_key (group_key(255)),
-                        INDEX idx_status (status)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-                """)
-            conn.close()
-            logger.info("MySQL 'duplicate_groups' table initialized.")
-        except Exception as e:
-            logger.error(f"Failed to create duplicate_groups table: {e}")
-
-    def insert_duplicate_group(self, group_key: str, file_path: str, file_name: str,
-                            mount: str, vector_id: str, similarity_score: float,
-                            canonical_file_path: str, metadata: dict = None,
-                            status: str = "PENDING_REVIEW"):
-        if not self.enabled:
-            return False
-        conn = self._get_connection()
-        if not conn:
-            return False
-        try:
-            meta_str = json.dumps(metadata) if metadata else None
-            with conn.cursor() as cursor:
-                query = """
                     INSERT INTO duplicate_groups
-                    (group_key, file_path, file_name, mount, vector_id,
-                    similarity_score, canonical_file_path, metadata_json, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (group_id, title_key, member_count, mount, folder_path)
+                    VALUES (%s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
-                        similarity_score = VALUES(similarity_score),
-                        canonical_file_path = VALUES(canonical_file_path),
-                        status = VALUES(status),
-                        metadata_json = VALUES(metadata_json),
+                        title_key = VALUES(title_key),
+                        member_count = VALUES(member_count),
+                        mount = VALUES(mount),
+                        folder_path = VALUES(folder_path),
                         updated_at = CURRENT_TIMESTAMP
-                """
-                cursor.execute(query, (group_key, file_path, file_name, mount, vector_id,
-                                    similarity_score, canonical_file_path, meta_str, status))
+                """, (group_id, title_key, member_count, mount, folder_path))
             conn.close()
             return True
         except Exception as e:
-            logger.error(f"Failed to insert duplicate group: {e}")
+            logger.error(f"Failed to insert duplicate group {group_id}: {e}")
             return False
 
-    def update_duplicate_status_by_file_path(self, file_path: str, status: str) -> bool:
+    def insert_candidate(self, group_id: str, file_id: str, full_path: str,
+                         mount: str, title_score: float, movie_score: float,
+                         artist_score: float, overall_score: float,
+                         confidence: str, status: str, stats_json: dict) -> bool:
         if not self.enabled:
             return False
         conn = self._get_connection()
         if not conn:
             return False
+        try:
+            import json
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO duplicate_group_candidates
+                    (group_id, file_id, full_path, mount, title_score, movie_score,
+                     artist_score, overall_score, confidence, status, stats_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        full_path = VALUES(full_path),
+                        mount = VALUES(mount),
+                        title_score = VALUES(title_score),
+                        movie_score = VALUES(movie_score),
+                        artist_score = VALUES(artist_score),
+                        overall_score = VALUES(overall_score),
+                        confidence = VALUES(confidence),
+                        status = VALUES(status),
+                        stats_json = VALUES(stats_json),
+                        updated_at = CURRENT_TIMESTAMP
+                """, (group_id, file_id, full_path, mount, title_score, movie_score,
+                      artist_score, overall_score, confidence, status, json.dumps(stats_json)))
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to insert candidate {file_id}: {e}")
+            return False
+
+    def delete_duplicate_groups_for_mount(self, mount: str) -> int:
+        """Delete all groups and candidates for a given mount."""
+        if not self.enabled:
+            return 0
+        conn = self._get_connection()
+        if not conn:
+            return 0
         try:
             with conn.cursor() as cursor:
-                cursor.execute("UPDATE duplicate_groups SET status=%s WHERE file_path=%s", (status, file_path))
-                updated = cursor.rowcount > 0
+                cursor.execute("SELECT group_id FROM duplicate_groups WHERE mount = %s", (mount,))
+                group_ids = [row["group_id"] for row in cursor.fetchall()]
+                if group_ids:
+                    placeholders = ','.join(['%s'] * len(group_ids))
+                    cursor.execute(f"DELETE FROM duplicate_group_candidates WHERE group_id IN ({placeholders})", group_ids)
+                    cursor.execute(f"DELETE FROM duplicate_groups WHERE group_id IN ({placeholders})", group_ids)
+                count = len(group_ids)
             conn.close()
-            return updated
+            return count
         except Exception as e:
-            logger.error(f"Failed to update duplicate status: {e}")
-            return False
+            logger.error(f"Failed to delete duplicate groups for mount {mount}: {e}")
+            return 0
 
-    def get_duplicate_groups(self, group_key: str = None, mount: str = None,
-                            status: str = None, limit: int = 100, offset: int = 0) -> list:
+    def get_duplicate_groups(self, mount: str = None, folder: str = None,
+                             status: str = None, limit: int = 100, offset: int = 0) -> list:
+        """
+        Fetch groups with optional mount/folder/status filter.
+        Returns a list of group dicts, each containing a 'candidates' list.
+        """
         if not self.enabled:
             return []
         conn = self._get_connection()
         if not conn:
             return []
         try:
-            conditions = []
+            group_filters = []
             params = []
-            if group_key:
-                conditions.append("group_key = %s")
-                params.append(group_key)
             if mount:
-                conditions.append("mount = %s")
+                group_filters.append("g.mount = %s")
                 params.append(mount)
-            if status:
-                conditions.append("status = %s")
-                params.append(status)
-            where = " AND ".join(conditions) if conditions else "1"
-            query = f"SELECT * FROM duplicate_groups WHERE {where} ORDER BY group_key, similarity_score DESC LIMIT %s OFFSET %s"
+            folder_condition = ""
+            if folder:
+                folder = folder.rstrip('/') + '/%'
+                folder_condition = " AND EXISTS (SELECT 1 FROM duplicate_group_candidates c WHERE c.group_id = g.group_id AND c.full_path LIKE %s)"
+                params.append(folder)
+
+            query = """
+                SELECT g.group_id, g.title_key, g.member_count, g.mount, g.folder_path,
+                       g.created_at, g.updated_at
+                FROM duplicate_groups g
+                WHERE 1=1
+            """
+            if group_filters:
+                query += " AND " + " AND ".join(group_filters)
+            if folder_condition:
+                query += folder_condition
+            query += " ORDER BY g.updated_at DESC LIMIT %s OFFSET %s"
             params.extend([limit, offset])
+
             with conn.cursor() as cursor:
                 cursor.execute(query, params)
-                rows = cursor.fetchall()
+                groups = cursor.fetchall()
+
+            result = []
+            for grp in groups:
+                group_id = grp["group_id"]
+                cursor.execute("""
+                    SELECT id, file_id, full_path, mount, title_score, movie_score,
+                           artist_score, overall_score, confidence, status, stats_json,
+                           created_at, updated_at
+                    FROM duplicate_group_candidates
+                    WHERE group_id = %s
+                    ORDER BY overall_score DESC
+                """, (group_id,))
+                candidates = cursor.fetchall()
+                for c in candidates:
+                    if c.get("stats_json"):
+                        try:
+                            c["stats_json"] = json.loads(c["stats_json"])
+                        except:
+                            pass
+                grp["candidates"] = candidates
+                result.append(grp)
             conn.close()
-            return rows
+            return result
         except Exception as e:
             logger.error(f"Failed to fetch duplicate groups: {e}")
             return []
 
-    def get_duplicate_group_by_group_key(self, group_key: str) -> list:
-        return self.get_duplicate_groups(group_key=group_key)
-
-    def delete_duplicate_groups_by_group_key(self, group_key: str) -> int:
+    def get_duplicate_group_by_id(self, group_id: str) -> dict:
+        """Return a single group with its candidates."""
         if not self.enabled:
-            return 0
+            return {}
         conn = self._get_connection()
         if not conn:
-            return 0
+            return {}
         try:
             with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM duplicate_groups WHERE group_key = %s", (group_key,))
-                deleted = cursor.rowcount
+                cursor.execute("""
+                    SELECT group_id, title_key, member_count, mount, folder_path,
+                           created_at, updated_at
+                    FROM duplicate_groups WHERE group_id = %s
+                """, (group_id,))
+                group = cursor.fetchone()
+                if not group:
+                    return {}
+                cursor.execute("""
+                    SELECT id, file_id, full_path, mount, title_score, movie_score,
+                           artist_score, overall_score, confidence, status, stats_json,
+                           created_at, updated_at
+                    FROM duplicate_group_candidates
+                    WHERE group_id = %s
+                    ORDER BY overall_score DESC
+                """, (group_id,))
+                candidates = cursor.fetchall()
+                for c in candidates:
+                    if c.get("stats_json"):
+                        try:
+                            c["stats_json"] = json.loads(c["stats_json"])
+                        except:
+                            pass
+                group["candidates"] = candidates
             conn.close()
-            return deleted
+            return group
         except Exception as e:
-            logger.error(f"Failed to delete duplicate groups by group_key: {e}")
-            return 0
+            logger.error(f"Failed to fetch duplicate group {group_id}: {e}")
+            return {}
 
-    def truncate_duplicate_groups(self) -> int:
+    def get_duplicate_group_by_file(self, file_path: str) -> dict:
+        """Find the group that contains the given file path."""
         if not self.enabled:
-            return 0
+            return {}
         conn = self._get_connection()
         if not conn:
-            return 0
+            return {}
         try:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) AS cnt FROM duplicate_groups")
-                count = (cursor.fetchone() or {}).get("cnt", 0)
-                cursor.execute("TRUNCATE TABLE duplicate_groups")
-            conn.close()
-            logger.info(f"Truncated 'duplicate_groups' table ({count} rows removed)")
-            return count
-        except Exception as e:
-            logger.error(f"Failed to truncate duplicate_groups: {e}")
-            return 0
-
-    def get_duplicate_groups_by_folder(self, folder_path: str, status: str = None, limit: int = 100, offset: int = 0) -> list:
-        """Return duplicate entries whose group_key starts with folder_path."""
-        if not self.enabled:
-            return []
-        conn = self._get_connection()
-        if not conn:
-            return []
-        try:
-            conditions = ["group_key LIKE %s"]
-            params = [folder_path + '%']
-            if status:
-                conditions.append("status = %s")
-                params.append(status)
-            query = f"SELECT * FROM duplicate_groups WHERE {' AND '.join(conditions)} ORDER BY group_key, similarity_score DESC LIMIT %s OFFSET %s"
-            params.extend([limit, offset])
-            with conn.cursor() as cursor:
-                cursor.execute(query, params)
-                rows = cursor.fetchall()
-            conn.close()
-            return rows
-        except Exception as e:
-            logger.error(f"Failed to fetch duplicate groups by folder: {e}")
-            return []
-
-    def get_duplicate_group_by_file_path(self, file_path: str) -> list:
-        """Return all duplicate entries matching the exact file_path (usually one)."""
-        if not self.enabled:
-            return []
-        conn = self._get_connection()
-        if not conn:
-            return []
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT * FROM duplicate_groups WHERE file_path = %s", (file_path,))
-                rows = cursor.fetchall()
-            conn.close()
-            return rows
-        except Exception as e:
-            logger.error(f"Failed to fetch duplicate group by file_path: {e}")
-            return []
-
-
-    def get_duplicate_group_by_vector_id(self, vector_id: str) -> list:
-        """Return duplicate group entries matching a specific vector_id."""
-        if not self.enabled:
-            return []
-        conn = self._get_connection()
-        if not conn:
-            return []
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT * FROM duplicate_groups WHERE vector_id = %s",
-                    (vector_id,)
-                )
-                rows = cursor.fetchall()
-            conn.close()
-            return rows
-        except Exception as e:
-            logger.error(f"Failed to fetch duplicate group by vector_id: {e}")
-            return []
-
-    def upsert_job_record(self, job_info: dict):
-        if not self.enabled:
-            return
-        conn = self._get_connection()
-        if not conn:
-            return
-        try:
-            query = """
-                INSERT INTO indexing_jobs 
-                (job_id, mount_name, status, total_files, processed_files, added_files, updated_files, skipped_files, failed_files, cleaned_orphans, eta_seconds, error_message)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    status = VALUES(status),
-                    total_files = VALUES(total_files),
-                    processed_files = VALUES(processed_files),
-                    added_files = VALUES(added_files),
-                    updated_files = VALUES(updated_files),
-                    skipped_files = VALUES(skipped_files),
-                    failed_files = VALUES(failed_files),
-                    cleaned_orphans = VALUES(cleaned_orphans),
-                    eta_seconds = VALUES(eta_seconds),
-                    error_message = VALUES(error_message);
-            """
-            with conn.cursor() as cursor:
-                cursor.execute(query, (
-                    job_info["job_id"], job_info["mount_name"], job_info["status"],
-                    job_info.get("total_files", 0), job_info.get("processed_files", 0),
-                    job_info.get("added_files", 0), job_info.get("updated_files", 0),
-                    job_info.get("skipped_files", 0), job_info.get("failed_files", 0),
-                    job_info.get("cleaned_orphans", 0), job_info.get("eta_seconds", 0),
-                    job_info.get("error")
-                ))
-            conn.close()
-        except Exception as e:
-            logger.error(f"MySQL upsert job failed for {job_info.get('job_id')}: {e}")
-            
-    def add_or_update_download_entry(self, entry: str, title: str) -> str:
-        """
-        Adds entry or updates timestamp.
-        If existing entry has status 'CONFIRMED', ignores the update and returns 'CONFIRMED'.
-        """
-        if not self.enabled:
-            return "DISABLED"
-        conn = self._get_connection()
-        if not conn:
-            return "ERROR"
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT status FROM download_tracker WHERE entry=%s", (entry,))
+                cursor.execute("""
+                    SELECT group_id FROM duplicate_group_candidates
+                    WHERE full_path = %s
+                """, (file_path,))
                 row = cursor.fetchone()
-
-                if row and row["status"] == "CONFIRMED":
-                    conn.close()
-                    return "CONFIRMED"
-
-                query = """
-                    INSERT INTO download_tracker (entry, status, updated_at, title)
-                    VALUES (%s, 'PENDING', CURRENT_TIMESTAMP, %s)
-                    ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP;
-                """
-                cursor.execute(query, (entry,title,))
+                if not row:
+                    return {}
+                group_id = row["group_id"]
             conn.close()
-            return "PENDING" if not row else row["status"]
+            return self.get_duplicate_group_by_id(group_id)
         except Exception as e:
-            logger.error(f"Failed to add/update download entry '{entry}': {e}")
-            return "ERROR"
+            logger.error(f"Failed to fetch duplicate group for file {file_path}: {e}")
+            return {}
 
-    def update_download_status(self, entry: str, status: str) -> bool:
+    def update_candidate_status(self, file_path: str, new_status: str) -> bool:
         if not self.enabled:
             return False
         conn = self._get_connection()
@@ -564,32 +568,51 @@ class MySQLDatabase:
             return False
         try:
             with conn.cursor() as cursor:
-                query = "UPDATE download_tracker SET status=%s WHERE entry=%s"
-                cursor.execute(query, (status, entry))
+                cursor.execute("""
+                    UPDATE duplicate_group_candidates
+                    SET status = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE full_path = %s
+                """, (new_status, file_path))
                 updated = cursor.rowcount > 0
             conn.close()
             return updated
         except Exception as e:
-            logger.error(f"Failed to update download entry status: {e}")
+            logger.error(f"Failed to update candidate status for {file_path}: {e}")
             return False
 
-    def remove_download_entry(self, entry: str) -> bool:
+    # ----------------------------------------------------------------------
+    # Truncate tables (used by admin clean)
+    # ----------------------------------------------------------------------
+    def truncate_tables(self, tables: list = None) -> dict:
+        """Truncate given tables; default list: token_stats, processed_files,
+        duplicate_group_candidates, duplicate_groups, media_files (if exists)."""
         if not self.enabled:
-            return False
+            return {}
+        default_tables = ["token_stats", "processed_files",
+                          "duplicate_group_candidates", "duplicate_groups", "media_files"]
+        to_truncate = tables if tables is not None else default_tables
         conn = self._get_connection()
         if not conn:
-            return False
+            return {}
+        results = {}
         try:
             with conn.cursor() as cursor:
-                query = "DELETE FROM download_tracker WHERE entry=%s"
-                cursor.execute(query, (entry,))
-                deleted = cursor.rowcount > 0
+                for table in to_truncate:
+                    cursor.execute(f"SHOW TABLES LIKE '{table}'")
+                    if cursor.fetchone():
+                        cursor.execute(f"TRUNCATE TABLE {table}")
+                        results[table] = "truncated"
+                    else:
+                        results[table] = "skipped (not exists)"
             conn.close()
-            return deleted
+            logger.info(f"Truncated tables: {', '.join(to_truncate)}")
         except Exception as e:
-            logger.error(f"Failed to remove download entry: {e}")
-            return False
+            logger.error(f"Failed to truncate tables: {e}")
+        return results
 
+    # ----------------------------------------------------------------------
+    # Processed files methods (unchanged)
+    # ----------------------------------------------------------------------
     def upsert_file_record(
         self,
         file_id: str,
@@ -708,7 +731,6 @@ class MySQLDatabase:
             return {}
 
     def delete_records_by_paths(self, file_paths: list[str]) -> int:
-        """Batch removes records for deleted disk files."""
         if not self.enabled or not file_paths:
             return 0
         conn = self._get_connection()
@@ -726,8 +748,6 @@ class MySQLDatabase:
             return 0
 
     def truncate_processed_files(self) -> int:
-        """Wipes the processed_files table only, for a clean re-index.
-        download_tracker and indexing_jobs are intentionally left untouched."""
         if not self.enabled:
             return 0
         conn = self._get_connection()
@@ -744,6 +764,108 @@ class MySQLDatabase:
         except Exception as e:
             logger.error(f"Failed to truncate processed_files table: {e}")
             return 0
+
+    # ----------------------------------------------------------------------
+    # Download tracker methods (unchanged)
+    # ----------------------------------------------------------------------
+    def add_or_update_download_entry(self, entry: str, title: str) -> str:
+        if not self.enabled:
+            return "DISABLED"
+        conn = self._get_connection()
+        if not conn:
+            return "ERROR"
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT status FROM download_tracker WHERE entry=%s", (entry,))
+                row = cursor.fetchone()
+                if row and row["status"] == "CONFIRMED":
+                    conn.close()
+                    return "CONFIRMED"
+                query = """
+                    INSERT INTO download_tracker (entry, status, updated_at, title)
+                    VALUES (%s, 'PENDING', CURRENT_TIMESTAMP, %s)
+                    ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP;
+                """
+                cursor.execute(query, (entry, title))
+            conn.close()
+            return "PENDING" if not row else row["status"]
+        except Exception as e:
+            logger.error(f"Failed to add/update download entry '{entry}': {e}")
+            return "ERROR"
+
+    def update_download_status(self, entry: str, status: str) -> bool:
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cursor:
+                query = "UPDATE download_tracker SET status=%s WHERE entry=%s"
+                cursor.execute(query, (status, entry))
+                updated = cursor.rowcount > 0
+            conn.close()
+            return updated
+        except Exception as e:
+            logger.error(f"Failed to update download entry status: {e}")
+            return False
+
+    def remove_download_entry(self, entry: str) -> bool:
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cursor:
+                query = "DELETE FROM download_tracker WHERE entry=%s"
+                cursor.execute(query, (entry,))
+                deleted = cursor.rowcount > 0
+            conn.close()
+            return deleted
+        except Exception as e:
+            logger.error(f"Failed to remove download entry: {e}")
+            return False
+
+    # ----------------------------------------------------------------------
+    # Indexing jobs methods (unchanged)
+    # ----------------------------------------------------------------------
+    def upsert_job_record(self, job_info: dict):
+        if not self.enabled:
+            return
+        conn = self._get_connection()
+        if not conn:
+            return
+        try:
+            query = """
+                INSERT INTO indexing_jobs 
+                (job_id, mount_name, status, total_files, processed_files, added_files, updated_files, skipped_files, failed_files, cleaned_orphans, eta_seconds, error_message)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    status = VALUES(status),
+                    total_files = VALUES(total_files),
+                    processed_files = VALUES(processed_files),
+                    added_files = VALUES(added_files),
+                    updated_files = VALUES(updated_files),
+                    skipped_files = VALUES(skipped_files),
+                    failed_files = VALUES(failed_files),
+                    cleaned_orphans = VALUES(cleaned_orphans),
+                    eta_seconds = VALUES(eta_seconds),
+                    error_message = VALUES(error_message);
+            """
+            with conn.cursor() as cursor:
+                cursor.execute(query, (
+                    job_info["job_id"], job_info["mount_name"], job_info["status"],
+                    job_info.get("total_files", 0), job_info.get("processed_files", 0),
+                    job_info.get("added_files", 0), job_info.get("updated_files", 0),
+                    job_info.get("skipped_files", 0), job_info.get("failed_files", 0),
+                    job_info.get("cleaned_orphans", 0), job_info.get("eta_seconds", 0),
+                    job_info.get("error")
+                ))
+            conn.close()
+        except Exception as e:
+            logger.error(f"MySQL upsert job failed for {job_info.get('job_id')}: {e}")
+
 
 class RedisDatabase:
     def __init__(self):
@@ -766,7 +888,6 @@ class RedisDatabase:
                 self.enabled = False
 
     def set_mount_tree(self, mount_name: str, tree_data: dict):
-        """Stores mount nested tree structure in Redis."""
         if not self.enabled or not self.client:
             return
         try:
@@ -776,7 +897,6 @@ class RedisDatabase:
             logger.error(f"Failed to set Redis mount tree for {mount_name}: {e}")
 
     def get_mount_tree(self, mount_name: str) -> dict | None:
-        """Retrieves mount nested tree structure from Redis."""
         if not self.enabled or not self.client:
             return None
         try:
@@ -798,7 +918,6 @@ class RedisDatabase:
         height: int = None,
         duration: str = None,
     ):
-        """Updates individual file node attributes in the cached tree."""
         tree = self.get_mount_tree(mount_name)
         if not tree:
             return
@@ -809,7 +928,6 @@ class RedisDatabase:
 
         for i, part in enumerate(parts):
             if i == len(parts) - 1:
-                # Target file node
                 for child in curr.get("children", []):
                     if child.get("name") == part and child.get("type") == "file":
                         child["vector_id"] = vector_id
@@ -826,7 +944,6 @@ class RedisDatabase:
                         found = True
                         break
             else:
-                # Traverse directory level
                 matched_dir = None
                 for child in curr.get("children", []):
                     if child.get("name") == part and child.get("type") == "folder":
@@ -841,7 +958,6 @@ class RedisDatabase:
             self.set_mount_tree(mount_name, tree)
 
     def clear_all_mount_trees(self) -> int:
-        """Deletes every cached mount:tree:* key, e.g. as part of a full index clean."""
         if not self.enabled or not self.client:
             return 0
         try:
@@ -852,6 +968,7 @@ class RedisDatabase:
         except Exception as e:
             logger.error(f"Failed to clear Redis mount trees: {e}")
             return 0
+
 
 db_instance = VectorDatabase()
 mysql_db_instance = MySQLDatabase()

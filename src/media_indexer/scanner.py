@@ -745,7 +745,7 @@ class DirectoryTreeScanner:
                     qdrant_client=self.qdrant,
                     collection_name=self.collection_name,
                     similarity_threshold=settings.duplicates.similarity_threshold,
-                    media_type=self.media_type          # <-- pass the mount's media_type
+                    media_type=self.media_type   # already passed in __init__
                 )
                 detector.detect_for_mount(self.mount_name, str(self.mount_path))
                 self._emit("Duplicate detection completed.")
