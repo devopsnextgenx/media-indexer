@@ -2,6 +2,25 @@
 # */15  * * * * ~/bin/downloadVideo.sh > /dev/null 2>&1
 
 # ─────────────────────────────────────────────
+#  Debug / Verbose & Cookie Flag CLI Support
+# ─────────────────────────────────────────────
+DEBUG=false
+COOKIES=true
+
+for arg in "$@"; do
+    case "$arg" in
+        -d|--debug)
+            DEBUG=true
+            shift
+            ;;
+        -n|--no-cookies)
+            COOKIES=false
+            shift
+            ;;
+    esac
+done
+
+# ─────────────────────────────────────────────
 #  Paths & globals
 # ─────────────────────────────────────────────
 LOCK_FILE=~/Videos/video.lock
@@ -19,13 +38,27 @@ API_URL="http://minis.local:2345/api/ytdlp/update-status"
 
 YT_DLP=~/bin/yt-dlp
 
-"$YT_DLP" --cookies-from-browser chrome --cookies "$COOKIE_TARGET" --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ" >/dev/null 2>&1
+# Prepare common cookie arguments array
+COOKIE_ARGS=()
+if [ "$COOKIES" = true ]; then
+    COOKIE_ARGS=(--cookies-from-browser chrome --cookies "$COOKIE_TARGET")
+fi
+
+# Cookie test query
+"$YT_DLP" "${COOKIE_ARGS[@]}" --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ" >/dev/null 2>&1
 
 # ─────────────────────────────────────────────
 #  Logging
 # ─────────────────────────────────────────────
 log() {
     echo "$*" | tee -a "$LOG_FILE"
+}
+
+# Send debug messages to STDERR so subshell outputs remain clean
+log_debug() {
+    if [ "$DEBUG" = true ]; then
+        echo "[DEBUG] $*" | tee -a "$LOG_FILE" >&2
+    fi
 }
 
 # ─────────────────────────────────────────────
@@ -35,7 +68,6 @@ update_status() {
     local entry_string="$1"
     local status="$2"
 
-    # Send POST request and capture response
     local response
     response=$(curl -s -X 'POST' \
       "$API_URL" \
@@ -43,12 +75,10 @@ update_status() {
       -H 'Content-Type: application/json' \
       -d "{\"entry\": \"${entry_string}\", \"status\": \"${status}\"}")
 
-    # Parse JSON fields using jq
     local res_status res_entry
     res_status=$(echo "$response" | jq -r '.status // empty')
     res_entry=$(echo "$response" | jq -r '.entry // empty')
 
-    # Log based on API response
     if [[ "$res_status" == "success" ]]; then
         local log_message="[INFO] Updated status for entry: ${res_entry:-$entry_string} → $status"
         echo -e "\n$log_message" | tee -a "$LOG_FILE"
@@ -82,13 +112,11 @@ deduplicate_download_file() {
     local dedup_tmp
     dedup_tmp=$(mktemp -p "$TMP_DIR")
 
-    # Removes duplicate data lines while retaining comments and line order
     awk '
         /^[[:space:]]*#/ || /^[[:space:]]*$/ {
             print; next
         }
         {
-            # Normalize whitespace around fields for reliable duplicate checks
             split($0, fields, "|")
             key = ""
             for (i=1; i<=length(fields); i++) {
@@ -103,18 +131,18 @@ deduplicate_download_file() {
 }
 
 # ─────────────────────────────────────────────
-#  Map LANG → DLANG  (case-insensitive)
+#  Map LANG → DLANG
 # ─────────────────────────────────────────────
 resolve_dlang() {
     local lang
     lang=$(echo "$1" | tr '[:upper:]' '[:lower:]')
     case "$lang" in
-        hindi)                          echo "Hindi"   ;;
-        marathi)                        echo "Marathi" ;;
+        hindi)                                         echo "Hindi"   ;;
+        marathi)                                       echo "Marathi" ;;
         south|telugu|tamil|kannada|malyalam|malayalam) echo "South"   ;;
-        bhojpuri)                       echo "Bhojpuri" ;;
-        english)                        echo "English" ;;
-        *)                              echo "Hindi"   ;;   # sensible default
+        bhojpuri)                                      echo "Bhojpuri" ;;
+        english)                                       echo "English" ;;
+        *)                                             echo "Hindi"   ;;
     esac
 }
 
@@ -131,15 +159,22 @@ resolve_resolution() {
 
 # ─────────────────────────────────────────────
 #  Query available formats and return the best
-#  format-id for the requested resolution.
 # ─────────────────────────────────────────────
 select_video_format() {
     local url="$1"
     local vformat="$2"
 
+    log_debug "Fetching format list for URL: $url"
+
     local fmt_list
-    fmt_list=$("$YT_DLP" --cookies-from-browser chrome --js-runtimes node \
-        -F "$url" 2>/dev/null)
+    if [ "$DEBUG" = true ]; then
+        fmt_list=$("$YT_DLP" "${COOKIE_ARGS[@]}" --js-runtimes node -F "$url")
+        log_debug "--- Raw Format List Output ---"
+        log_debug "$fmt_list"
+        log_debug "------------------------------"
+    else
+        fmt_list=$("$YT_DLP" "${COOKIE_ARGS[@]}" --js-runtimes node -F "$url" 2>/dev/null)
+    fi
 
     if [ -z "$fmt_list" ]; then
         log "  [WARN] Could not retrieve format list for: $url"
@@ -176,13 +211,18 @@ select_video_format() {
         return 1
     fi
 
+    log_debug "Parsed candidates (format_id|height|size_mb):"
+    log_debug "$(printf "%b" "$candidates")"
+
     local exact
     exact=$(printf "%b" "$candidates" | awk -F'|' -v h="$vformat" '$2==h {print}')
 
     local pool
     if [ -n "$exact" ]; then
+        log_debug "Found exact match for height: ${vformat}p"
         pool="$exact"
     else
+        log_debug "No exact match for ${vformat}p. Finding closest match..."
         local best_diff=999999 best_height=""
         while IFS='|' read -r id height size; do
             local diff=$(( height > vformat ? height - vformat : vformat - height ))
@@ -191,12 +231,14 @@ select_video_format() {
                 best_height=$height
             fi
         done < <(printf "%b" "$candidates" | awk -F'|' '{print}')
+        log_debug "Closest height identified: ${best_height}p"
         pool=$(printf "%b" "$candidates" | awk -F'|' -v h="$best_height" '$2==h {print}')
     fi
 
     local best_id
     best_id=$(printf "%b" "$pool" | awk -F'|' 'BEGIN{min=999999;id=""} {if($3<min){min=$3;id=$1}} END{print id}')
 
+    log_debug "Selected video format ID: $best_id"
     echo "$best_id"
 }
 
@@ -206,8 +248,12 @@ select_video_format() {
 select_audio_format() {
     local url="$1"
     local fmt_list
-    fmt_list=$("$YT_DLP" --cookies-from-browser chrome --js-runtimes node \
-        -F "$url" 2>/dev/null)
+
+    if [ "$DEBUG" = true ]; then
+        fmt_list=$("$YT_DLP" "${COOKIE_ARGS[@]}" --js-runtimes node -F "$url")
+    else
+        fmt_list=$("$YT_DLP" "${COOKIE_ARGS[@]}" --js-runtimes node -F "$url" 2>/dev/null)
+    fi
 
     local best_id
     best_id=$(echo "$fmt_list" | awk '
@@ -217,6 +263,8 @@ select_audio_format() {
         }
         END { print (best ? best : "bestaudio") }
     ')
+
+    log_debug "Selected audio format ID: $best_id"
     echo "$best_id"
 }
 
@@ -255,7 +303,13 @@ download_entry() {
 
     > "$TRACKER_FILE"
 
-    "$YT_DLP" --cookies-from-browser chrome --js-runtimes node \
+    local extra_ytdlp_args=()
+    if [ "$DEBUG" = true ]; then
+        extra_ytdlp_args+=("-v")
+    fi
+
+    "$YT_DLP" "${COOKIE_ARGS[@]}" "${extra_ytdlp_args[@]}" \
+        --js-runtimes node \
         -f "${vfmt_id}+${afmt_id}" \
         --embed-thumbnail \
         --progress-delta 0.5 \
@@ -374,19 +428,18 @@ main() {
 
     log "================================================================================================"
     log "File processing started at $(date +"%Y-%m-%d %T")"
+    log_debug "Debug mode enabled."
+    log_debug "Cookies enabled: $COOKIES"
 
-    # Check external target download file and ingest entries
     if [ -s "$EXTERNAL_DOWNLOAD_FILE" ]; then
         log "New entries found in $EXTERNAL_DOWNLOAD_FILE. Syncing to $DOWNLOAD_FILE..."
         mkdir -p "$(dirname "$DOWNLOAD_FILE")"
         cat "$EXTERNAL_DOWNLOAD_FILE" >> "$DOWNLOAD_FILE"
-        : > "$EXTERNAL_DOWNLOAD_FILE" # Truncate external file
+        : > "$EXTERNAL_DOWNLOAD_FILE"
     fi
 
-    # Deduplicate entries before starting main file checks and loop
     deduplicate_download_file
 
-    # Check if processing file exists and contains data
     if [ ! -s "$DOWNLOAD_FILE" ]; then
         log "No file or entries in $DOWNLOAD_FILE for Processing."
         log "File processing completed at $(date +"%Y-%m-%d %T")"
@@ -404,4 +457,4 @@ main() {
     log "================================================================================================"
 }
 
-main
+main "$@"
