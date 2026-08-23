@@ -2091,28 +2091,46 @@ document.addEventListener("DOMContentLoaded", () => {
         downloadsBody.innerHTML = items.map((item, idx) => `
             <tr>
                 <td>${idx + 1}</td>
+                <td>${escapeHtml(item.title)}</td>
                 <td class="col-details">
                     <div class="file-title" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</div>
                     <small class="file-name" title="Language: ${escapeHtml(item.language || 'N/A')}">Lang: ${escapeHtml(item.language || 'N/A')}</small>
                 </td>
+                <td><strong>${escapeHtml(item.actress || 'N/A')}</strong></td>
                 <td><code>${escapeHtml(item.quality || 'N/A')}</code></td>
-                <td><strong>${escapeHtml(item.title || 'N/A')}</strong></td>
-                <td><span class="status-badge ${escapeHtml((item.status || 'pending').toLowerCase())}">${escapeHtml(item.status || 'Pending')}</span></td>
                 <td><small>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : 'N/A')}</small></td>
+                <td><span class="status-badge ${escapeHtml((item.status || 'pending').toLowerCase())}">${escapeHtml(item.status || 'Pending')}</span></td>
                 <td class="col-actions">
                     <div class="row-actions" style="display: flex; align-items: center; gap: 6px;">
-                        <button class="btn-icon-clean" onclick="retryDownload('${escapeHtml(item.id)}')" title="Retry download (re-add entry and set pending)">
+                        <!-- Retry -->
+                        <button class="btn-icon-retry" onclick="retryDownload('${escapeHtml(item.id)}')" title="Retry download">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <polyline points="23 4 23 10 17 10"></polyline>
                                 <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
                             </svg>
                         </button>
-                        ${item.status !== 'COMPLETED' && item.status !== 'completed' ? `<button class="btn btn-secondary" onclick="markDownloadComplete('${escapeHtml(item.id)}')">Mark Complete</button>` : ''}
-                        <button class="btn btn-danger" onclick="deleteDownload('${escapeHtml(item.id)}')">Delete</button>
+
+                        <!-- Mark Complete (only when not completed) -->
+                        ${item.status !== 'COMPLETED' && item.status !== 'completed' ? `
+                        <button class="btn-icon-clean" onclick="markDownloadComplete('${escapeHtml(item.id)}')" title="Mark as complete">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                        </button>` : ''}
+
+                        <!-- Delete -->
+                        <button class="btn-icon-clean btn-icon-danger" onclick="deleteDownload('${escapeHtml(item.id)}')" title="Delete">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                <line x1="10" y1="11" x2="10" y2="17"></line>
+                                <line x1="14" y1="11" x2="14" y2="17"></line>
+                            </svg>
+                        </button>
                     </div>
                 </td>
             </tr>
-        `).join("");
+        `).join('');
     }
 
     // Attach event listener for the refresh button

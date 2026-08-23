@@ -194,20 +194,31 @@
             <!-- Missing Downloads Table Added Below -->
             <section class="results-container">
                 <table class="vscode-table">
+                    <colgroup>
+                        <col style="width: 2%">      <!-- # -->
+                        <col style="width: 25%">       <!-- Title -->
+                        <col style="width: 25%">       <!-- URL / Details -->
+                        <col style="width: 10%">       <!-- Actress -->
+                        <col style="width: 4%">        <!-- Quality -->
+                        <col style="width: 10%">       <!-- Added At -->
+                        <col style="width: 9%">        <!-- Status -->
+                        <col style="width: 15%">     <!-- Actions -->
+                    </colgroup>
                     <thead>
                         <tr>
                             <th>#</th>
-                            <th class="col-details">URL / Details</th>
-                            <th>Quality</th>
                             <th>Title</th>
-                            <th>Status</th>
+                            <th class="col-details">URL / Details</th>
+                            <th>Actress</th>
+                            <th>Quality</th>
                             <th>Added At</th>
+                            <th>Status</th>
                             <th class="col-actions">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="downloads-body">
                         <tr>
-                            <td colspan="7" class="empty-state">Loading downloads...</td>
+                            <td colspan="8" class="empty-state">Loading downloads...</td>
                         </tr>
                     </tbody>
                 </table>

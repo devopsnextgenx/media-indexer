@@ -239,6 +239,7 @@ class MySQLDatabase:
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS download_tracker (
                         entry VARCHAR(1024) PRIMARY KEY,
+                        title VARCHAR(255) DEFAULT NULL,
                         status VARCHAR(50) DEFAULT 'PENDING',
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         INDEX idx_status (status)
@@ -524,7 +525,7 @@ class MySQLDatabase:
         except Exception as e:
             logger.error(f"MySQL upsert job failed for {job_info.get('job_id')}: {e}")
             
-    def add_or_update_download_entry(self, entry: str) -> str:
+    def add_or_update_download_entry(self, entry: str, title: str) -> str:
         """
         Adds entry or updates timestamp.
         If existing entry has status 'CONFIRMED', ignores the update and returns 'CONFIRMED'.
@@ -544,11 +545,11 @@ class MySQLDatabase:
                     return "CONFIRMED"
 
                 query = """
-                    INSERT INTO download_tracker (entry, status, updated_at)
-                    VALUES (%s, 'PENDING', CURRENT_TIMESTAMP)
+                    INSERT INTO download_tracker (entry, status, updated_at, title)
+                    VALUES (%s, 'PENDING', CURRENT_TIMESTAMP, %s)
                     ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP;
                 """
-                cursor.execute(query, (entry,))
+                cursor.execute(query, (entry,title,))
             conn.close()
             return "PENDING" if not row else row["status"]
         except Exception as e:

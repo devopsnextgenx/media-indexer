@@ -1355,3 +1355,49 @@ body {
     font-weight: bold;
     text-transform: uppercase;
 }
+
+.btn-icon-retry {
+    background: transparent;
+    border: none;
+    color: var(--text-muted, #69ff82);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s, background 0.15s;
+}
+
+.btn-icon-clean {
+    background: transparent;
+    border: none;
+    color: var(--text-muted, #7971ff);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s, background 0.15s;
+}
+
+.btn-icon-danger {
+    color: #ffff00;          /* soft red */
+    background: rgba(248, 113, 113, 0.15);
+}
+
+.btn-icon-retry:hover {
+    color: var(--text-active, #00ff1e);
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.btn-icon-clean:hover {
+    color: var(--text-active, #f87171);
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.btn-icon-danger:hover {
+    color: #f87171;          /* soft red */
+    background: rgba(248, 113, 113, 0.15);
+}

@@ -738,23 +738,25 @@ def get_downloads():
     
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT entry, status, updated_at FROM download_tracker ORDER BY updated_at DESC")
+            cursor.execute("SELECT entry, status, updated_at, title FROM download_tracker ORDER BY updated_at DESC")
             rows = cursor.fetchall()
             
             # Map database columns to the structure expected by the frontend UI
             results = []
             for row in rows:
+                title = row.get("title", "") or ""
                 entry_text = row.get("entry", "")
                 parts = entry_text.split("|")
                 url = parts[0] if parts else entry_text
-                title = parts[3] if len(parts) >= 4 else url
+                actress = parts[3] if len(parts) >= 4 else url
                 quality = parts[1] if len(parts) >= 2 else None
                 language = parts[2] if len(parts) >= 3 else None
 
                 results.append({
                     "id": entry_text,  # Primary key string
-                    "url": url,
                     "title": title,
+                    "url": url,
+                    "actress": actress,
                     "quality": quality,
                     "language": language,
                     "status": row.get("status", "PENDING"),
@@ -780,6 +782,7 @@ def delete_download(download_id: str):
 
 class DownloadEntryRequest(BaseModel):
     entry: str
+    title: str | None = None
 
 class UpdateEntryStatusRequest(BaseModel):
     entry: str
@@ -796,7 +799,7 @@ def add_download_entry(req: DownloadEntryRequest):
     target_file = os.path.join(target_dir, "download.txt")
 
     # Insert or reset status in MySQL download_tracker back to PENDING
-    mysql_db_instance.add_or_update_download_entry(entry_text)
+    mysql_db_instance.add_or_update_download_entry(entry_text, req.title or "")
     mysql_db_instance.update_download_status(entry_text, "PENDING")
 
     try:

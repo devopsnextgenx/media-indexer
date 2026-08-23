@@ -593,7 +593,7 @@ async function startDownload(videoFormat, audioFormat) {
         }
 
         try {
-            await api("POST", "/api/ytdlp/download-entry", { entry: downloadEntry });
+            await api("POST", "/api/ytdlp/download-entry", { entry: downloadEntry, title: state.pageTitle || "" });
         } catch (err) {
             toast(`Failed to save entry: ${err.message}`, "error");
         }
