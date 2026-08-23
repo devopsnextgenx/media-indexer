@@ -24,6 +24,9 @@ from media_indexer.jellyfin import JellyfinClient
 from media_indexer.scanner import DirectoryTreeScanner
 
 from media_indexer.duplicates import DuplicateDetector
+import logging
+
+logger = logging.getLogger(__name__)
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -432,7 +435,24 @@ async def trigger_scan(
 
 @app.get("/api/search", tags=["Search"])
 def search_media(q: str = Query(..., description="Semantic search query"), limit: int = 50):
-    return search_engine.search(query=q, limit=limit)
+    results = search_engine.search(query=q, limit=limit)
+    logger.info(f"Search query '{q}' returned {len(results)} results")
+    for r in results:
+        mfp = get_mount_path(r.get("file_path")) if r.get("file_path") else None
+        r["mounted_file_path"] = mfp
+    # Enrich with duplicate group ids
+    if mysql_db_instance.enabled and results:
+        file_paths = [r.get("mounted_file_path") for r in results if r.get("mounted_file_path")]
+
+        if file_paths:
+            group_map = mysql_db_instance.get_duplicate_group_ids_for_paths(file_paths)
+            logger.info(f"Found {len(group_map)} duplicate group ids for search results")
+            for r in results:
+                mfp = r.get("mounted_file_path")
+                if mfp and mfp in group_map:
+                    logger.info(f"File path '{mfp}' has duplicate group id '{group_map[mfp]}'")
+                    r["duplicate_group_id"] = group_map[mfp]
+    return results
 
 
 @app.get("/api/media/thumbnail", tags=["Media Stream"])

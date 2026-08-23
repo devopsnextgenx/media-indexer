@@ -303,7 +303,7 @@ class MySQLDatabase:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS download_tracker (
-                        entry VARCHAR(1024) PRIMARY KEY,
+                        entry VARCHAR(768) PRIMARY KEY,
                         title VARCHAR(255) DEFAULT NULL,
                         status VARCHAR(50) DEFAULT 'PENDING',
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -558,6 +558,26 @@ class MySQLDatabase:
             return self.get_duplicate_group_by_id(group_id)
         except Exception as e:
             logger.error(f"Failed to fetch duplicate group for file {file_path}: {e}")
+            return {}
+
+    def get_duplicate_group_ids_for_paths(self, file_paths: list[str]) -> dict:
+        """Return dict mapping file_path -> group_id for files that belong to any duplicate group."""
+        if not self.enabled or not file_paths:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        try:
+            with conn.cursor() as cursor:
+                placeholders = ','.join(['%s'] * len(file_paths))
+                query = f"SELECT full_path, group_id FROM duplicate_group_candidates WHERE full_path IN ({placeholders})"
+                cursor.execute(query, tuple(file_paths))
+                rows = cursor.fetchall()
+                result = {row["full_path"]: row["group_id"] for row in rows}
+            conn.close()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get duplicate group ids for paths: {e}")
             return {}
 
     def update_candidate_status(self, file_path: str, new_status: str) -> bool:

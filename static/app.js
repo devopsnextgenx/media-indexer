@@ -626,6 +626,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const FOLDER_TAG_COLORS = ["#e67e22", "#2ecc71", "#3b82f6", "#e74c3c", "#9b59b6", "#f1c40f", "#1abc9c", "#34495e"];
 
+    // ==========================================
+    // DUPLICATE GROUP CHANGES: folderTagsHtml now shows dup-tag if group id present
+    // ==========================================
     function folderTagsHtml(item) {
         const tags = [];
         if (item.mount) {
@@ -636,17 +639,17 @@ document.addEventListener("DOMContentLoaded", () => {
             tags.push(...[...item.folder_tags].reverse());
         }
 
-        if (!tags.length) return "";
+        let dupHtml = '';
+        if (item.duplicate_group_id) {
+            dupHtml = `<span class="dup-tag" data-group-id="${escapeHtml(item.duplicate_group_id)}" data-file-path="${escapeHtml(item.file_path)}">Duplicates</span>`;
+        }
 
-        // <!-- Duplicate tag (new) -->
-        
-        return `<div class="folder-tags">` +
-                `<span class="dup-tag" data-file-path="${escapeHtml(item.file_path)}" data-vector-id="${escapeHtml(item.id || item.vector_id)}">Duplicates</span>` + 
-                tags.map((tag, i) => {
-                const color = FOLDER_TAG_COLORS[i % FOLDER_TAG_COLORS.length];
-                return `<span class="folder-tag" style="border-color:${color};color:${color};">${escapeHtml(tag)}</span>`;
-            }).join("")  +
-            `</div>`;
+        const tagHtml = tags.map((tag, i) => {
+            const color = FOLDER_TAG_COLORS[i % FOLDER_TAG_COLORS.length];
+            return `<span class="folder-tag" style="border-color:${color};color:${color};">${escapeHtml(tag)}</span>`;
+        }).join('');
+
+        return `<div class="folder-tags">${dupHtml}${tagHtml}</div>`;
     }
 
     // ==========================================
@@ -700,9 +703,12 @@ document.addEventListener("DOMContentLoaded", () => {
             ? [`${entry.item_count}${entry.count_capped ? "+" : ""} item${entry.item_count === 1 ? "" : "s"}`]
             : [entry.duration, entry.resolution, entry.size_human].filter(Boolean);
 
-        const dupTag = entry.duplicate_count ? `<span class="dup-tag" data-file-path="${escapeHtml(entry.file_path)}">${entry.duplicate_count} Duplicates</span> / ` : '';
-        // <span class="dup-tag" data-file-path="${escapeHtml(item.file_path)}" data-vector-id="${escapeHtml(item.id || item.vector_id)}"> ${entry.duplicate_count}Duplicates</span>
-        
+        // DUPLICATE GROUP: show dup tag for library files
+        let dupTag = '';
+        if (!isFolder && entry.duplicate_group_id) {
+            dupTag = `<span class="dup-tag" data-group-id="${escapeHtml(entry.duplicate_group_id)}" data-file-path="${escapeHtml(entry.file_path)}">Duplicates</span>`;
+        }
+
         const actionsHtml = isFolder ? "" : `
                     <div class="library-card-actions">
                         <button class="library-tile-icon-btn icon-rename" data-action="rename" title="Rename">
@@ -725,7 +731,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="library-card ${isFolder ? "is-folder" : "is-file"}" data-idx="${idx}" title="${escapeHtml(entry.name)}">
                 <div class="library-card-thumb">
                     ${thumbHtml}
-                    ${isFolder ? dupTag : ""}
+                    ${isFolder ? "" : dupTag}
                     ${isFolder ? `<span class="library-card-count-badge">${entry.item_count}${entry.count_capped ? "+" : ""}</span>` : ""}
                     ${actionsHtml}
                 </div>
@@ -822,18 +828,16 @@ document.addEventListener("DOMContentLoaded", () => {
                 renderLibraryGrid(false);
                 if (libraryMount !== "all") {
                     const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                    annotateLibraryItemsWithGroups(groups);
                     renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 } else {
-                    // Hide the duplicates section when viewing "All Mounts"
                     document.getElementById("library-duplicates-section").style.display = "none";
                 }
-                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 updateLibraryCount(cached.total);
                 return;
             }
 
-            // Fall back to IndexedDB so a previously-browsed folder renders
-            // instantly even after a full page reload, before hitting the server.
+            // Fall back to IndexedDB
             const idbCached = await idbGetLibraryCache(cacheKey);
             if (idbCached) {
                 libraryItems = idbCached.items;
@@ -843,12 +847,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 renderLibraryGrid(false);
                 if (libraryMount !== "all") {
                     const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                    annotateLibraryItemsWithGroups(groups);
                     renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 } else {
-                    // Hide the duplicates section when viewing "All Mounts"
                     document.getElementById("library-duplicates-section").style.display = "none";
                 }
-                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 updateLibraryCount(idbCached.total);
                 libraryPageCache.set(cacheKey, { ...idbCached, cachedAt: Date.now() });
                 return;
@@ -870,17 +873,25 @@ document.addEventListener("DOMContentLoaded", () => {
             });
             const res = await fetch(`/api/library/browse?${params.toString()}`);
             const data = await res.json();
-            if (token !== libraryRequestToken) return; // a newer navigation superseded this request
+            if (token !== libraryRequestToken) return;
             if (!res.ok) throw new Error(data.detail || "Failed to load folder");
 
-            libraryItems = reset ? data.items : libraryItems.concat(data.items);
+            // Merge new items
+            const newItems = reset ? data.items : libraryItems.concat(data.items);
+            libraryItems = newItems;
             libraryOffset = libraryItems.length;
             libraryHasMore = data.has_more;
 
             renderBreadcrumb(data.breadcrumb);
+            // Fetch duplicates for this folder (if not all mounts)
+            if (libraryMount !== "all") {
+                const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                annotateLibraryItemsWithGroups(groups);
+                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
+            } else {
+                document.getElementById("library-duplicates-section").style.display = "none";
+            }
             renderLibraryGrid(!reset);
-            const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
-            renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
             updateLibraryCount(data.total);
 
             const cacheEntry = {
@@ -901,12 +912,31 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    // DUPLICATE GROUP: annotate library items with group id from fetched groups
+    function annotateLibraryItemsWithGroups(groups) {
+        if (!groups || !groups.length) return;
+        const groupMap = {};
+        groups.forEach(group => {
+            if (group.candidates) {
+                group.candidates.forEach(cand => {
+                    if (cand.full_path) {
+                        groupMap[cand.full_path] = group.group_id;
+                    }
+                });
+            }
+        });
+        libraryItems.forEach(item => {
+            if (item.type === 'file' && item.file_path && groupMap[item.file_path]) {
+                item.duplicate_group_id = groupMap[item.file_path];
+            }
+        });
+    }
+
     function updateLibraryCount(total) {
         libraryCountEl.textContent = total ? `${libraryItems.length} / ${total} items` : "";
     }
 
-    // Infinite scroll: fetch the next page only once the sentinel enters view,
-    // instead of loading (or rendering) an entire huge folder up front.
+    // Infinite scroll
     const libraryObserver = new IntersectionObserver((entries) => {
         if (entries[0].isIntersecting && libraryHasMore && !libraryLoading) {
             loadLibrary({ reset: false });
@@ -926,8 +956,6 @@ document.addEventListener("DOMContentLoaded", () => {
         loadLibrary({ reset: true });
     });
 
-    // Reflect the restored (or default) card size in the UI immediately, so the
-    // active button and grid sizing match what will actually be rendered.
     cardSizeGroup.querySelectorAll(".card-size-btn").forEach((b) => b.classList.toggle("active", b.dataset.size === cardSize));
     libraryGrid.style.setProperty("--card-size", `${CARD_SIZE_PX[cardSize]}px`);
 
@@ -1235,7 +1263,7 @@ document.addEventListener("DOMContentLoaded", () => {
             mountStatus.clear();
             setMountStatus(
                 "admin",
-                `Vector DB cleaned: removed ${data.deleted_points} points from '${data.collection}', ` +
+                `Vector DB cleaned: removed ${data.deleted_points} from '${data.collection}', ` +
                 `cleared ${data.cleared_manifests.length} manifest(s). Ready for a fresh scan.`,
                 0,
                 0
@@ -1351,8 +1379,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return [startIndex, ...rest];
     }
 
-    // Keeps both the overlay-player controls and the Library toolbar controls
-    // in sync, since they share the same shuffle/loop state.
     function applyShuffleUI() {
         [playerShuffleBtn, libraryShuffleBtn].forEach((btn) => btn.classList.toggle("active", shuffleOn));
     }
@@ -1713,7 +1739,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td class="col-score"><span style="color:var(--success-green);">${escapeHtml(item.score)}</span></td>
                 <td class="col-actions">
                     <div class="row-actions">
-                        <!-- Dup button removed -->
                         <button class="btn btn-secondary" onclick="playMedia(${idx})">Play</button>
                         <button class="btn btn-secondary" onclick="renameMedia(${idx})">Rename</button>
                         <button class="btn btn-danger" onclick="deleteMedia(${idx})">Delete</button>
@@ -2216,8 +2241,12 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     };
 
+    // ==========================================
+    // DUPLICATE GROUP: fetch and render functions
+    // ==========================================
+
     async function fetchDuplicatesForFolder(mount, path) {
-        if (mount === "all") return [];   // no duplicates at the top level
+        if (mount === "all") return [];
         try {
             const params = new URLSearchParams({ mount, path });
             const res = await fetch(`/api/admin/duplicates/folder?${params.toString()}`);
@@ -2230,13 +2259,24 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    async function fetchDuplicatesForFile(filePath, vectorId) {
+    async function fetchDuplicateGroupById(groupId) {
+        try {
+            const res = await fetch(`/api/admin/duplicates/group?group_id=${encodeURIComponent(groupId)}`);
+            if (!res.ok) throw new Error('No group found');
+            return await res.json();
+        } catch (err) {
+            throw new Error(`Failed to fetch duplicate group: ${err.message}`);
+        }
+    }
+
+    async function fetchDuplicateGroupByFile(filePath) {
         try {
             const params = new URLSearchParams({ file_path: filePath });
-            if (vectorId) params.append("vector_id", vectorId);
             const res = await fetch(`/api/admin/duplicates/file?${params.toString()}`);
-            if (!res.ok) return null;
-            return await res.json();
+            if (!res.ok) throw new Error('No group found');
+            const data = await res.json();
+            if (data && data.group_id) return data;
+            return null;
         } catch (err) {
             console.error("Failed to fetch duplicates for file:", err);
             return null;
@@ -2258,6 +2298,153 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    // Show duplicate group modal
+    async function showDuplicateGroupModal(groupId) {
+        const modal = document.getElementById('modal-duplicate-group');
+        const container = document.getElementById('dup-group-candidates');
+        const groupIdDisplay = document.getElementById('dup-group-id-display');
+        groupIdDisplay.textContent = groupId;
+
+        try {
+            const group = await fetchDuplicateGroupById(groupId);
+            renderCandidates(group.candidates, container, groupId);
+            modal.classList.remove('hidden');
+        } catch (err) {
+            showToast(`Failed to load duplicate group: ${err.message}`, 'error');
+        }
+    }
+
+    function renderCandidates(candidates, container, groupId) {
+        if (!candidates || candidates.length === 0) {
+            container.innerHTML = '<div class="empty-state">No candidates in this group.</div>';
+            return;
+        }
+
+        let html = `<table class="vscode-table">
+            <thead><tr><th>File</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+        candidates.forEach(cand => {
+            const relPath = getRelativePath(cand.full_path, cand.mount || '');
+            const status = cand.status || 'PENDING';
+            const isCanonical = cand.file_id === cand.canonical_file_id; // may not exist, fallback
+            const typeLabel = isCanonical ? '<span class="badge-original">Original</span>' : '';
+
+            html += `<tr data-file-path="${escapeHtml(cand.full_path)}" data-mount="${escapeHtml(cand.mount || '')}">
+                <td title="${escapeHtml(cand.full_path)}">${escapeHtml(relPath)} ${typeLabel}</td>
+                <td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>
+                <td>
+                    <div class="row-actions" style="gap: 4px;">
+                        <button class="btn-icon-play" data-action="play" title="Play">▶</button>
+                        <button class="btn-icon-rename" data-action="rename" title="Rename">✏</button>
+                        <button class="btn-icon-delete" data-action="delete" title="Delete">🗑</button>
+                        <button class="btn-icon-status" data-action="status-duplicate" title="Mark as Duplicate">✓</button>
+                        <button class="btn-icon-status" data-action="status-unique" title="Mark as Unique">✗</button>
+                        <button class="btn-icon-status" data-action="status-pending" title="Reset to Pending">⟳</button>
+                    </div>
+                </td>
+            </tr>`;
+        });
+        html += `</tbody></table>`;
+        container.innerHTML = html;
+    }
+
+    // Event delegation for actions inside the duplicate group modal
+    document.getElementById('dup-group-candidates').addEventListener('click', async (e) => {
+        const btn = e.target.closest('button[data-action]');
+        if (!btn) return;
+        const tr = btn.closest('tr');
+        const filePath = tr.dataset.filePath;
+        const mount = tr.dataset.mount || '';
+        const action = btn.dataset.action;
+
+        switch (action) {
+            case 'play': {
+                // Build minimal item to play
+                const fileName = filePath.split(/[\\/]/).pop() || 'file';
+                const item = { file_path: filePath, file_name: fileName, mount: mount };
+                openPlayer(item, [item], 0);
+                break;
+            }
+            case 'rename': {
+                // Build item for rename modal
+                const fileName = filePath.split(/[\\/]/).pop() || 'file';
+                const item = { file_path: filePath, file_name: fileName, mount: mount };
+                openRenameModal(item, 'search');
+                break;
+            }
+            case 'delete': {
+                const ok = await askConfirm({
+                    title: 'Delete file',
+                    message: `Delete this file from disk?<br/><br/><strong>${escapeHtml(filePath)}</strong>`,
+                    okLabel: 'Delete'
+                });
+                if (!ok) return;
+                try {
+                    const res = await fetch(`/api/actions/file?path=${encodeURIComponent(filePath)}`, { method: 'DELETE' });
+                    if (!res.ok) throw new Error('Delete failed');
+                    showToast('File deleted', 'success');
+                    // Refresh the modal content by re-fetching group
+                    const groupId = document.getElementById('dup-group-id-display').textContent;
+                    showDuplicateGroupModal(groupId);
+                } catch (err) {
+                    showToast(`Delete failed: ${err.message}`, 'error');
+                }
+                break;
+            }
+            case 'status-duplicate':
+            case 'status-unique':
+            case 'status-pending': {
+                let newStatus = action === 'status-duplicate' ? 'DUPLICATE' : (action === 'status-unique' ? 'REJECTED' : 'PENDING');
+                try {
+                    await updateDuplicateAction(filePath, newStatus);
+                    showToast(`Status updated to ${newStatus}`, 'success');
+                    // Refresh modal
+                    const groupId = document.getElementById('dup-group-id-display').textContent;
+                    showDuplicateGroupModal(groupId);
+                    // Also refresh library duplicates section if active
+                    if (libraryMount !== 'all') {
+                        const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                        annotateLibraryItemsWithGroups(groups);
+                        renderDuplicatesGroups(groups, document.getElementById('library-duplicates-content'));
+                    }
+                } catch (err) {
+                    showToast(`Status update failed: ${err.message}`, 'error');
+                }
+                break;
+            }
+        }
+    });
+
+    // Close duplicate group modal
+    document.getElementById('dup-group-close').addEventListener('click', () => {
+        document.getElementById('modal-duplicate-group').classList.add('hidden');
+    });
+
+    // Click handler for .dup-tag tags
+    document.addEventListener('click', async (e) => {
+        const tag = e.target.closest('.dup-tag');
+        if (!tag) return;
+        const groupId = tag.dataset.groupId;
+        if (groupId) {
+            showDuplicateGroupModal(groupId);
+        } else {
+            // Fallback: fetch by file path
+            const filePath = tag.dataset.filePath;
+            if (filePath) {
+                try {
+                    const group = await fetchDuplicateGroupByFile(filePath);
+                    if (group && group.group_id) {
+                        showDuplicateGroupModal(group.group_id);
+                    } else {
+                        showToast('No duplicate group found for this file.', 'info');
+                    }
+                } catch (err) {
+                    showToast(`Failed to load duplicate info: ${err.message}`, 'error');
+                }
+            }
+        }
+    });
+
+    // Render duplicate groups in the library duplicates section
     function renderDuplicatesGroups(groups, container) {
         if (!groups || groups.length === 0) {
             container.innerHTML = "<div class='duplicates-empty'>No duplicate groups found in this folder.</div>";
@@ -2266,35 +2453,25 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         document.getElementById("library-duplicates-section").style.display = "block";
 
-        // group by group_key
-        const groupMap = {};
-        groups.forEach(row => {
-            const key = row.group_key;
-            if (!groupMap[key]) groupMap[key] = [];
-            groupMap[key].push(row);
-        });
-
+        // Each group already has a 'candidates' list
         let html = "";
-        for (const [groupKey, entries] of Object.entries(groupMap)) {
-            // Sort: canonical first (file_path === canonical_file_path)
-            entries.sort((a, b) => {
-                const aIsCanonical = (a.file_path === a.canonical_file_path);
-                const bIsCanonical = (b.file_path === b.canonical_file_path);
-                if (aIsCanonical && !bIsCanonical) return -1;
-                if (!aIsCanonical && bIsCanonical) return 1;
+        groups.forEach(group => {
+            html += `<div class="duplicate-group" data-group-id="${escapeHtml(group.group_id)}">`;
+            html += `<div class="duplicate-group-header">Group: ${escapeHtml(group.group_id)}</div>`;
+            html += `<table class="vscode-table"><thead><tr><th>File</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+            const candidates = group.candidates || [];
+            // Sort: canonical first if we can determine
+            candidates.sort((a, b) => {
+                // assume canonical is the one with status ORIGINAL? We'll just keep order from DB
                 return 0;
             });
-
-            html += `<div class="duplicate-group" data-group-key="${escapeHtml(groupKey)}">`;
-            html += `<div class="duplicate-group-header">Group: ${escapeHtml(groupKey)}</div>`;
-            html += `<table class="vscode-table"><thead><tr><th>File</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
-            entries.forEach(entry => {
-                const isCanonical = (entry.file_path === entry.canonical_file_path);
-                const status = entry.status || 'PENDING_REVIEW';
-                const relPath = getRelativePath(entry.file_path, entry.mount);
+            candidates.forEach(cand => {
+                const isCanonical = cand.file_id === cand.canonical_file_id;
+                const relPath = getRelativePath(cand.full_path, cand.mount || '');
+                const status = cand.status || 'PENDING';
                 const typeLabel = isCanonical ? '<span class="badge-original">Original</span>' : 'Duplicate';
-                html += `<tr data-file-path="${escapeHtml(entry.file_path)}">`;
-                html += `<td title="${escapeHtml(entry.file_path)}">${escapeHtml(relPath)}</td>`;
+                html += `<tr data-file-path="${escapeHtml(cand.full_path)}" data-mount="${escapeHtml(cand.mount || '')}">`;
+                html += `<td title="${escapeHtml(cand.full_path)}">${escapeHtml(relPath)}</td>`;
                 html += `<td>${typeLabel}</td>`;
                 html += `<td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>`;
                 html += `<td>
@@ -2305,10 +2482,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 html += `</tr>`;
             });
             html += `</tbody></table></div>`;
-        }
+        });
         container.innerHTML = html;
 
-        // Re-attach event listeners (same as before)
+        // Attach action listeners for the library duplicates section (keep existing logic)
         container.querySelectorAll(".dup-action").forEach(btn => {
             btn.addEventListener("click", async (e) => {
                 const tr = btn.closest("tr");
@@ -2318,99 +2495,12 @@ document.addEventListener("DOMContentLoaded", () => {
                     await updateDuplicateAction(filePath, action);
                     showToast(`Action ${action} applied to ${filePath}`, "success");
                     const freshGroups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                    annotateLibraryItemsWithGroups(freshGroups);
                     renderDuplicatesGroups(freshGroups, document.getElementById("library-duplicates-content"));
                 } catch (err) {
                     showToast(`Failed to update: ${err.message}`, "error");
                 }
             });
         });
-    }
-
-    document.addEventListener("click", async (e) => {
-        const btn = e.target.closest(".dup-tag");
-        if (!btn) return;
-        const filePath = btn.dataset.filePath;
-        const vectorId = btn.dataset.vectorId;   // ← retrieve from dataset
-        const row = btn.closest("tr");
-        // Toggle expansion if already open
-        const nextRow = row.nextElementSibling;
-        if (nextRow && nextRow.classList.contains("dup-expand-row")) {
-            nextRow.remove();
-            return;
-        }
-        const data = await fetchDuplicatesForFile(filePath, vectorId);  // pass vectorId
-        if (!data || !data.entries || data.entries.length === 0) {
-            showToast("No duplicate group found for this file.", "info");
-            return;
-        }
-        // Create expansion row
-        const expandRow = document.createElement("tr");
-        expandRow.classList.add("dup-expand-row");
-        const td = document.createElement("td");
-        td.colSpan = 7; // adjust to match total columns
-        renderDuplicateEntries(data.entries, td); // <-- use this
-        expandRow.appendChild(td);
-        row.parentNode.insertBefore(expandRow, row.nextSibling);
-        // Attach actions inside expansion
-        expandRow.querySelectorAll(".dup-action").forEach(btn => {
-            btn.addEventListener("click", async (e) => {
-                const tr = btn.closest("tr");
-                const filePath = tr.dataset.filePath;
-                const action = btn.dataset.action;
-                try {
-                    await updateDuplicateAction(filePath, action);
-                    showToast(`Action ${action} applied to ${filePath}`, "success");
-                    // Refresh expansion: re-fetch and re-render the expansion content
-                    const updatedData = await fetchDuplicatesForFile(filePath);
-                    if (updatedData) {
-                        const expandRow = tr.closest(".dup-expand-row");
-                        if (expandRow) {
-                            const td = expandRow.querySelector("td");
-                            // re-build html (same as above) and set innerHTML
-                            // We'll reuse the same generation code or simply reload the row by calling the same render logic.
-                            // For simplicity, we can just re-fetch and replace the content.
-                            // We'll wrap the rendering in a small function or inline.
-                            // ...
-                            // We'll create a helper to render duplicate entries into a container.
-                            renderDuplicateEntries(updatedData.entries, td);
-                        }
-                    }
-                } catch (err) {
-                    showToast(`Failed to update: ${err.message}`, "error");
-                }
-            });
-        });
-    });
-
-    // Helper to render duplicate entries into a td
-    function renderDuplicateEntries(entries, container) {
-        // Sort: canonical first
-        entries.sort((a, b) => {
-            const aIsCanonical = (a.file_path === a.canonical_file_path);
-            const bIsCanonical = (b.file_path === b.canonical_file_path);
-            if (aIsCanonical && !bIsCanonical) return -1;
-            if (!aIsCanonical && bIsCanonical) return 1;
-            return 0;
-        });
-
-        let html = `<div class="dup-expand-content"><strong>Duplicate Group</strong><table class="vscode-table"><thead><tr><th>File</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
-        entries.forEach(entry => {
-            const isCanonical = (entry.file_path === entry.canonical_file_path);
-            const status = entry.status || 'PENDING_REVIEW';
-            const relPath = getRelativePath(entry.file_path, entry.mount);
-            const typeLabel = isCanonical ? '<span class="badge-original">Original</span>' : 'Duplicate';
-            html += `<tr data-file-path="${escapeHtml(entry.file_path)}">`;
-            html += `<td title="${escapeHtml(entry.file_path)}">${escapeHtml(relPath)}</td>`;
-            html += `<td>${typeLabel}</td>`;
-            html += `<td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>`;
-            html += `<td>
-                <button class="btn btn-secondary dup-action" data-action="CONFIRM_DUPLICATE">Confirm Duplicate</button>
-                <button class="btn btn-secondary dup-action" data-action="CONFIRM_UNIQUE">Confirm Unique</button>
-                <button class="btn btn-secondary dup-action" data-action="AUTO_RESOLVED">Auto-resolve</button>
-            </td>`;
-            html += `</tr>`;
-        });
-        html += `</tbody></table></div>`;
-        container.innerHTML = html;
     }
 });

@@ -1401,3 +1401,21 @@ body {
     color: #f87171;          /* soft red */
     background: rgba(248, 113, 113, 0.15);
 }
+
+.btn-icon-play,
+.btn-icon-rename,
+.btn-icon-delete,
+.btn-icon-status {
+    background: transparent;
+    border: none;
+    color: var(--text-muted, #aaa);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 14px;
+    transition: background 0.15s, color 0.15s;
+}
+.btn-icon-play:hover { color: #4ec9b0; }
+.btn-icon-rename:hover { color: #d7ba7d; }
+.btn-icon-delete:hover { color: var(--danger-red); background: rgba(241,70,104,0.1); }
+.btn-icon-status:hover { color: #fff; background: rgba(255,255,255,0.08); }

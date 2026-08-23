@@ -159,7 +159,7 @@
                     </tbody>
                 </table>
             </section>
-        </div> <!-- Correct closure for tab-panel-search -->
+        </div>
 
         <!-- Tab: Downloads View -->
         <div id="tab-panel-downloads" class="tab-panel">
@@ -173,7 +173,6 @@
                         <option value="completed">Completed</option>
                         <option value="failed">Failed</option>
                     </select>
-                    <!-- Added Refresh Button -->
                     <button id="btn-refresh-downloads" class="btn btn-secondary" title="Refresh Downloads">
                         &#8635; Refresh
                     </button>
@@ -191,7 +190,6 @@
                 </div>
             </div>
 
-            <!-- Missing Downloads Table Added Below -->
             <section class="results-container">
                 <table class="vscode-table">
                     <colgroup>
@@ -276,6 +274,19 @@
             <div class="modal-buttons">
                 <button id="confirm-cancel" class="btn btn-secondary">Cancel</button>
                 <button id="confirm-ok" class="btn btn-danger">Delete from disk</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DUPLICATE GROUP: modal to show candidates -->
+    <div id="modal-duplicate-group" class="modal hidden">
+        <div class="modal-content" style="width: min(820px, 92vw);">
+            <h3>Duplicate Group: <span id="dup-group-id-display"></span></h3>
+            <div id="dup-group-candidates" style="max-height: 400px; overflow-y: auto;">
+                <!-- populated by JS -->
+            </div>
+            <div class="modal-buttons">
+                <button id="dup-group-close" class="btn btn-secondary">Close</button>
             </div>
         </div>
     </div>
