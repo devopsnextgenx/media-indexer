@@ -2212,7 +2212,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td>${idx + 1}</td>
                 <td class="col-thumb">
                     <!-- item.thumbnail is a base64 image -->
-                    <img class="thumb-img" src="${item.thumbnail ? `data:image/jpg;base64,${item.thumbnail}` : THUMB_PLACEHOLDER}" alt="thumb" loading="lazy"/>
+                    <img class="download-thumb-img" src="${item.thumbnail ? `data:image/jpg;base64,${item.thumbnail}` : THUMB_PLACEHOLDER}" alt="thumb" loading="lazy"/>
                 </td>
                 <td>${escapeHtml(item.title)}</td>
                 <td class="col-details">
