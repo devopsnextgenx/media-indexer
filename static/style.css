@@ -333,7 +333,6 @@ body {
 
 .download-thumb-img {
     width: 84px;
-    aspect-ratio: 251 / 377;
     height: auto;
     object-fit: cover;
     border-radius: 3px;
