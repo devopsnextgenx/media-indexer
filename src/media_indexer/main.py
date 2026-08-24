@@ -756,7 +756,7 @@ def get_downloads():
     
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT entry, status, updated_at, title FROM download_tracker ORDER BY updated_at DESC")
+            cursor.execute("SELECT entry, status, updated_at, title, size, thumbnail FROM download_tracker ORDER BY updated_at DESC")
             rows = cursor.fetchall()
             
             # Map database columns to the structure expected by the frontend UI
@@ -769,6 +769,8 @@ def get_downloads():
                 actress = parts[3] if len(parts) >= 4 else url
                 quality = parts[1] if len(parts) >= 2 else None
                 language = parts[2] if len(parts) >= 3 else None
+                size = row.get("size")
+                thumbnail = row.get("thumbnail")
 
                 results.append({
                     "id": entry_text,  # Primary key string
@@ -778,18 +780,13 @@ def get_downloads():
                     "quality": quality,
                     "language": language,
                     "status": row.get("status", "PENDING"),
-                    "created_at": row.get("updated_at")
+                    "created_at": row.get("updated_at"),
+                    "size": size,
+                    "thumbnail": thumbnail
                 })
             return results
     finally:
         conn.close()
-
-@app.patch("/api/actions/downloads/{download_id:path}", tags=["Download Tracker"])
-def update_download_status(download_id: str, update: DownloadUpdate):
-    success = mysql_db_instance.update_download_status(download_id, update.status.upper())
-    if not success:
-        raise HTTPException(status_code=404, detail="Download entry not found or update failed")
-    return {"status": "success", "entry": download_id, "updated_status": update.status.upper()}
 
 @app.delete("/api/actions/downloads/{download_id:path}", tags=["Download Tracker"])
 def delete_download(download_id: str):
@@ -805,6 +802,8 @@ class DownloadEntryRequest(BaseModel):
 class UpdateEntryStatusRequest(BaseModel):
     entry: str
     status: str
+    size: int | None = None
+    thumbnail: str | None = None
 
 
 @app.post("/api/ytdlp/download-entry", tags=["Browser Plugin"])
@@ -839,11 +838,13 @@ def add_download_entry(req: DownloadEntryRequest):
 def update_entry_status(req: UpdateEntryStatusRequest):
     entry_text = req.entry.strip()
     status_text = req.status.strip().upper()
+    size_value = req.size
+    thumbnail_value = req.thumbnail
 
     if not entry_text or not status_text:
         raise HTTPException(status_code=400, detail="Entry and status are required")
 
-    success = mysql_db_instance.update_download_status(entry_text, status_text)
+    success = mysql_db_instance.update_download_status(entry_text, status_text, size_value or 0, thumbnail_value)
     if not success:
         raise HTTPException(status_code=404, detail="Entry not found or failed to update")
 
@@ -852,6 +853,13 @@ def update_entry_status(req: UpdateEntryStatusRequest):
         "entry": entry_text,
         "updated_status": status_text
     }
+
+@app.patch("/api/actions/downloads/{download_id:path}", tags=["Download Tracker"])
+def update_download_status(download_id: str, update: DownloadUpdate):
+    success = mysql_db_instance.update_download_status(download_id, update.status.upper())
+    if not success:
+        raise HTTPException(status_code=404, detail="Download entry not found or update failed")
+    return {"status": "success", "entry": download_id, "updated_status": update.status.upper()}
 
 class DeleteDownloadRequest(BaseModel):
     entry: str
@@ -873,7 +881,7 @@ def clean_record_from_index(path: str = Query(..., description="Absolute file pa
     mount_path = get_mount_path(path)
     return MediaActions.clean_record_from_index(file_path=mount_path)
 
-@app.get("/api/admin/duplicates/clean", tags=["Admin"])
+@app.delete("/api/admin/duplicates/clean", tags=["Admin"])
 def clean_duplicate_tables():
     results = mysql_db_instance.truncate_duplicate_tables()
     return {"status": "success", "results": results}

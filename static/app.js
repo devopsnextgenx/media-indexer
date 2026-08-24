@@ -1263,7 +1263,7 @@ document.addEventListener("DOMContentLoaded", () => {
     //     modalYt.classList.remove("hidden");
     //     updateCookieStatus();
     // });
-    
+
     ytClose.addEventListener("click", () => modalYt.classList.add("hidden"));
     ytCookies.addEventListener("input", updateCookieStatus);
 
@@ -1317,12 +1317,19 @@ document.addEventListener("DOMContentLoaded", () => {
         btnCleanDuplicates.innerText = "Cleaning...";
 
         try {
-            const res = await fetch("/api/admin/duplicates/clean", { method: "POST" });
+            const res = await fetch("/api/admin/duplicates/clean", { method: "delete" });
             const data = await res.json();
 
             if (!res.ok) throw new Error(data.detail || "Clean failed");
 
-            showToast(`Duplicate groups cleaned. Removed ${data.deleted_groups} group(s).`, "success");
+            // {
+            //     "status": "success",
+            //     "results": {
+            //         "duplicate_group_candidates": 0,
+            //         "duplicate_groups": 24
+            //     }
+            // }
+            showToast(`Duplicate groups cleaned. Removed ${JSON.stringify(data.results)} group(s).`, "success");
             document.getElementById("library-duplicates-section").style.display = "none";
         } catch (err) {
             showToast(`Failed to clean duplicate groups: ${err.message}`, "error", 8000);
@@ -2178,7 +2185,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
         renderDownloads(items);
     }
-
+    function bytesToMB(bytes, decimals = 2) {
+        if (bytes === 0) return '0.00 MB';
+        
+        const mb = bytes / (1024 * 1024); // 1,048,576 bytes in a MB
+        return `${mb.toFixed(decimals)} MB`;
+    }
     function renderDownloads(items) {
         const downloadsBody = document.getElementById("downloads-body");
         const downloadsCount = document.getElementById("downloads-count");
@@ -2198,6 +2210,10 @@ document.addEventListener("DOMContentLoaded", () => {
         downloadsBody.innerHTML = items.map((item, idx) => `
             <tr>
                 <td>${idx + 1}</td>
+                <td class="col-thumb">
+                    <!-- item.thumbnail is a base64 image -->
+                    <img class="thumb-img" src="${item.thumbnail ? `data:image/jpg;base64,${item.thumbnail}` : THUMB_PLACEHOLDER}" alt="thumb" loading="lazy"/>
+                </td>
                 <td>${escapeHtml(item.title)}</td>
                 <td class="col-details">
                     <div class="file-title" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</div>
@@ -2205,6 +2221,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 </td>
                 <td><strong>${escapeHtml(item.actress || 'N/A')}</strong></td>
                 <td><code>${escapeHtml(item.quality || 'N/A')}</code></td>
+                <td>${item.size ? bytesToMB(item.size) : 'N/A'}</td>
                 <td><small>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : 'N/A')}</small></td>
                 <td><span class="status-badge ${escapeHtml((item.status || 'pending').toLowerCase())}">${escapeHtml(item.status || 'Pending')}</span></td>
                 <td class="col-actions">

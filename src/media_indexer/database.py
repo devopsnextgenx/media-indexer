@@ -307,6 +307,8 @@ class MySQLDatabase:
                         title VARCHAR(255) DEFAULT NULL,
                         status VARCHAR(50) DEFAULT 'PENDING',
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        thumbnail MEDIUMTEXT DEFAULT NULL,
+                        size BIGINT DEFAULT 0,
                         INDEX idx_status (status)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """)
@@ -358,11 +360,15 @@ class MySQLDatabase:
         results = {}
         try:
             with conn.cursor() as cursor:
+                cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+
                 for table in ["duplicate_group_candidates", "duplicate_groups"]:
                     cursor.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                     removed = (cursor.fetchone() or {}).get("cnt", 0)
                     cursor.execute(f"TRUNCATE TABLE {table}")
                     results[table] = removed
+
+                cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
             conn.close()
             logger.info(f"Truncated duplicate tables: {results}")
         except Exception as e:
@@ -638,6 +644,8 @@ class MySQLDatabase:
         results = {}
         try:
             with conn.cursor() as cursor:
+                cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+
                 for table in to_truncate:
                     cursor.execute(f"SHOW TABLES LIKE '{table}'")
                     if cursor.fetchone():
@@ -645,6 +653,8 @@ class MySQLDatabase:
                         results[table] = "truncated"
                     else:
                         results[table] = "skipped (not exists)"
+
+                cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
             conn.close()
             logger.info(f"Truncated tables: {', '.join(to_truncate)}")
         except Exception as e:
@@ -834,7 +844,7 @@ class MySQLDatabase:
             logger.error(f"Failed to add/update download entry '{entry}': {e}")
             return "ERROR"
 
-    def update_download_status(self, entry: str, status: str) -> bool:
+    def update_download_status(self, entry: str, status: str, size: int = 0, thumbnail: str = None) -> bool:
         if not self.enabled:
             return False
         conn = self._get_connection()
@@ -842,8 +852,8 @@ class MySQLDatabase:
             return False
         try:
             with conn.cursor() as cursor:
-                query = "UPDATE download_tracker SET status=%s WHERE entry=%s"
-                cursor.execute(query, (status, entry))
+                query = "UPDATE download_tracker SET status=%s, size=%s, thumbnail=%s WHERE entry=%s"
+                cursor.execute(query, (status, size, thumbnail, entry))
                 updated = cursor.rowcount > 0
             conn.close()
             return updated

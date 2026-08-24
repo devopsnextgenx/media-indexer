@@ -34,6 +34,11 @@ COOKIE_TARGET="/media/data/Crucial-X6/ShareMe/media/songs/target/cookies-zbox.tx
 TMP_DIR=~/tmp
 TRACKER_FILE=$(mktemp -p "$TMP_DIR")
 
+# Thumbnail generation settings
+THUMB_WIDTH=256
+THUMB_HEIGHT=256
+THUMB_SEEK="00:00:03"
+
 API_URL="http://minis.local:2345/api/ytdlp/update-status"
 
 YT_DLP=~/bin/yt-dlp
@@ -64,16 +69,33 @@ log_debug() {
 # ─────────────────────────────────────────────
 #  Update Status API Call
 # ─────────────────────────────────────────────
+# Args:
+#   $1 entry_string   (required)
+#   $2 status         (required)
+#   $3 size_bytes     (optional - integer, size on disk of the moved file)
+#   $4 thumbnail_b64  (optional - base64-encoded 256x256 jpeg)
 update_status() {
     local entry_string="$1"
     local status="$2"
+    local size_bytes="$3"
+    local thumbnail_b64="$4"
+
+    local payload
+    payload=$(jq -n \
+        --arg entry "$entry_string" \
+        --arg status "$status" \
+        --argjson size "${size_bytes:-null}" \
+        --arg thumb "$thumbnail_b64" \
+        '{entry: $entry, status: $status}
+         + (if $size != null then {size: $size} else {} end)
+         + (if $thumb != "" then {thumbnail: $thumb} else {} end)')
 
     local response
     response=$(curl -s -X 'POST' \
       "$API_URL" \
       -H 'accept: application/json' \
       -H 'Content-Type: application/json' \
-      -d "{\"entry\": \"${entry_string}\", \"status\": \"${status}\"}")
+      -d "$payload")
 
     local res_status res_entry
     res_status=$(echo "$response" | jq -r '.status // empty')
@@ -269,6 +291,71 @@ select_audio_format() {
 }
 
 # ─────────────────────────────────────────────
+#  Find the stream index of the thumbnail that
+#  yt-dlp embedded via --embed-thumbnail (stored
+#  as a video stream with disposition=attached_pic)
+# ─────────────────────────────────────────────
+find_attached_pic_stream() {
+    local video_file="$1"
+
+    ffprobe -v error -select_streams v \
+        -show_entries stream=index:stream_disposition=attached_pic \
+        -of csv=p=0 "$video_file" 2>/dev/null \
+        | awk -F',' '$2==1 {print $1; exit}'
+}
+
+# ─────────────────────────────────────────────
+#  Extract the thumbnail yt-dlp already embedded
+#  in the mp4 (via --embed-thumbnail), resize it
+#  to 256x256, and base64-encode it. Cleans up
+#  its own temp file before returning. Falls back
+#  to grabbing a video frame only if no embedded
+#  thumbnail stream is found.
+# ─────────────────────────────────────────────
+generate_thumbnail_b64() {
+    local video_file="$1"
+
+    if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+        log_debug "ffmpeg/ffprobe not found; skipping thumbnail extraction."
+        echo ""
+        return 1
+    fi
+
+    local thumb_file
+    thumb_file=$(mktemp -p "$TMP_DIR" --suffix=.jpg)
+
+    local pic_stream
+    pic_stream=$(find_attached_pic_stream "$video_file")
+
+    if [ -n "$pic_stream" ]; then
+        log_debug "Found embedded thumbnail at stream index $pic_stream in: $video_file"
+        ffmpeg -y -i "$video_file" -map "0:${pic_stream}" \
+            -vf "scale=${THUMB_WIDTH}:${THUMB_HEIGHT}:force_original_aspect_ratio=increase,crop=${THUMB_WIDTH}:${THUMB_HEIGHT}" \
+            -frames:v 1 "$thumb_file" >/dev/null 2>&1
+    else
+        log_debug "No embedded thumbnail found in $video_file; falling back to frame grab."
+        ffmpeg -y -ss "$THUMB_SEEK" -i "$video_file" -vframes 1 \
+            -vf "scale=${THUMB_WIDTH}:${THUMB_HEIGHT}:force_original_aspect_ratio=increase,crop=${THUMB_WIDTH}:${THUMB_HEIGHT}" \
+            "$thumb_file" >/dev/null 2>&1
+    fi
+
+    if [ ! -s "$thumb_file" ]; then
+        log "  [WARN] Failed to obtain thumbnail for: $video_file"
+        rm -f "$thumb_file"
+        echo ""
+        return 1
+    fi
+
+    local b64
+    b64=$(base64 -w 0 "$thumb_file")
+
+    # Delete the local thumbnail file/data now that it's encoded for upload
+    rm -f "$thumb_file"
+
+    echo "$b64"
+}
+
+# ─────────────────────────────────────────────
 #  Download one entry
 # ─────────────────────────────────────────────
 download_entry() {
@@ -336,13 +423,29 @@ download_entry() {
 
     mkdir -p "$move_location"
     mv "$downloaded_file" "$move_location/"
-    local moved_name
+    local moved_name moved_path
     moved_name=$(basename "$downloaded_file")
+    moved_path="$move_location/$moved_name"
 
     log "  [OK] Moved: $moved_name → $move_location/"
     notify-send "Download Completed" "Song '$moved_name' downloaded and moved to $move_location." 2>/dev/null || true
 
-    update_status "$entry_string" "Completed"
+    # Size on disk (actual blocks allocated, in bytes) for the moved file
+    local file_size
+    file_size=$(du -B1 --apparent-size=off "$moved_path" 2>/dev/null | awk '{print $1}')
+    [ -z "$file_size" ] && file_size=$(stat -c%s "$moved_path" 2>/dev/null)
+    log_debug "Size on disk for $moved_name: ${file_size:-unknown} bytes"
+
+    # 256x256 base64 thumbnail, generated then deleted locally once encoded
+    local thumb_b64
+    thumb_b64=$(generate_thumbnail_b64 "$moved_path")
+    log_debug "Thumbnail generated: $([ -n "$thumb_b64" ] && echo yes || echo no)"
+
+    update_status "$entry_string" "Completed" "$file_size" "$thumb_b64"
+
+    # Explicitly drop the in-memory thumbnail data now that it's been sent
+    unset thumb_b64
+
     return 0
 }
 
