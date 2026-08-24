@@ -7,11 +7,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const searchHistoryMenu = document.getElementById("search-history-menu");
 
     const btnScan = document.getElementById("btn-scan");
+    const btnDetectDuplicates = document.getElementById("btn-detect-duplicates");
     const btnCleanIndex = document.getElementById("btn-clean-index");
+    const btnCleanDuplicates = document.getElementById("btn-clean-duplicates");
     const btnBulk = document.getElementById("btn-bulk");
     const btnYt = document.getElementById("btn-yt");
 
     const mountSelect = document.getElementById("mount-select");
+    const nameTierMinDf = document.getElementById("name-tier-min-df");
     const scanModeToggle = document.getElementById("scan-mode-toggle");
     const scanModeLabel = document.getElementById("scan-mode-label");
     const scanConsole = document.getElementById("scan-console");
@@ -1129,6 +1132,28 @@ document.addEventListener("DOMContentLoaded", () => {
         btnScan.disabled = false;
     });
 
+    btnDetectDuplicates.addEventListener("click", async () => {
+        const ok = await askConfirm({
+            title: "Detect duplicate files",
+            message: "This will scan all mounted files and detect duplicates based on content hash. This may take a while.",
+            okLabel: "Start detection"
+        });
+        if (!ok) return;
+
+        try {
+            const res = await fetch(`/api/admin/duplicates/detect?mount=${encodeURIComponent(mountSelect.value)}&nameTierMinDf=${encodeURIComponent(nameTierMinDf.value)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({})
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || "Duplicate detection failed");
+            showToast(`Duplicate detection started. ${data.message || ""}`, "success");
+        } catch (err) {
+            showToast(`Duplicate detection failed: ${err.message}`, "error", 8000);
+        }
+    });
+
     function formatEta(seconds) {
         const total = Math.max(0, Math.round(Number(seconds) || 0));
         if (!total) return "--";
@@ -1204,27 +1229,27 @@ document.addEventListener("DOMContentLoaded", () => {
         };
     }
 
-    btnBulk.addEventListener("click", async () => {
-        const ok = await askConfirm({
-            title: "Bulk rename files on disk",
-            message: "Replace all underscores '_' with spaces in mounted file names? This renames files on disk.",
-            okLabel: "Rename files"
-        });
-        if (!ok) return;
+    // btnBulk.addEventListener("click", async () => {
+    //     const ok = await askConfirm({
+    //         title: "Bulk rename files on disk",
+    //         message: "Replace all underscores '_' with spaces in mounted file names? This renames files on disk.",
+    //         okLabel: "Rename files"
+    //     });
+    //     if (!ok) return;
 
-        try {
-            const res = await fetch("/api/actions/bulk-normalize-underscores", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({})
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || "Bulk rename failed");
-            showToast(`Bulk rename complete. Updated ${data.count} files.`, "success");
-        } catch (err) {
-            showToast(`Bulk rename failed: ${err.message}`, "error", 8000);
-        }
-    });
+    //     try {
+    //         const res = await fetch("/api/actions/bulk-normalize-underscores", {
+    //             method: "POST",
+    //             headers: { "Content-Type": "application/json" },
+    //             body: JSON.stringify({})
+    //         });
+    //         const data = await res.json();
+    //         if (!res.ok) throw new Error(data.detail || "Bulk rename failed");
+    //         showToast(`Bulk rename complete. Updated ${data.count} files.`, "success");
+    //     } catch (err) {
+    //         showToast(`Bulk rename failed: ${err.message}`, "error", 8000);
+    //     }
+    // });
 
     function updateCookieStatus() {
         const hasCookies = ytCookies.value.trim().length > 0;
@@ -1234,10 +1259,11 @@ document.addEventListener("DOMContentLoaded", () => {
         ytCookieStatus.classList.toggle("ok", hasCookies);
     }
 
-    btnYt.addEventListener("click", () => {
-        modalYt.classList.remove("hidden");
-        updateCookieStatus();
-    });
+    // btnYt.addEventListener("click", () => {
+    //     modalYt.classList.remove("hidden");
+    //     updateCookieStatus();
+    // });
+    
     ytClose.addEventListener("click", () => modalYt.classList.add("hidden"));
     ytCookies.addEventListener("input", updateCookieStatus);
 
@@ -1275,6 +1301,34 @@ document.addEventListener("DOMContentLoaded", () => {
         } finally {
             btnCleanIndex.innerText = original;
             btnCleanIndex.disabled = false;
+        }
+    });
+
+    btnCleanDuplicates.addEventListener("click", async () => {
+        const ok = await askConfirm({
+            title: "Clean duplicate groups",
+            message: "This will remove all duplicate group records from the database. It does not delete any files on disk.",
+            okLabel: "Clean duplicates"
+        });
+        if (!ok) return;
+
+        btnCleanDuplicates.disabled = true;
+        const original = btnCleanDuplicates.innerText;
+        btnCleanDuplicates.innerText = "Cleaning...";
+
+        try {
+            const res = await fetch("/api/admin/duplicates/clean", { method: "POST" });
+            const data = await res.json();
+
+            if (!res.ok) throw new Error(data.detail || "Clean failed");
+
+            showToast(`Duplicate groups cleaned. Removed ${data.deleted_groups} group(s).`, "success");
+            document.getElementById("library-duplicates-section").style.display = "none";
+        } catch (err) {
+            showToast(`Failed to clean duplicate groups: ${err.message}`, "error", 8000);
+        } finally {
+            btnCleanDuplicates.innerText = original;
+            btnCleanDuplicates.disabled = false;
         }
     });
 

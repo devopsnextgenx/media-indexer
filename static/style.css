@@ -220,6 +220,19 @@ body {
     font-size: 0.85rem;
 }
 
+.form-input {
+    background-color: #3c3c3c;
+    color: var(--text-active);
+    border: 1px solid var(--border-color);
+    padding: 7px 8px;
+    border-radius: 2px;
+    font-size: 0.85rem;
+}
+
+.name-tier-min-df {
+    width: 50px;
+}
+
 .results-count {
     font-size: 0.8rem;
     color: #888;

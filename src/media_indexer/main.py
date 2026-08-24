@@ -873,6 +873,11 @@ def clean_record_from_index(path: str = Query(..., description="Absolute file pa
     mount_path = get_mount_path(path)
     return MediaActions.clean_record_from_index(file_path=mount_path)
 
+@app.get("/api/admin/duplicates/clean", tags=["Admin"])
+def clean_duplicate_tables():
+    results = mysql_db_instance.truncate_duplicate_tables()
+    return {"status": "success", "results": results}
+
 
 @app.get("/api/admin/duplicates/groups", tags=["Admin"])
 def list_duplicate_groups(
@@ -936,14 +941,15 @@ def update_duplicate_action(body: dict):
     return {"status": "updated", "file_path": file_path, "new_status": action}
 
 @app.post("/api/admin/duplicates/detect", tags=["Admin"])
-def trigger_duplicate_detection(mount: str = Query(None)):
+def trigger_duplicate_detection(mount: str = Query(None), nameTierMinDf: int = Query(3, ge=3, description="Minimum document frequency for name tier")):
     if mount:
         if mount not in scanners:
             raise HTTPException(status_code=404, detail="Mount not found")
         detector = DuplicateDetector(
             qdrant_client, COLLECTION_NAME,
             similarity_threshold=settings.duplicates.similarity_threshold,
-            media_type=MOUNT_REGISTRY[mount].media_type
+            media_type=MOUNT_REGISTRY[mount].media_type,
+            nameTierMinDf=nameTierMinDf
         )
         detector.detect_for_mount(mount, MOUNT_REGISTRY[mount].path)
         return {"status": "success", "mount": mount}
@@ -952,11 +958,11 @@ def trigger_duplicate_detection(mount: str = Query(None)):
             detector = DuplicateDetector(
                 qdrant_client, COLLECTION_NAME,
                 similarity_threshold=settings.duplicates.similarity_threshold,
-                media_type=mnt.media_type
+                media_type=mnt.media_type,
+                nameTierMinDf=nameTierMinDf
             )
             detector.detect_for_mount(name, mnt.path)
         return {"status": "success", "message": "Duplicate detection run for all mounts"}
-
 
 @app.on_event("startup")
 def setup_cron():

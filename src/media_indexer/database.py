@@ -348,6 +348,27 @@ class MySQLDatabase:
     # ----------------------------------------------------------------------
     # Duplicate groups – new schema methods
     # ----------------------------------------------------------------------
+    def truncate_duplicate_tables(self) -> dict:
+        """Truncate duplicate_groups and duplicate_group_candidates tables."""
+        if not self.enabled:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        results = {}
+        try:
+            with conn.cursor() as cursor:
+                for table in ["duplicate_group_candidates", "duplicate_groups"]:
+                    cursor.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
+                    removed = (cursor.fetchone() or {}).get("cnt", 0)
+                    cursor.execute(f"TRUNCATE TABLE {table}")
+                    results[table] = removed
+            conn.close()
+            logger.info(f"Truncated duplicate tables: {results}")
+        except Exception as e:
+            logger.error(f"Failed to truncate duplicate tables: {e}")
+        return results
+
     def insert_duplicate_group(self, group_id: str, title_key: str,
                                member_count: int, mount: str, folder_path: str) -> bool:
         if not self.enabled:

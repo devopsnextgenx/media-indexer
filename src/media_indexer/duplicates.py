@@ -76,7 +76,7 @@ ARTIST_NAME_HINTS = {
 }
 
 # Corpus frequency thresholds
-NAME_TIER_MIN_DF = 5
+NAME_TIER_MIN_DF = 3
 NGRAM_MIN_DF = 2
 NGRAM_SIZES = (2, 3)
 
@@ -176,13 +176,13 @@ class CorpusStats:
             if not any(w in ARTIST_NAME_HINTS for w in words):
                 self.movie_phrase_words.update(words)
 
-    def is_recurring(self, code: str) -> bool:
-        return self.df.get(code, 0) >= NAME_TIER_MIN_DF
+    def is_recurring(self, nameTierMinDf, code: str) -> bool:
+        return self.df.get(code, 0) >= nameTierMinDf
 
 # ---------------------------------------------------------------------------
 # Tier classification
 # ---------------------------------------------------------------------------
-def classify_files(files: List[SongFile], stats: CorpusStats):
+def classify_files(files: List[SongFile], stats: CorpusStats, nameTierMinDf: int = NAME_TIER_MIN_DF):
     for f in files:
         tiers = []
         for tok, code in zip(f.tokens, f.codes):
@@ -190,7 +190,7 @@ def classify_files(files: List[SongFile], stats: CorpusStats):
                 tiers.append("artist")
             elif tok in f.folder_tokens:   # folder name as artist hint
                 tiers.append("artist")
-            elif stats.is_recurring(code):
+            elif stats.is_recurring(nameTierMinDf, code):
                 tiers.append("movie" if tok in stats.movie_phrase_words else "artist")
             else:
                 tiers.append("title")
@@ -336,11 +336,12 @@ def _group_id_for(members: List[str], by_id: Dict[str, SongFile]) -> str:
 class DuplicateDetector:
     def __init__(self, qdrant_client, collection_name: str,
                  similarity_threshold: float = PAIR_SCORE_THRESHOLD,
-                 media_type: str = "auto"):
+                 media_type: str = "auto", nameTierMinDf: int = NAME_TIER_MIN_DF):
         self.qdrant = qdrant_client
         self.collection_name = collection_name
         self.similarity_threshold = similarity_threshold
         self.media_type = media_type
+        self.nameTierMinDf = nameTierMinDf
 
     def detect_for_mount(self, mount_name: str, mount_path: str):
         """Run duplicate detection for all files in a mount."""
@@ -385,7 +386,7 @@ class DuplicateDetector:
         stats = CorpusStats(song_files)
 
         # 5. Classify tokens
-        classify_files(song_files, stats)
+        classify_files(song_files, stats, self.nameTierMinDf)
 
         # 6. Candidate blocking & scoring
         logger.info("Building candidate pairs...")

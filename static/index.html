@@ -16,14 +16,19 @@
                 <select id="mount-select" class="form-select" style="background: #252526; color: #fff; border: 1px solid #3c3c3c; padding: 4px 8px; border-radius: 3px; font-size: 13px;">
                     <option value="all">All Mounts</option>
                 </select>
+                <input type="text" id="name-tier-min-df" class="name-tier-min-df form-input" placeholder="Name Tier Min DF" value="3"/>
                 
                 <button id="scan-mode-toggle" type="button" data-mode="incremental" style="background: #252526; color: #fff; border: 1px solid #3c3c3c; padding: 4px 10px; border-radius: 3px; font-size: 13px; cursor: pointer;">
                     Mode: <span id="scan-mode-label" style="font-weight: 600; color: #4ec9b0;">Incremental</span>
                 </button>
             </div>
 
-            <button id="btn-scan" class="btn btn-primary">Scan & Index</button>            <button id="btn-clean-index" class="btn btn-danger">Clean Vector DB</button>            <button id="btn-bulk" class="btn btn-secondary">Bulk Clean '_'</button>
-            <button id="btn-yt" class="btn btn-secondary">yt-dlp Download</button>
+            <button id="btn-scan" class="btn btn-primary">Scan & Index</button>
+            <button id="btn-detect-duplicates" class="btn btn-primary">Detect Duplicates</button>
+            <button id="btn-clean-index" class="btn btn-danger">Clean Indexing</button>
+            <button id="btn-clean-duplicates" class="btn btn-danger">Clean Duplicates</button>
+            <!-- <button id="btn-bulk" class="btn btn-secondary">Bulk Clean '_'</button> -->
+            <!-- <button id="btn-yt" class="btn btn-secondary">yt-dlp Download</button> -->
             <a href="/docs" target="_blank" class="btn btn-info">Swagger Docs</a>
         </div>
     </header>
