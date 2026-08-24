@@ -2036,9 +2036,37 @@ document.addEventListener("DOMContentLoaded", () => {
     const allTabBtns = [tabBtnSearch, tabBtnLibrary, tabBtnDownloads];
     const allTabPanels = [tabPanelSearch, tabPanelLibrary, tabPanelDownloads];
 
+    let downloadsPollInterval = null;
+
+    function startDownloadsPolling() {
+        if (downloadsPollInterval) return; // already running
+        downloadsPollInterval = setInterval(() => {
+            if (downloadsTabActive) {
+                fetchDownloads();
+            }
+        }, 60000);
+    }
+
+    function stopDownloadsPolling() {
+        if (downloadsPollInterval) {
+            clearInterval(downloadsPollInterval);
+            downloadsPollInterval = null;
+        }
+    }
+
     function activateTab(btn, panel) {
         allTabBtns.forEach((b) => b?.classList.toggle("active", b === btn));
         allTabPanels.forEach((p) => p?.classList.toggle("active", p === panel));
+
+        // Handle downloads polling
+        if (panel === tabPanelDownloads) {
+            downloadsTabActive = true;
+            startDownloadsPolling();
+            // fetch immediately if not loaded? Already called in click handler; we can also ensure.
+        } else {
+            downloadsTabActive = false;
+            stopDownloadsPolling();
+        }
     }
 
     tabBtnSearch?.addEventListener("click", () => activateTab(tabBtnSearch, tabPanelSearch));
