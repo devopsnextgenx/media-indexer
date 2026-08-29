@@ -1772,10 +1772,25 @@ document.addEventListener("DOMContentLoaded", () => {
             return `
             <tr>
                 <td class="col-thumb">
-                    <img class="thumb-img" src="${thumbnailUrl(item)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'"/>
+                    <img 
+                    class="thumb-img" 
+                    src="${thumbnailUrl(item)}" 
+                    alt="thumb" 
+                    loading="lazy" 
+                    onerror="this.src='${THUMB_PLACEHOLDER}'" 
+                    onclick="playMedia(${idx})"
+                    style="cursor: pointer; display: inline-block; position: relative; z-index: 10;"
+                    />
                 </td>
                 <td class="col-details">
-                    <div class="file-title" title="${escapeHtml(item.normalized_title)}">${escapeHtml(item.normalized_title)}</div>
+                    <div 
+                        class="file-title" 
+                        title="${escapeHtml(item.normalized_title)}" 
+                        onclick="playMedia(${idx})"
+                        style="cursor: pointer; position: relative; z-index: 10;"
+                        >
+                        ${escapeHtml(item.normalized_title)}
+                    </div>
                     <small class="file-name" title="${escapeHtml(item.file_name)}">${escapeHtml(item.file_name)}</small>
                     ${folderTagsHtml(item)}
                     
@@ -1791,6 +1806,13 @@ document.addEventListener("DOMContentLoaded", () => {
                                 <line x1="14" y1="11" x2="14" y2="17"></line>
                             </svg>
                         </button>
+                        <button class="btn-icon-llm" id="llm-toggle-${idx}" style="margin-left:auto;" onclick="toggleLlmMetadata(${idx})" title="View/edit AI-extracted metadata">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 2a4 4 0 0 0-4 4v1.17A4 4 0 0 0 5 11v2a4 4 0 0 0 2 3.46V18a4 4 0 0 0 8 0v-1.54A4 4 0 0 0 19 13v-2a4 4 0 0 0-3-3.83V6a4 4 0 0 0-4-4z"></path>
+                                <line x1="9" y1="11" x2="9.01" y2="11"></line>
+                                <line x1="15" y1="11" x2="15.01" y2="11"></line>
+                            </svg>
+                        </button>
                     </div>
                 </td>
                 <td class="col-resolution">${escapeHtml(item.resolution || item.metadata?.resolution || 'N/A')}<br/>
@@ -1799,16 +1821,183 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td class="col-size">${escapeHtml(item.size_human || item.metadata?.file_size_human || 'N/A')}</td>
                 <td class="col-score"><span style="color:var(--success-green);">${escapeHtml(item.score)}</span></td>
                 <td class="col-actions">
-                    <div class="row-actions">
-                        <button class="btn btn-secondary" onclick="playMedia(${idx})">Play</button>
-                        <button class="btn btn-secondary" onclick="renameMedia(${idx})">Rename</button>
-                        <button class="btn btn-danger" onclick="deleteMedia(${idx})">Delete</button>
+                <div class="row-actions d-flex gap-2 align-items-center">
+                    <button class="btn btn-secondary p-1 d-flex align-items-center justify-content-center" style="width: 32px; height: 32px;" onclick="playMedia(${idx})" title="Play">
+                        <svg style="width: 32px; height: 32px;" fill="currentColor" viewBox="0 0 16 16"><!-- Play Icon -->
+                        <path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.693-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/>
+                        </svg>
+                    </button>
+                    <button class="btn btn-secondary p-1 d-flex align-items-center justify-content-center" style="width: 32px; height: 32px;" onclick="renameMedia(${idx})" title="Rename">
+                        <svg style="width: 32px; height: 32px;" fill="currentColor" viewBox="0 0 16 16"><!-- Pencil Icon -->
+                        <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.204 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>
+                        </svg>
+                    </button>
+                    <button class="btn btn-danger p-1 d-flex align-items-center justify-content-center" style="width: 32px; height: 32px;" onclick="deleteMedia(${idx})" title="Delete">
+                        <svg style="width: 32px; height: 32px;" fill="currentColor" viewBox="0 0 16 16"><!-- Trash Icon -->
+                        <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/>
+                        <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/>
+                        </svg>
+                    </button>
+                </div>
+                </td>
+            </tr>
+            <tr class="llm-expand-row hidden" id="llm-row-${idx}">
+                <td colspan="7">
+                    <div class="llm-expand-content" id="llm-content-${idx}">
+                        <!-- populated lazily on first expand -->
                     </div>
                 </td>
             </tr>
             `;
         }).join("");
     }
+
+    // ==========================================
+    // AI/LLM Metadata: expand-row viewer + editor
+    // ==========================================
+    const llmMetadataCache = {}; // idx -> last-loaded metadata payload
+
+    function llmMetadataLoadingHtml() {
+        return `<div class="llm-loading">Loading AI metadata&hellip;</div>`;
+    }
+
+    function llmMetadataFormHtml(idx, item, data) {
+        const found = !!(data && data.found);
+        const songTitle = found ? (data.song_title || "") : "";
+        const movieOrAlbum = found ? (data.movie_or_album || "") : "";
+        const artists = found && Array.isArray(data.artists) ? data.artists.join(", ") : "";
+        const emptyNote = found ? "" : `<div class="llm-empty-note">No AI-extracted metadata cached for this file yet.</div>`;
+
+        return `
+            <div class="llm-meta-header">
+                <strong>AI-Extracted Metadata</strong>
+                <div class="llm-meta-actions">
+                    <button class="btn-icon-llm-action btn-llm-reparse" onclick="reparseLlmMetadata(${idx})" title="Re-parse with AI">
+                        <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                        Re-parse
+                    </button>
+                    <button class="btn-icon-llm-action btn-llm-save" onclick="saveLlmMetadata(${idx})" title="Save">
+                        <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                        Save
+                    </button>
+                </div>
+            </div>
+            ${emptyNote}
+            <div class="llm-meta-fields">
+                <!-- Song title – full width + inline buttons (reparse/save also here) -->
+                <div class="llm-song-row">
+                    <input type="text" class="llm-song-input" id="llm-song-${idx}" title="Song Title" placeholder="Song Title" value="${escapeHtml(songTitle)}" />
+                </div>
+                <!-- Two‑column row: movie (30%) + artists (60%) -->
+                <div class="llm-meta-row">
+                    <div class="llm-movie-col">
+                        <input type="text" id="llm-movie-${idx}" title="Movie / Album" placeholder="Movie / Album" value="${escapeHtml(movieOrAlbum)}" />
+                    </div>
+                    <div class="llm-artists-col">
+                        <input type="text" id="llm-artists-${idx}" title="Artists (comma-separated)" placeholder="Artists (comma-separated)" value="${escapeHtml(artists)}" />
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    async function fetchLlmMetadata(filePath) {
+        const res = await fetch(`/api/media/llm-metadata?file_path=${encodeURIComponent(filePath)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    }
+
+    async function loadLlmMetadataContent(idx) {
+        const item = currentResults[idx];
+        const contentEl = document.getElementById(`llm-content-${idx}`);
+        if (!item || !contentEl) return;
+
+        contentEl.innerHTML = llmMetadataLoadingHtml();
+        try {
+            const data = await fetchLlmMetadata(item.file_path);
+            llmMetadataCache[idx] = data;
+            contentEl.innerHTML = llmMetadataFormHtml(idx, item, data);
+        } catch (err) {
+            contentEl.innerHTML = `<div class="llm-empty-note">Failed to load AI metadata: ${escapeHtml(err.message)}</div>`;
+        }
+    }
+
+    window.toggleLlmMetadata = async (idx) => {
+        const row = document.getElementById(`llm-row-${idx}`);
+        if (!row) return;
+
+        const isHidden = row.classList.contains("hidden");
+        if (isHidden) {
+            row.classList.remove("hidden");
+            if (!row.dataset.loaded) {
+                await loadLlmMetadataContent(idx);
+                row.dataset.loaded = "1";
+            }
+        } else {
+            row.classList.add("hidden");
+        }
+    };
+
+    window.saveLlmMetadata = async (idx) => {
+        const item = currentResults[idx];
+        if (!item) return;
+
+        const songTitle = document.getElementById(`llm-song-${idx}`)?.value.trim() || null;
+        const movieOrAlbum = document.getElementById(`llm-movie-${idx}`)?.value.trim() || null;
+        const artistsRaw = document.getElementById(`llm-artists-${idx}`)?.value.trim() || "";
+        const artists = artistsRaw ? artistsRaw.split(",").map(a => a.trim()).filter(Boolean) : [];
+
+        try {
+            const res = await fetch("/api/media/llm-metadata", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    file_path: item.file_path,
+                    song_title: songTitle,
+                    movie_or_album: movieOrAlbum,
+                    artists
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast(`Save failed: ${data.detail || res.statusText}`, "error", 8000);
+                return;
+            }
+            llmMetadataCache[idx] = { found: true, ...data };
+            const contentEl = document.getElementById(`llm-content-${idx}`);
+            if (contentEl) contentEl.innerHTML = llmMetadataFormHtml(idx, item, llmMetadataCache[idx]);
+            showToast("AI metadata saved.", "success");
+        } catch (err) {
+            showToast(`Save failed: ${err.message}`, "error", 8000);
+        }
+    };
+
+    window.reparseLlmMetadata = async (idx) => {
+        const item = currentResults[idx];
+        if (!item) return;
+
+        const contentEl = document.getElementById(`llm-content-${idx}`);
+        if (contentEl) contentEl.innerHTML = llmMetadataLoadingHtml();
+
+        try {
+            const res = await fetch(
+                `/api/admin/llm-parse/single?file_path=${encodeURIComponent(item.file_path)}&force=true`,
+                { method: "POST" }
+            );
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast(`Re-parse failed: ${data.detail || res.statusText}`, "error", 8000);
+                if (contentEl) contentEl.innerHTML = llmMetadataFormHtml(idx, item, llmMetadataCache[idx]);
+                return;
+            }
+            const fresh = { found: true, ...data };
+            llmMetadataCache[idx] = fresh;
+            if (contentEl) contentEl.innerHTML = llmMetadataFormHtml(idx, item, fresh);
+            showToast("Re-parsed with AI.", "success");
+        } catch (err) {
+            showToast(`Re-parse failed: ${err.message}`, "error", 8000);
+        }
+    };
 
     // ---- Toast Notifications ----
     const toastContainer = document.getElementById("toast-container");
@@ -2191,6 +2380,26 @@ document.addEventListener("DOMContentLoaded", () => {
         const mb = bytes / (1024 * 1024); // 1,048,576 bytes in a MB
         return `${mb.toFixed(decimals)} MB`;
     }
+    function formatDate(dateString) {
+        if (!dateString) return 'N/A';
+        const d = new Date(dateString);
+        if (isNaN(d)) return 'N/A';
+
+        const pad = (n) => String(n).padStart(2, '0');
+        
+        const month = pad(d.getMonth() + 1);
+        const day = pad(d.getDate());
+        
+        let hours = d.getHours();
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        hours = hours % 12 || 12; // Convert 0 to 12 for 12-hour format
+        
+        const formattedHours = pad(hours);
+        const minutes = pad(d.getMinutes());
+        const seconds = pad(d.getSeconds());
+
+        return `${month}-${day} ${formattedHours}:${minutes}:${seconds} ${ampm}`;
+    }
     function renderDownloads(items) {
         const downloadsBody = document.getElementById("downloads-body");
         const downloadsCount = document.getElementById("downloads-count");
@@ -2222,7 +2431,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td><strong>${escapeHtml(item.actress || 'N/A')}</strong></td>
                 <td><code>${escapeHtml(item.quality || 'N/A')}</code></td>
                 <td>${item.size ? bytesToMB(item.size) : 'N/A'}</td>
-                <td><small>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : 'N/A')}</small></td>
+                <td><small>${escapeHtml(formatDate(item.created_at))}</small></td>
                 <td><span class="status-badge ${escapeHtml((item.status || 'pending').toLowerCase())}">${escapeHtml(item.status || 'Pending')}</span></td>
                 <td class="col-actions">
                     <div class="row-actions" style="display: flex; align-items: center; gap: 6px;">

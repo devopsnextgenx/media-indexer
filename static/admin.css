@@ -1,0 +1,137 @@
+.admin-container {
+    padding: 20px 24px 60px;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.admin-section {
+    background: var(--panel-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+}
+
+.admin-section h2 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    color: var(--text-active);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.admin-section h3 {
+    margin: 14px 0 8px;
+    font-size: 12px;
+    color: var(--text-primary);
+    opacity: 0.8;
+}
+
+.admin-subhead {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.admin-hint {
+    font-size: 12px;
+    color: var(--text-primary);
+    opacity: 0.65;
+}
+
+.btn-sm {
+    padding: 3px 10px;
+    font-size: 12px;
+}
+
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+}
+
+.status-card {
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    padding: 10px 12px;
+    background: rgba(255,255,255,0.02);
+}
+
+.status-card .status-title {
+    font-weight: 600;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.status-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    display: inline-block;
+    flex: none;
+}
+
+.status-dot.ok { background: var(--success-green); }
+.status-dot.bad { background: var(--danger-red); }
+.status-dot.unknown { background: #888; }
+
+.status-card .status-detail {
+    font-size: 11px;
+    color: var(--text-primary);
+    opacity: 0.75;
+    word-break: break-all;
+}
+
+.backlog-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.backlog-pill {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 4px 12px;
+    font-size: 12px;
+}
+
+.jobs-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.jobs-table th, .jobs-table td {
+    text-align: left;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.jobs-table th {
+    color: var(--text-active);
+    opacity: 0.8;
+    font-weight: 600;
+}
+
+.job-status-pill {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.job-status-pill.RUNNING { background: rgba(35,209,96,0.18); color: var(--success-green); }
+.job-status-pill.PENDING { background: rgba(255,255,255,0.08); color: var(--text-primary); }
+.job-status-pill.PAUSED { background: rgba(255,196,0,0.15); color: #ffc400; }
+.job-status-pill.COMPLETED { background: rgba(14,99,156,0.2); color: var(--accent-hover); }
+.job-status-pill.FAILED, .job-status-pill.CANCELLED { background: rgba(241,70,104,0.18); color: var(--danger-red); }
+
+.jobs-table button {
+    margin-right: 4px;
+}

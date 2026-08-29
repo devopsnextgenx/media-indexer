@@ -24,6 +24,9 @@ from media_indexer.jellyfin import JellyfinClient
 from media_indexer.scanner import DirectoryTreeScanner
 
 from media_indexer.duplicates import DuplicateDetector
+from media_indexer.jobs import job_manager, resource_gate
+from media_indexer.llm_parser import parse_and_cache_title
+from media_indexer.llms import llm_pool, embedding_pool
 import logging
 
 logger = logging.getLogger(__name__)
@@ -172,6 +175,13 @@ class TargetRequest(BaseModel):
 class FormatsRequest(BaseModel):
     url: str
     cookies: str | None = None
+
+
+class LlmMetadataUpdate(BaseModel):
+    file_path: str
+    song_title: str | None = None
+    movie_or_album: str | None = None
+    artists: list[str] = []
 
 
 class YtDownloadRequest(TargetRequest):
@@ -971,6 +981,190 @@ def trigger_duplicate_detection(mount: str = Query(None), nameTierMinDf: int = Q
             )
             detector.detect_for_mount(name, mnt.path)
         return {"status": "success", "message": "Duplicate detection run for all mounts"}
+
+
+# ==========================================
+# LLM parsing & background jobs (decoupled from indexing)
+# ==========================================
+
+@app.post("/api/admin/llm-parse/run", tags=["Admin", "LLM Parsing"])
+def run_llm_parse_job(mount: str = Query(None, description="Limit to this mount; omit for all mounts")):
+    if mount and mount not in MOUNT_REGISTRY:
+        raise HTTPException(status_code=404, detail="Mount not found")
+    job_id = job_manager.start_llm_parse_job(mount)
+    return {"status": "started", "job_id": job_id}
+
+
+@app.post("/api/admin/llm-parse/single", tags=["Admin", "LLM Parsing"])
+def parse_single_title(file_path: str = Query(...), force: bool = Query(False)):
+    """Parses (or returns the cached parse of) a single file, independent
+    of any background job — useful for on-demand lookups from the UI."""
+    file_name = os.path.basename(file_path)
+    try:
+        result = parse_and_cache_title(file_name, file_path, force_reparse=force)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"LLM parse failed: {e}")
+    return result
+
+
+@app.get("/api/media/llm-metadata", tags=["Media Stream", "LLM Parsing"])
+def get_llm_metadata_for_file(file_path: str = Query(...)):
+    """Returns the cached llm_parsed_metadata row for a single file, if any.
+
+    This is intentionally separate from /api/search so the search results
+    query never has to join against llm_parsed_metadata for every hit — the
+    UI calls this lazily, only when the user expands a row's AI metadata
+    panel."""
+    if not mysql_db_instance.enabled:
+        return {"found": False}
+    file_name = os.path.basename(file_path)
+    data = mysql_db_instance.get_llm_metadata(file_name)
+    if not data:
+        return {"found": False}
+    return {"found": True, **data}
+
+
+@app.put("/api/media/llm-metadata", tags=["Media Stream", "LLM Parsing"])
+def update_llm_metadata_for_file(payload: LlmMetadataUpdate):
+    """Saves a user-edited version of a file's LLM-parsed metadata
+    (song title / movie-or-album / artists) from the search UI's expanded
+    row editor."""
+    if not mysql_db_instance.enabled:
+        raise HTTPException(status_code=503, detail="MySQL is not enabled")
+    file_name = os.path.basename(payload.file_path)
+    ok = mysql_db_instance.upsert_llm_metadata(
+        file_name=file_name,
+        full_path=payload.file_path,
+        song_title=payload.song_title,
+        movie_or_album=payload.movie_or_album,
+        artists=payload.artists or [],
+        model_name="manual-edit",
+        source_endpoint="ui_edit",
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save metadata")
+    data = mysql_db_instance.get_llm_metadata(file_name)
+    return {"status": "saved", **(data or {})}
+
+
+@app.post("/api/admin/duplicates/detect-job", tags=["Admin", "Duplicate Detection"])
+def run_duplicate_detect_job(mount: str = Query(None, description="Limit to this mount; omit for all mounts")):
+    """Decoupled, resource-gated, pause/resume-able duplicate detection —
+    unlike /api/admin/duplicates/detect, this returns immediately and runs
+    in the background job manager."""
+    if mount and mount not in MOUNT_REGISTRY:
+        raise HTTPException(status_code=404, detail="Mount not found")
+    job_id = job_manager.start_duplicate_detect_job(MOUNT_REGISTRY, mount)
+    return {"status": "started", "job_id": job_id}
+
+
+@app.get("/api/admin/jobs", tags=["Admin", "Jobs"])
+def list_background_jobs(job_type: str = Query(None, regex="^(llm_parse|duplicate_detect)$")):
+    return {"items": job_manager.list_jobs() if not job_type else
+            [j for j in job_manager.list_jobs() if j.get("job_type") == job_type]}
+
+
+@app.get("/api/admin/jobs/{job_id}", tags=["Admin", "Jobs"])
+def get_background_job(job_id: str):
+    job = job_manager.status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/api/admin/jobs/{job_id}/pause", tags=["Admin", "Jobs"])
+def pause_background_job(job_id: str):
+    if not job_manager.pause(job_id):
+        raise HTTPException(status_code=404, detail="Job not found or pause failed")
+    return {"status": "pause_requested", "job_id": job_id}
+
+
+@app.post("/api/admin/jobs/{job_id}/resume", tags=["Admin", "Jobs"])
+def resume_background_job(job_id: str):
+    try:
+        resumed_id = job_manager.resume(job_id, MOUNT_REGISTRY)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"status": "resumed", "job_id": resumed_id}
+
+
+@app.post("/api/admin/jobs/{job_id}/cancel", tags=["Admin", "Jobs"])
+def cancel_background_job(job_id: str):
+    if not job_manager.cancel(job_id):
+        raise HTTPException(status_code=404, detail="Job not found or cancel failed")
+    return {"status": "cancel_requested", "job_id": job_id}
+
+
+# ==========================================
+# Admin status dashboard
+# ==========================================
+
+def _check_qdrant() -> dict:
+    try:
+        cols = qdrant_client.get_collections()
+        return {"connected": True, "collections": [c.name for c in cols.collections]}
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
+
+
+def _check_mysql() -> dict:
+    if not mysql_db_instance.enabled:
+        return {"connected": False, "enabled": False}
+    conn = mysql_db_instance._get_connection()
+    if not conn:
+        return {"connected": False, "enabled": True}
+    try:
+        conn.close()
+        return {"connected": True, "enabled": True, "database": mysql_db_instance.cfg.database}
+    except Exception as e:
+        return {"connected": False, "enabled": True, "error": str(e)}
+
+
+def _check_redis() -> dict:
+    if not redis_db_instance.enabled or not redis_db_instance.client:
+        return {"connected": False, "enabled": getattr(redis_db_instance, "enabled", False)}
+    try:
+        redis_db_instance.client.ping()
+        return {"connected": True, "enabled": True}
+    except Exception as e:
+        return {"connected": False, "enabled": True, "error": str(e)}
+
+
+@app.get("/api/admin/status", tags=["Admin"])
+def admin_status():
+    resource_ok, resource_reason = resource_gate.is_free()
+    return {
+        "qdrant": _check_qdrant(),
+        "mysql": _check_mysql(),
+        "redis": _check_redis(),
+        "ollama": {
+            "llm": llm_pool.status() if llm_pool else
+                   [{"endpoint": settings.llm.host, "healthy": llm_client.is_any_endpoint_available()}],
+            "embedding": embedding_pool.status() if embedding_pool else
+                         [{"endpoint": settings.embedding.host, "healthy": None}],
+        },
+        "resource_gate": {"free": resource_ok, "reason": resource_reason,
+                           "enabled": settings.jobs.resource_gate.enabled},
+        "jobs": job_manager.list_jobs(),
+        "mounts": list(MOUNT_REGISTRY.keys()),
+        "llm_parse_backlog": {
+            name: mysql_db_instance.count_files_needing_llm_parse(name) for name in MOUNT_REGISTRY
+        } if mysql_db_instance.enabled else {},
+    }
+
+
+@app.post("/api/admin/ollama/refresh", tags=["Admin"])
+def refresh_ollama_status():
+    return {
+        "llm": llm_pool.refresh_all() if llm_pool else [],
+        "embedding": embedding_pool.refresh_all() if embedding_pool else [],
+    }
+
+
+@app.get("/admin", include_in_schema=False)
+def serve_admin_ui():
+    return FileResponse("static/admin.html")
+
 
 @app.on_event("startup")
 def setup_cron():

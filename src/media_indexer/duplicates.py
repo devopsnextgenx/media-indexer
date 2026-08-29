@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import jellyfish
 from rapidfuzz import fuzz
 
+from media_indexer.config import settings
 from media_indexer.database import mysql_db_instance
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,40 @@ def clean_and_tokenize(filename: str) -> List[str]:
         tokens.append(w)
     return tokens
 
+def _tokenize_field(text: Optional[str]) -> List[str]:
+    """Lightweight tokenizer for LLM-parsed fields (already noise-free, so
+    this just splits/lowercases/filters short tokens — no NOISE_RE pass)."""
+    if not text:
+        return []
+    text = _SPLIT_RE.sub(" ", text)
+    return [w.strip().lower() for w in text.split() if len(w.strip()) >= MIN_TOKEN_LEN]
+
+
+def build_song_file_from_llm(file_id: str, full_path: str, llm_meta: dict, folder_tokens: Set[str]) -> "SongFile":
+    """Builds a SongFile whose tiers come directly from llm_parsed_metadata
+    (song_title -> title tier, movie_or_album -> movie tier, artists ->
+    artist tier) instead of the heuristic tokenizer/classifier below."""
+    tokens: List[str] = []
+    tiers: List[str] = []
+
+    for tok in _tokenize_field(llm_meta.get("song_title")):
+        tokens.append(tok)
+        tiers.append("title")
+    for tok in _tokenize_field(llm_meta.get("movie_or_album")):
+        tokens.append(tok)
+        tiers.append("movie")
+    for artist in (llm_meta.get("artists") or []):
+        for tok in _tokenize_field(artist):
+            tokens.append(tok)
+            tiers.append("artist")
+
+    codes = [phonetic_code(t) for t in tokens]
+    return SongFile(
+        file_id=file_id, full_path=full_path, tokens=tokens, codes=codes,
+        tiers=tiers, folder_tokens=folder_tokens, from_llm=True,
+    )
+
+
 def phonetic_code(word: str) -> str:
     try:
         code = jellyfish.metaphone(word)
@@ -132,6 +167,7 @@ class SongFile:
     codes: List[str] = field(default_factory=list)
     tiers: List[str] = field(default_factory=list)   # 'title', 'movie', 'artist'
     folder_tokens: Set[str] = field(default_factory=set)
+    from_llm: bool = False   # True when tokens/tiers came from llm_parsed_metadata
 
     def tier_tokens(self, tier: str) -> List[Tuple[str, str]]:
         return [(t, c) for t, c, tr in zip(self.tokens, self.codes, self.tiers) if tr == tier]
@@ -184,6 +220,11 @@ class CorpusStats:
 # ---------------------------------------------------------------------------
 def classify_files(files: List[SongFile], stats: CorpusStats, nameTierMinDf: int = NAME_TIER_MIN_DF):
     for f in files:
+        if f.from_llm:
+            # Tiers were already assigned directly from the LLM-parsed
+            # song_title/movie_or_album/artists fields; the heuristic
+            # tier classifier would just second-guess a cleaner signal.
+            continue
         tiers = []
         for tok, code in zip(f.tokens, f.codes):
             if tok in ARTIST_NAME_HINTS:
@@ -360,9 +401,15 @@ class DuplicateDetector:
                 continue
             filename = os.path.basename(rel_path)
             parent_folder = os.path.basename(os.path.dirname(rel_path))
+            folder_tokens = set(clean_and_tokenize(parent_folder))
+
+            llm_meta = mysql_db_instance.get_llm_metadata(filename) if settings.duplicates.use_llm_metadata else None
+            if llm_meta and llm_meta.get("song_title"):
+                song_files.append(build_song_file_from_llm(file_id, full_path, llm_meta, folder_tokens))
+                continue
+
             tokens = clean_and_tokenize(filename)
             codes = [phonetic_code(t) for t in tokens]
-            folder_tokens = set(clean_and_tokenize(parent_folder))
             song_files.append(SongFile(
                 file_id=file_id,
                 full_path=full_path,

@@ -250,6 +250,36 @@ class MySQLDatabase:
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """,
+            "llm_parsed_metadata": """
+                CREATE TABLE IF NOT EXISTS llm_parsed_metadata (
+                    file_name VARCHAR(512) PRIMARY KEY,
+                    full_path VARCHAR(1024),
+                    song_title VARCHAR(512),
+                    movie_or_album VARCHAR(512),
+                    artists_json TEXT,
+                    model_name VARCHAR(255),
+                    source_endpoint VARCHAR(255),
+                    parsed_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_full_path (full_path(255))
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
+            "background_jobs": """
+                CREATE TABLE IF NOT EXISTS background_jobs (
+                    job_id VARCHAR(255) PRIMARY KEY,
+                    job_type VARCHAR(50) NOT NULL,
+                    mount_name VARCHAR(255) DEFAULT NULL,
+                    status VARCHAR(50) DEFAULT 'PENDING',
+                    requested_status VARCHAR(50) DEFAULT NULL,
+                    total_items INT DEFAULT 0,
+                    processed_items INT DEFAULT 0,
+                    failed_items INT DEFAULT 0,
+                    checkpoint VARCHAR(1024) DEFAULT NULL,
+                    last_error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_type_status (job_type, status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """,
         }
 
     def _ensure_tables(self):
@@ -632,11 +662,11 @@ class MySQLDatabase:
     # ----------------------------------------------------------------------
     def truncate_tables(self, tables: list = None) -> dict:
         """Truncate given tables; default list: token_stats, processed_files,
-        duplicate_group_candidates, duplicate_groups, media_files (if exists)."""
+        duplicate_group_candidates, duplicate_groups (if exists)."""
         if not self.enabled:
             return {}
         default_tables = ["token_stats", "processed_files",
-                          "duplicate_group_candidates", "duplicate_groups", "media_files"]
+                          "duplicate_group_candidates", "duplicate_groups"]
         to_truncate = tables if tables is not None else default_tables
         conn = self._get_connection()
         if not conn:
@@ -916,6 +946,231 @@ class MySQLDatabase:
             conn.close()
         except Exception as e:
             logger.error(f"MySQL upsert job failed for {job_info.get('job_id')}: {e}")
+
+    # ----------------------------------------------------------------------
+    # LLM-parsed metadata cache (song/movie/artist), keyed by file name so it
+    # is reusable independent of which mount/path a file currently lives at.
+    # ----------------------------------------------------------------------
+    @staticmethod
+    def _normalize_file_key(file_name: str) -> str:
+        return os.path.splitext(os.path.basename(file_name))[0].strip().lower()
+
+    def get_llm_metadata(self, file_name: str) -> dict | None:
+        if not self.enabled:
+            return None
+        conn = self._get_connection()
+        if not conn:
+            return None
+        try:
+            key = self._normalize_file_key(file_name)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM llm_parsed_metadata WHERE file_name = %s", (key,)
+                )
+                row = cursor.fetchone()
+            conn.close()
+            if not row:
+                return None
+            try:
+                row["artists"] = json.loads(row.pop("artists_json") or "[]")
+            except Exception:
+                row["artists"] = []
+            return row
+        except Exception as e:
+            logger.error(f"Failed to fetch llm_parsed_metadata for {file_name}: {e}")
+            return None
+
+    def upsert_llm_metadata(
+        self,
+        file_name: str,
+        full_path: str,
+        song_title: str,
+        movie_or_album: str | None,
+        artists: list[str],
+        model_name: str,
+        source_endpoint: str | None = None,
+    ) -> bool:
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            key = self._normalize_file_key(file_name)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO llm_parsed_metadata
+                    (file_name, full_path, song_title, movie_or_album, artists_json, model_name, source_endpoint)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        full_path = VALUES(full_path),
+                        song_title = VALUES(song_title),
+                        movie_or_album = VALUES(movie_or_album),
+                        artists_json = VALUES(artists_json),
+                        model_name = VALUES(model_name),
+                        source_endpoint = VALUES(source_endpoint),
+                        parsed_at = CURRENT_TIMESTAMP
+                    """,
+                    (key, full_path, song_title, movie_or_album,
+                     json.dumps(artists or []), model_name, source_endpoint),
+                )
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to upsert llm_parsed_metadata for {file_name}: {e}")
+            return False
+
+    def get_files_needing_llm_parse(self, mount: str = None, limit: int = 100,
+                                     after_file_name: str = None) -> list[dict]:
+        """Files tracked in processed_files that have no llm_parsed_metadata
+        row yet (or whose row is older than the file's last index time).
+        Paginated by file_name for cheap checkpoint/resume."""
+        if not self.enabled:
+            return []
+        conn = self._get_connection()
+        if not conn:
+            return []
+        try:
+            params = []
+            query = """
+                SELECT p.id, p.file_path, p.file_name, p.mount
+                FROM processed_files p
+                LEFT JOIN llm_parsed_metadata m
+                    ON m.file_name = LOWER(REGEXP_REPLACE(p.file_name, '\\.[^.]+$', ''))
+                WHERE m.file_name IS NULL
+            """
+            if mount:
+                query += " AND p.mount = %s"
+                params.append(mount)
+            if after_file_name:
+                query += " AND p.file_name > %s"
+                params.append(after_file_name)
+            query += " ORDER BY p.file_name ASC LIMIT %s"
+            params.append(limit)
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to fetch files needing LLM parse: {e}")
+            return []
+
+    def count_files_needing_llm_parse(self, mount: str = None) -> int:
+        if not self.enabled:
+            return 0
+        conn = self._get_connection()
+        if not conn:
+            return 0
+        try:
+            params = []
+            query = """
+                SELECT COUNT(*) AS cnt
+                FROM processed_files p
+                LEFT JOIN llm_parsed_metadata m
+                    ON m.file_name = LOWER(REGEXP_REPLACE(p.file_name, '\\.[^.]+$', ''))
+                WHERE m.file_name IS NULL
+            """
+            if mount:
+                query += " AND p.mount = %s"
+                params.append(mount)
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                row = cursor.fetchone()
+            conn.close()
+            return (row or {}).get("cnt", 0)
+        except Exception as e:
+            logger.error(f"Failed to count files needing LLM parse: {e}")
+            return 0
+
+    # ----------------------------------------------------------------------
+    # Background jobs (pause/resume-able llm_parse & duplicate_detect runs)
+    # ----------------------------------------------------------------------
+    def create_job(self, job_id: str, job_type: str, mount_name: str | None, total_items: int = 0) -> bool:
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO background_jobs (job_id, job_type, mount_name, status, total_items)
+                    VALUES (%s, %s, %s, 'PENDING', %s)
+                    ON DUPLICATE KEY UPDATE total_items = VALUES(total_items)
+                    """,
+                    (job_id, job_type, mount_name, total_items),
+                )
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create background job {job_id}: {e}")
+            return False
+
+    def update_job(self, job_id: str, **fields) -> bool:
+        if not self.enabled or not fields:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            set_clause = ", ".join(f"{k} = %s" for k in fields)
+            params = list(fields.values()) + [job_id]
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"UPDATE background_jobs SET {set_clause} WHERE job_id = %s", params
+                )
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update background job {job_id}: {e}")
+            return False
+
+    def request_job_status(self, job_id: str, requested_status: str) -> bool:
+        """Called by the API layer to ask a running job to pause/resume/cancel.
+        The job runner polls `requested_status` between batches."""
+        return self.update_job(job_id, requested_status=requested_status)
+
+    def get_job(self, job_id: str) -> dict | None:
+        if not self.enabled:
+            return None
+        conn = self._get_connection()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM background_jobs WHERE job_id = %s", (job_id,))
+                row = cursor.fetchone()
+            conn.close()
+            return row
+        except Exception as e:
+            logger.error(f"Failed to fetch background job {job_id}: {e}")
+            return None
+
+    def list_jobs(self, job_type: str = None, limit: int = 50) -> list[dict]:
+        if not self.enabled:
+            return []
+        conn = self._get_connection()
+        if not conn:
+            return []
+        try:
+            params = []
+            query = "SELECT * FROM background_jobs"
+            if job_type:
+                query += " WHERE job_type = %s"
+                params.append(job_type)
+            query += " ORDER BY updated_at DESC LIMIT %s"
+            params.append(limit)
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to list background jobs: {e}")
+            return []
 
 
 class RedisDatabase:

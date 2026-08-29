@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Indexer — Admin Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+    <header class="vscode-header">
+        <div class="logo"><span>VS</span> Media Indexer — Admin</div>
+        <div class="header-actions">
+            <button id="btn-refresh" class="btn btn-secondary">&#8635; Refresh</button>
+            <a href="/" class="btn btn-secondary">&larr; Back to Explorer</a>
+            <a href="/docs" target="_blank" class="btn btn-info">Swagger Docs</a>
+        </div>
+    </header>
+
+    <main class="container admin-container">
+
+        <section class="admin-section">
+            <h2>Services</h2>
+            <div id="services-grid" class="status-grid"></div>
+        </section>
+
+        <section class="admin-section">
+            <h2>Ollama Servers</h2>
+            <div class="admin-subhead">
+                <span class="admin-hint">LLM parsing pauses automatically when every endpoint below is unreachable, and resumes as soon as one recovers.</span>
+                <button id="btn-refresh-ollama" class="btn btn-secondary btn-sm">Re-probe now</button>
+            </div>
+            <h3>LLM (parsing)</h3>
+            <div id="ollama-llm-grid" class="status-grid"></div>
+            <h3>Embedding</h3>
+            <div id="ollama-embed-grid" class="status-grid"></div>
+        </section>
+
+        <section class="admin-section">
+            <h2>LLM Metadata Backfill</h2>
+            <div class="admin-subhead">
+                <select id="llm-mount-select" class="form-select"><option value="">All Mounts</option></select>
+                <button id="btn-start-llm-job" class="btn btn-primary">Start / Resume Parse Job</button>
+            </div>
+            <div id="llm-backlog-list" class="backlog-list"></div>
+        </section>
+
+        <section class="admin-section">
+            <h2>Duplicate Detection</h2>
+            <div class="admin-subhead">
+                <select id="dup-mount-select" class="form-select"><option value="">All Mounts</option></select>
+                <button id="btn-start-dup-job" class="btn btn-primary">Start / Resume Detection Job</button>
+                <span class="admin-hint">Runs independently of scanning/indexing — trigger it whenever you like, per mount.</span>
+            </div>
+        </section>
+
+        <section class="admin-section">
+            <h2>Background Jobs</h2>
+            <table class="jobs-table">
+                <thead>
+                    <tr>
+                        <th>Job</th><th>Type</th><th>Mount</th><th>Status</th>
+                        <th>Progress</th><th>Failed</th><th>Updated</th><th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="jobs-tbody"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <script src="/static/admin.js"></script>
+</body>
+</html>
