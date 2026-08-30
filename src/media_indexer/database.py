@@ -1172,6 +1172,62 @@ class MySQLDatabase:
             logger.error(f"Failed to list background jobs: {e}")
             return []
 
+    def get_mount_action_statuses(self, mount_names: list[str]) -> dict:
+        """
+        Returns a dict mapping mount_name -> {
+            'indexing': {'status', 'updated_at', 'error_message'} or None,
+            'llm_parse': {'status', 'updated_at', 'last_error', 'processed_items', 'total_items'} or None,
+            'duplicate_detect': same structure as llm_parse
+        }
+        """
+        if not self.enabled:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        result = {}
+        try:
+            with conn.cursor() as cursor:
+                for mount in mount_names:
+                    # Indexing
+                    cursor.execute("""
+                        SELECT status, updated_at, error_message
+                        FROM indexing_jobs
+                        WHERE mount_name = %s
+                        ORDER BY updated_at DESC LIMIT 1
+                    """, (mount,))
+                    idx = cursor.fetchone()
+
+                    # LLM parse
+                    cursor.execute("""
+                        SELECT status, updated_at, last_error, processed_items, total_items
+                        FROM background_jobs
+                        WHERE job_type = 'llm_parse' AND mount_name = %s
+                        ORDER BY updated_at DESC LIMIT 1
+                    """, (mount,))
+                    llm = cursor.fetchone()
+
+                    # Duplicate detect
+                    cursor.execute("""
+                        SELECT status, updated_at, last_error, processed_items, total_items
+                        FROM background_jobs
+                        WHERE job_type = 'duplicate_detect' AND mount_name = %s
+                        ORDER BY updated_at DESC LIMIT 1
+                    """, (mount,))
+                    dup = cursor.fetchone()
+
+                    result[mount] = {
+                        'indexing': idx,
+                        'llm_parse': llm,
+                        'duplicate_detect': dup
+                    }
+            conn.close()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get mount action statuses: {e}")
+            return {}
+
+
 
 class RedisDatabase:
     def __init__(self):

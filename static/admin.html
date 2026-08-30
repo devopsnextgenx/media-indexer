@@ -36,6 +36,39 @@
             <div id="ollama-embed-grid" class="status-grid"></div>
         </section>
 
+        <!-- Mount Actions Card -->
+        <section class="admin-section">
+            <h2>Mount Actions</h2>
+            <div class="admin-subhead">
+                <span class="admin-hint">Last run status and quick start buttons for each mount.</span>
+                <button id="btn-refresh-mounts" class="btn btn-secondary btn-sm">&#8635; Refresh</button>
+            </div>
+            <div id="mount-actions-table-wrapper">
+                <table class="jobs-table" id="mount-actions-table">
+                    <thead>
+                        <tr>
+                            <th>Mount</th>
+                            <th>Indexing</th>
+                            <th>LLM Parse</th>
+                            <th>Duplicate Detect</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mount-actions-tbody"></tbody>
+                </table>
+            </div>
+            <!-- Console area for action logs -->
+            <div id="mount-action-console" class="scan-console hidden" style="margin-top:12px;">
+                <div class="scan-console-head">
+                    <div id="mount-action-status" class="scan-status">Ready</div>
+                    <div class="scan-console-tools">
+                        <button id="mount-action-clear" class="btn btn-secondary btn-sm">Clear</button>
+                        <button id="mount-action-hide" class="btn btn-secondary btn-sm">Hide</button>
+                    </div>
+                </div>
+                <div id="mount-action-log" class="scan-log" style="height:160px;"></div>
+            </div>
+        </section>
+
         <section class="admin-section">
             <h2>LLM Metadata Backfill</h2>
             <div class="admin-subhead">

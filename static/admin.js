@@ -93,6 +93,258 @@ function formatDuration(seconds) {
     return `≈ ${h}h ${rm}m`;
 }
 
+// ---- Mount Actions Table & Console ----
+const MOUNT_ACTION_CONSOLE = document.getElementById("mount-action-console");
+const MOUNT_ACTION_LOG = document.getElementById("mount-action-log");
+const MOUNT_ACTION_STATUS = document.getElementById("mount-action-status");
+const MOUNT_ACTION_CLEAR = document.getElementById("mount-action-clear");
+const MOUNT_ACTION_HIDE = document.getElementById("mount-action-hide");
+const MOUNT_ACTIONS_TBODY = document.getElementById("mount-actions-tbody");
+
+let mountActionStream = null;
+let mountActionPollInterval = null;
+let mountActionJobId = null;
+let mountActionType = null;
+let mountActionMount = null;
+
+function escapeHtml(str) {
+    if (!str) return "";
+    return String(str).replace(/[&<>"']/g, function(m) {
+        if (m === '&') return '&amp;';
+        if (m === '<') return '&lt;';
+        if (m === '>') return '&gt;';
+        if (m === '"') return '&quot;';
+        if (m === "'") return '&#39;';
+        return m;
+    });
+}
+
+function formatDate(iso) {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
+function actionStatusBadge(status) {
+    const cls = (status || "unknown").toLowerCase();
+    return `<span class="job-status-pill ${cls}">${status || "—"}</span>`;
+}
+
+function renderMountActionsTable(statuses) {
+    const mounts = statuses.mounts || [];
+    const data = statuses.statuses || {};
+
+    let html = "";
+    for (const mount of mounts) {
+        const row = data[mount] || {};
+        const idx = row.indexing || null;
+        const llm = row.llm_parse || null;
+        const dup = row.duplicate_detect || null;
+
+        const idxRunning = idx && ["RUNNING", "PENDING"].includes(idx.status?.toUpperCase());
+        const llmRunning = llm && ["RUNNING", "PENDING"].includes(llm.status?.toUpperCase());
+        const dupRunning = dup && ["RUNNING", "PENDING"].includes(dup.status?.toUpperCase());
+
+        html += `<tr>
+            <td><strong>${escapeHtml(mount)}</strong></td>
+            <td>
+                <div class="action-cell">
+                    <div class="action-info">
+                        ${actionStatusBadge(idx?.status)}
+                        <span class="action-date">${formatDate(idx?.updated_at)}</span>
+                    </div>
+                    <button class="btn-icon-action" data-mount="${escapeHtml(mount)}" data-action="indexing" title="Start indexing" ${idxRunning ? 'disabled' : ''}>
+                        ${idxRunning ? '⏳' : '▶'}
+                    </button>
+                </div>
+            </td>
+            <td>
+                <div class="action-cell">
+                    <div class="action-info">
+                        ${actionStatusBadge(llm?.status)}
+                        <span class="action-date">${formatDate(llm?.updated_at)}</span>
+                    </div>
+                    <button class="btn-icon-action" data-mount="${escapeHtml(mount)}" data-action="llm_parse" title="Start LLM parse" ${llmRunning ? 'disabled' : ''}>
+                        ${llmRunning ? '⏳' : '🧠'}
+                    </button>
+                </div>
+            </td>
+            <td>
+                <div class="action-cell">
+                    <div class="action-info">
+                        ${actionStatusBadge(dup?.status)}
+                        <span class="action-date">${formatDate(dup?.updated_at)}</span>
+                    </div>
+                    <button class="btn-icon-action" data-mount="${escapeHtml(mount)}" data-action="duplicate_detect" title="Start duplicate detection" ${dupRunning ? 'disabled' : ''}>
+                        ${dupRunning ? '⏳' : '⊞'}
+                    </button>
+                </div>
+            </td>
+        </tr>`;
+    }
+    MOUNT_ACTIONS_TBODY.innerHTML = html || `<tr><td colspan="4" class="empty-state">No mounts configured.</td></tr>`;
+
+    // Attach event listeners to all action buttons
+    MOUNT_ACTIONS_TBODY.querySelectorAll(".btn-icon-action").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+            const mount = btn.dataset.mount;
+            const action = btn.dataset.action;
+            await triggerMountAction(mount, action);
+        });
+    });
+}
+
+function formatEta(seconds) {
+    if (seconds == null || seconds < 0) return "--";
+    const total = Math.round(seconds);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
+    if (m > 0) return `${m}m${String(s).padStart(2, "0")}s`;
+    return `${s}s`;
+}
+
+async function triggerMountAction(mount, action) {
+    // Close any existing stream/poll
+    cleanupMountAction();
+
+    // Show console
+    MOUNT_ACTION_CONSOLE.classList.remove("hidden");
+    MOUNT_ACTION_LOG.innerHTML = "";
+    MOUNT_ACTION_STATUS.textContent = `Starting ${action} for ${mount}...`;
+    mountActionMount = mount;
+    mountActionType = action;
+
+    try {
+        if (action === "indexing") {
+            const res = await fetch(`/api/scan/start?mount_name=${encodeURIComponent(mount)}&rescan_disk=false&incremental_scan=true`, { method: "POST" });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || "Failed to start indexing");
+            MOUNT_ACTION_STATUS.textContent = `Indexing started for ${mount}. Waiting for progress...`;
+            mountActionStream = new EventSource(`/api/scan/stream?mount_name=${encodeURIComponent(mount)}`);
+            mountActionStream.onmessage = (event) => {
+                let data;
+                try { data = JSON.parse(event.data); } catch { return; }
+                appendMountLog(data.logs || []);
+                const status = data.status || "";
+                if (status === "COMPLETED") {
+                    MOUNT_ACTION_STATUS.textContent = `Indexing completed for ${mount}.`;
+                    cleanupMountAction();
+                    refreshMountStatuses();
+                } else if (status === "FAILED") {
+                    MOUNT_ACTION_STATUS.textContent = `Indexing failed for ${mount}: ${data.error || "unknown error"}`;
+                    cleanupMountAction();
+                    refreshMountStatuses();
+                } else {
+                    const pct = data.progress_percentage ?? 0;
+                    const eta = data.eta_seconds ? formatEta(data.eta_seconds) : "--";
+                    MOUNT_ACTION_STATUS.textContent = `Indexing ${mount}: ${data.processed_files || 0}/${data.total_files || 0} (${pct}%) ETA ${eta}`;
+                }
+            };
+            mountActionStream.onerror = () => {
+                MOUNT_ACTION_STATUS.textContent = `Indexing stream disconnected for ${mount}.`;
+                cleanupMountAction();
+                refreshMountStatuses();
+            };
+        } else {
+            let url;
+            if (action === "llm_parse") {
+                url = `/api/admin/llm-parse/run?mount=${encodeURIComponent(mount)}`;
+            } else {
+                url = `/api/admin/duplicates/detect-job?mount=${encodeURIComponent(mount)}`;
+            }
+            const res = await fetch(url, { method: "POST" });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || `Failed to start ${action}`);
+            const jobId = data.job_id;
+            mountActionJobId = jobId;
+            MOUNT_ACTION_STATUS.textContent = `Job ${jobId} started. Polling status...`;
+            mountActionPollInterval = setInterval(async () => {
+                try {
+                    const jobRes = await fetch(`/api/admin/jobs/${jobId}`);
+                    if (!jobRes.ok) throw new Error("Job not found");
+                    const job = await jobRes.json();
+                    const status = job.status || "";
+                    const processed = job.processed_items || 0;
+                    const total = job.total_items || 0;
+                    const error = job.last_error || "";
+                    if (status === "COMPLETED") {
+                        MOUNT_ACTION_STATUS.textContent = `${action} completed for ${mount} (${processed} processed).`;
+                        cleanupMountAction();
+                        refreshMountStatuses();
+                    } else if (status === "FAILED" || status === "CANCELLED") {
+                        MOUNT_ACTION_STATUS.textContent = `${action} ${status.toLowerCase()} for ${mount}: ${error || "no error"}`;
+                        cleanupMountAction();
+                        refreshMountStatuses();
+                    } else {
+                        const pct = total ? Math.round((processed/total)*100) : 0;
+                        MOUNT_ACTION_STATUS.textContent = `${action} ${mount}: ${processed}/${total} (${pct}%) - ${status}`;
+                    }
+                    if (job.updated_at) {
+                        appendMountLog([{ mount, level: "info", ts: job.updated_at, message: `${action} status: ${status}` }]);
+                    }
+                } catch (err) {
+                    // ignore polling errors
+                }
+            }, 2000);
+        }
+    } catch (err) {
+        MOUNT_ACTION_STATUS.textContent = `Error: ${err.message}`;
+        appendMountLog([{ mount, level: "error", message: err.message }]);
+        cleanupMountAction();
+    }
+}
+
+function appendMountLog(entries) {
+    if (!entries) return;
+    for (const entry of entries) {
+        const node = document.createElement("div");
+        node.className = `scan-log-line level-${entry.level || "info"}`;
+        const ts = entry.ts ? new Date(entry.ts).toLocaleTimeString() : "--:--:--";
+        node.innerHTML = `<span class="log-ts">${escapeHtml(ts)}</span><span class="log-mount">[${escapeHtml(entry.mount || "-")}]</span> ${escapeHtml(entry.message || "")}`;
+        MOUNT_ACTION_LOG.appendChild(node);
+    }
+    MOUNT_ACTION_LOG.scrollTop = MOUNT_ACTION_LOG.scrollHeight;
+}
+
+function cleanupMountAction() {
+    if (mountActionStream) {
+        mountActionStream.close();
+        mountActionStream = null;
+    }
+    if (mountActionPollInterval) {
+        clearInterval(mountActionPollInterval);
+        mountActionPollInterval = null;
+    }
+    mountActionJobId = null;
+    mountActionType = null;
+    mountActionMount = null;
+    refreshMountStatuses();
+}
+
+MOUNT_ACTION_CLEAR.addEventListener("click", () => {
+    MOUNT_ACTION_LOG.innerHTML = "";
+});
+
+MOUNT_ACTION_HIDE.addEventListener("click", () => {
+    MOUNT_ACTION_CONSOLE.classList.add("hidden");
+    cleanupMountAction();
+});
+
+// ---- Fetch mount statuses periodically ----
+async function refreshMountStatuses() {
+    try {
+        const res = await fetch("/api/admin/mounts/status");
+        const data = await res.json();
+        renderMountActionsTable(data);
+    } catch (e) {
+        console.error("Failed to fetch mount statuses", e);
+    }
+}
+
+document.getElementById("btn-refresh-mounts").addEventListener("click", refreshMountStatuses);
+
+// ---- Main refresh function ----
 async function refresh() {
     try {
         const res = await fetch("/api/admin/status");
@@ -116,8 +368,11 @@ async function refresh() {
     } catch (e) {
         console.error("Failed to refresh admin status", e);
     }
+
+    await refreshMountStatuses();
 }
 
+// ---- Event listeners ----
 document.getElementById("btn-refresh").addEventListener("click", refresh);
 
 document.getElementById("btn-refresh-ollama").addEventListener("click", async () => {
@@ -139,5 +394,6 @@ document.getElementById("btn-start-dup-job").addEventListener("click", async () 
     refresh();
 });
 
+// ---- Initial load and periodic refresh ----
 refresh();
 setInterval(refresh, REFRESH_MS);

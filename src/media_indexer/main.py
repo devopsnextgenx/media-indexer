@@ -1129,6 +1129,16 @@ def _check_redis() -> dict:
     except Exception as e:
         return {"connected": False, "enabled": True, "error": str(e)}
 
+@app.get("/api/admin/mounts/status", tags=["Admin"])
+def get_mount_action_statuses():
+    """Returns per-mount status for indexing, LLM parsing, and duplicate detection."""
+    mounts = list(MOUNT_REGISTRY.keys())
+    statuses = mysql_db_instance.get_mount_action_statuses(mounts) if mysql_db_instance.enabled else {}
+    # Ensure all mounts are present even if MySQL is disabled
+    for m in mounts:
+        if m not in statuses:
+            statuses[m] = {'indexing': None, 'llm_parse': None, 'duplicate_detect': None}
+    return {"mounts": mounts, "statuses": statuses}
 
 @app.get("/api/admin/status", tags=["Admin"])
 def admin_status():
