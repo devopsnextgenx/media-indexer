@@ -13,6 +13,7 @@ import os
 import threading
 import time
 from typing import Optional
+from collections import deque
 
 from media_indexer.config import settings
 from media_indexer.database import mysql_db_instance
@@ -74,6 +75,9 @@ class BackgroundJobManager:
     def __init__(self):
         self._threads: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
+        self._times: dict[str, deque] = {}  
+        self._times_lock = threading.Lock()
+
 
     # -- helpers -------------------------------------------------------
     @staticmethod
@@ -83,6 +87,12 @@ class BackgroundJobManager:
     @staticmethod
     def _dup_job_id(mount: Optional[str]) -> str:
         return f"duplicate_detect:{mount or 'all'}"
+
+    def _record_time(self, job_id: str, elapsed: float) -> None:
+        with self._times_lock:
+            if job_id not in self._times:
+                self._times[job_id] = deque(maxlen=5)
+            self._times[job_id].append(elapsed)
 
     def _is_alive(self, job_id: str) -> bool:
         with self._lock:
@@ -132,6 +142,7 @@ class BackgroundJobManager:
                     mysql_db_instance.update_job(job_id, status="PAUSED", checkpoint=after)
                     logger.info(f"Job {job_id} paused at checkpoint '{after}'")
                     return
+                start = time.time()      
 
                 if not resource_gate.wait_until_free(should_stop=should_stop):
                     mysql_db_instance.update_job(job_id, status="PAUSED", checkpoint=after)
@@ -163,6 +174,8 @@ class BackgroundJobManager:
                         failed += 1
                         logger.error(f"LLM parse job {job_id} failed on {row['file_name']}: {e}")
                     after = row["file_name"]
+                    elapsed = time.time() - start 
+                    self._record_time(job_id, elapsed)
 
                 mysql_db_instance.update_job(
                     job_id, status="RUNNING", checkpoint=after,
@@ -180,6 +193,23 @@ class BackgroundJobManager:
         finally:
             with self._lock:
                 self._threads.pop(job_id, None)
+
+    def get_eta(self, job_id: str) -> Optional[int]:
+        """Return estimated seconds remaining, or None if not enough data."""
+        with self._times_lock:
+            times = self._times.get(job_id)
+            if not times:
+                return None
+        job = mysql_db_instance.get_job(job_id)
+        if not job:
+            return None
+        total = job.get("total_items")
+        processed = job.get("processed_items", 0)
+        if not total or total <= 0 or processed >= total:
+            return None
+        avg_time = sum(times) / len(times)
+        remaining = total - processed
+        return int(avg_time * remaining)
 
     # -- duplicate detection job -----------------------------------------
     def start_duplicate_detect_job(self, mount_registry: dict, mount: Optional[str] = None) -> str:

@@ -48,11 +48,13 @@ function renderJobsTable(jobs) {
         const canPause = job.status === "RUNNING" || job.status === "PENDING";
         const canResume = job.status === "PAUSED" || job.status === "FAILED";
         const canCancel = job.status === "RUNNING" || job.status === "PENDING" || job.status === "PAUSED";
+        const eta = job.eta_seconds != null ? formatDuration(job.eta_seconds) : "—";
         tr.innerHTML = `
             <td>${job.job_id}</td>
             <td>${job.job_type}</td>
             <td>${job.mount_name || "all"}</td>
             <td><span class="job-status-pill ${job.status}">${job.status}</span></td>
+            <td>${eta}</td>
             <td>${progress}</td>
             <td>${job.failed_items || 0}</td>
             <td>${job.updated_at || ""}</td>
@@ -78,6 +80,17 @@ function renderBacklog(backlog) {
     el.innerHTML = Object.entries(backlog || {})
         .map(([mount, count]) => `<div class="backlog-pill">${mount}: ${count} unparsed</div>`)
         .join("") || `<span class="admin-hint">No backlog data (MySQL disabled?)</span>`;
+}
+
+function formatDuration(seconds) {
+    if (seconds == null || seconds < 0) return "—";
+    if (seconds < 60) return `< 1m`;
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    if (m < 60) return `≈ ${m}m ${s}s`;
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return `≈ ${h}h ${rm}m`;
 }
 
 async function refresh() {

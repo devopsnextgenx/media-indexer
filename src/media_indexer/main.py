@@ -1133,6 +1133,9 @@ def _check_redis() -> dict:
 @app.get("/api/admin/status", tags=["Admin"])
 def admin_status():
     resource_ok, resource_reason = resource_gate.is_free()
+    jobs = job_manager.list_jobs()
+    for job in jobs:
+        job["eta_seconds"] = job_manager.get_eta(job["job_id"]) if job["job_type"] == "llm_parse" else None
     return {
         "qdrant": _check_qdrant(),
         "mysql": _check_mysql(),
@@ -1145,7 +1148,7 @@ def admin_status():
         },
         "resource_gate": {"free": resource_ok, "reason": resource_reason,
                            "enabled": settings.jobs.resource_gate.enabled},
-        "jobs": job_manager.list_jobs(),
+        "jobs": jobs,
         "mounts": list(MOUNT_REGISTRY.keys()),
         "llm_parse_backlog": {
             name: mysql_db_instance.count_files_needing_llm_parse(name) for name in MOUNT_REGISTRY
