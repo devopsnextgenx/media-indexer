@@ -16,15 +16,21 @@
                 <select id="mount-select" class="form-select" style="background: #252526; color: #fff; border: 1px solid #3c3c3c; padding: 4px 8px; border-radius: 3px; font-size: 13px;">
                     <option value="all">All Mounts</option>
                 </select>
+                <input type="text" id="name-tier-min-df" class="name-tier-min-df form-input" placeholder="Name Tier Min DF" value="3"/>
                 
                 <button id="scan-mode-toggle" type="button" data-mode="incremental" style="background: #252526; color: #fff; border: 1px solid #3c3c3c; padding: 4px 10px; border-radius: 3px; font-size: 13px; cursor: pointer;">
                     Mode: <span id="scan-mode-label" style="font-weight: 600; color: #4ec9b0;">Incremental</span>
                 </button>
             </div>
 
-            <button id="btn-scan" class="btn btn-primary">Scan & Index</button>            <button id="btn-clean-index" class="btn btn-danger">Clean Vector DB</button>            <button id="btn-bulk" class="btn btn-secondary">Bulk Clean '_'</button>
-            <button id="btn-yt" class="btn btn-secondary">yt-dlp Download</button>
+            <button id="btn-scan" class="btn btn-primary">Scan & Index</button>
+            <button id="btn-detect-duplicates" class="btn btn-primary">Detect Duplicates</button>
+            <button id="btn-clean-index" class="btn btn-danger">Clean Indexing</button>
+            <button id="btn-clean-duplicates" class="btn btn-danger">Clean Duplicates</button>
+            <!-- <button id="btn-bulk" class="btn btn-secondary">Bulk Clean '_'</button> -->
+            <!-- <button id="btn-yt" class="btn btn-secondary">yt-dlp Download</button> -->
             <a href="/docs" target="_blank" class="btn btn-info">Swagger Docs</a>
+            <a href="/admin" class="btn btn-info">Admin Dashboard</a>
         </div>
     </header>
 
@@ -159,7 +165,7 @@
                     </tbody>
                 </table>
             </section>
-        </div> <!-- Correct closure for tab-panel-search -->
+        </div>
 
         <!-- Tab: Downloads View -->
         <div id="tab-panel-downloads" class="tab-panel">
@@ -173,7 +179,6 @@
                         <option value="completed">Completed</option>
                         <option value="failed">Failed</option>
                     </select>
-                    <!-- Added Refresh Button -->
                     <button id="btn-refresh-downloads" class="btn btn-secondary" title="Refresh Downloads">
                         &#8635; Refresh
                     </button>
@@ -191,26 +196,29 @@
                 </div>
             </div>
 
-            <!-- Missing Downloads Table Added Below -->
             <section class="results-container">
                 <table class="vscode-table">
                     <colgroup>
                         <col style="width: 2%">      <!-- # -->
+                        <col style="width: 9%">       <!-- Thumbnail -->
                         <col style="width: 25%">       <!-- Title -->
                         <col style="width: 25%">       <!-- URL / Details -->
                         <col style="width: 10%">       <!-- Actress -->
                         <col style="width: 4%">        <!-- Quality -->
-                        <col style="width: 10%">       <!-- Added At -->
+                        <col style="width: 4%">        <!-- Size -->
+                        <col style="width: 5%">       <!-- Added At -->
                         <col style="width: 9%">        <!-- Status -->
-                        <col style="width: 15%">     <!-- Actions -->
+                        <col style="width: 7%">     <!-- Actions -->
                     </colgroup>
                     <thead>
                         <tr>
                             <th>#</th>
+                            <th>Thumbnail</th>
                             <th>Title</th>
                             <th class="col-details">URL / Details</th>
                             <th>Actress</th>
                             <th>Quality</th>
+                            <th>size</th>
                             <th>Added At</th>
                             <th>Status</th>
                             <th class="col-actions">Actions</th>
@@ -276,6 +284,19 @@
             <div class="modal-buttons">
                 <button id="confirm-cancel" class="btn btn-secondary">Cancel</button>
                 <button id="confirm-ok" class="btn btn-danger">Delete from disk</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DUPLICATE GROUP: modal to show candidates -->
+    <div id="modal-duplicate-group" class="modal hidden">
+        <div class="modal-content" style="width: min(820px, 92vw);">
+            <h3>Duplicate Group: <span id="dup-group-id-display"></span></h3>
+            <div id="dup-group-candidates" style="max-height: 400px; overflow-y: auto;">
+                <!-- populated by JS -->
+            </div>
+            <div class="modal-buttons">
+                <button id="dup-group-close" class="btn btn-secondary">Close</button>
             </div>
         </div>
     </div>

@@ -4,6 +4,7 @@ services:
     container_name: media_indexer
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "zbox.local:192.168.12.111"
     ports:
       - "2345:2345"
     volumes:
@@ -12,7 +13,7 @@ services:
 
       # Mount external yt-dlp binary and folder
       - /usr/local/bin/yt-dlp:/usr/local/bin/yt-dlp:ro
-      - /media/zbox/Crucial-X6/ShareMe/media/songs/target/:/app/ytdlp
+      - /media/zbox/Crucial-X6/ShareMe/media/songs/target:/app/ytdlp
       - /media/zbox/Crucial-X6/ShareMe/media/songs/target/cookies-zbox.txt:/app/cookies/yt_cookies.txt:ro
 
       - /home/shared/services/store/mnts/vectordb:/app/data

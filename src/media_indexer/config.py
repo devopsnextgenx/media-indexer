@@ -40,13 +40,34 @@ class MySQLConfig(BaseModel):
 class EmbeddingConfig(BaseModel):
     provider: str = "ollama"
     host: str = "http://host.docker.internal:11434"
+    # Optional list of additional Ollama servers. When non-empty, `host` is
+    # treated as just the first/default entry and all are pooled together.
+    endpoints: list[str] = Field(default_factory=list)
     model_name: str = "nomic-embed-text"
     dimension: int = 768
+
+    def all_endpoints(self) -> list[str]:
+        eps = [self.host] + [e for e in self.endpoints if e != self.host]
+        return [e.rstrip("/") for e in eps if e]
 
 class LLMConfig(BaseModel):
     provider: str = "ollama"
     host: str = "http://host.docker.internal:11434"
+    # List of Ollama server base URLs that can serve `generate`/`chat`/`embed`
+    # for LLM parsing. Populate this to load-balance / failover across
+    # multiple machines. `host` above is always included as the first entry.
+    endpoints: list[str] = Field(default_factory=list)
     model_name: str = "gemma4:e2b"
+    # How long (seconds) a server that failed a health check is skipped
+    # before being retried.
+    unhealthy_backoff_seconds: int = 30
+    # How long to sleep between availability checks while every configured
+    # endpoint is down (parsing pauses and resumes automatically).
+    retry_wait_seconds: int = 15
+
+    def all_endpoints(self) -> list[str]:
+        eps = [self.host] + [e for e in self.endpoints if e != self.host]
+        return [e.rstrip("/") for e in eps if e]
 
 class LoggingConfig(BaseModel):
     level: str = "INFO"
@@ -83,6 +104,32 @@ class RedisConfig(BaseModel):
 class DuplicatesConfig(BaseModel):
     enabled: bool = True
     similarity_threshold: float = 0.85
+    # If true, scanning a mount no longer auto-triggers duplicate detection
+    # inline; detection is a separate job triggered independently per mount
+    # (via API or the background job scheduler).
+    decoupled_from_indexing: bool = True
+    # Use llm_parsed_metadata (song/movie/artist) when available instead of
+    # the heuristic token classifier for a given file's tiers.
+    use_llm_metadata: bool = True
+
+class LLMParsingConfig(BaseModel):
+    enabled: bool = True
+    model_name: str = "gemma4:e2b"
+    # Max titles processed per background-job "tick" before re-checking
+    # resource availability / pause state.
+    batch_size: int = 20
+
+class ResourceGateConfig(BaseModel):
+    """Simple, dependency-free heuristic for 'only run when resources are
+    free' used by the background job scheduler."""
+    enabled: bool = True
+    max_load_average_1m: float = 15.0
+    max_cpu_percent: float = 75.0
+    check_interval_seconds: int = 5
+
+class BackgroundJobsConfig(BaseModel):
+    resource_gate: ResourceGateConfig = ResourceGateConfig()
+    llm_parsing: LLMParsingConfig = LLMParsingConfig()
 
 # Update AppConfig class
 class AppConfig(BaseModel):
@@ -98,6 +145,7 @@ class AppConfig(BaseModel):
     downloads: DownloadsConfig = DownloadsConfig()
     indexing: IndexingConfig = IndexingConfig()
     duplicates: DuplicatesConfig = DuplicatesConfig()
+    jobs: BackgroundJobsConfig = BackgroundJobsConfig()
 
 
 def load_config(config_path: str = "config.yml") -> AppConfig:

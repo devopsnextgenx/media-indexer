@@ -24,6 +24,12 @@ from media_indexer.jellyfin import JellyfinClient
 from media_indexer.scanner import DirectoryTreeScanner
 
 from media_indexer.duplicates import DuplicateDetector
+from media_indexer.jobs import job_manager, resource_gate
+from media_indexer.llm_parser import parse_and_cache_title
+from media_indexer.llms import llm_pool, embedding_pool
+import logging
+
+logger = logging.getLogger(__name__)
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -169,6 +175,13 @@ class TargetRequest(BaseModel):
 class FormatsRequest(BaseModel):
     url: str
     cookies: str | None = None
+
+
+class LlmMetadataUpdate(BaseModel):
+    file_path: str
+    song_title: str | None = None
+    movie_or_album: str | None = None
+    artists: list[str] = []
 
 
 class YtDownloadRequest(TargetRequest):
@@ -432,7 +445,24 @@ async def trigger_scan(
 
 @app.get("/api/search", tags=["Search"])
 def search_media(q: str = Query(..., description="Semantic search query"), limit: int = 50):
-    return search_engine.search(query=q, limit=limit)
+    results = search_engine.search(query=q, limit=limit)
+    logger.info(f"Search query '{q}' returned {len(results)} results")
+    for r in results:
+        mfp = get_mount_path(r.get("file_path")) if r.get("file_path") else None
+        r["mounted_file_path"] = mfp
+    # Enrich with duplicate group ids
+    if mysql_db_instance.enabled and results:
+        file_paths = [r.get("mounted_file_path") for r in results if r.get("mounted_file_path")]
+
+        if file_paths:
+            group_map = mysql_db_instance.get_duplicate_group_ids_for_paths(file_paths)
+            logger.info(f"Found {len(group_map)} duplicate group ids for search results")
+            for r in results:
+                mfp = r.get("mounted_file_path")
+                if mfp and mfp in group_map:
+                    logger.info(f"File path '{mfp}' has duplicate group id '{group_map[mfp]}'")
+                    r["duplicate_group_id"] = group_map[mfp]
+    return results
 
 
 @app.get("/api/media/thumbnail", tags=["Media Stream"])
@@ -631,8 +661,7 @@ def clean_index(
 
     # MySQL: wipe processed_files only. download_tracker and indexing_jobs
     # are separate tables and are intentionally left untouched.
-    removed_mysql_rows = mysql_db_instance.truncate_processed_files()
-    removed_duplicates = mysql_db_instance.truncate_duplicate_groups()   # new
+    truncate_tables = mysql_db_instance.truncate_tables()
 
     # Redis: drop every cached mount tree so the Library tab doesn't keep
     # serving stale folder/file data after a clean.
@@ -652,8 +681,7 @@ def clean_index(
         "mode": mode,
         "collection": COLLECTION_NAME,
         "deleted_points": removed,
-        "mysql_processed_files_removed": removed_mysql_rows,
-        "mysql_duplicate_groups_removed": removed_duplicates,
+        "truncate_tables": truncate_tables,
         "redis_mount_trees_cleared": cleared_redis_trees,
         "cleared_manifests": cleared,
         "remaining_points": db_instance.count_items(),
@@ -738,7 +766,7 @@ def get_downloads():
     
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT entry, status, updated_at, title FROM download_tracker ORDER BY updated_at DESC")
+            cursor.execute("SELECT entry, status, updated_at, title, size, thumbnail FROM download_tracker ORDER BY updated_at DESC")
             rows = cursor.fetchall()
             
             # Map database columns to the structure expected by the frontend UI
@@ -751,6 +779,8 @@ def get_downloads():
                 actress = parts[3] if len(parts) >= 4 else url
                 quality = parts[1] if len(parts) >= 2 else None
                 language = parts[2] if len(parts) >= 3 else None
+                size = row.get("size")
+                thumbnail = row.get("thumbnail")
 
                 results.append({
                     "id": entry_text,  # Primary key string
@@ -760,18 +790,13 @@ def get_downloads():
                     "quality": quality,
                     "language": language,
                     "status": row.get("status", "PENDING"),
-                    "created_at": row.get("updated_at")
+                    "created_at": row.get("updated_at"),
+                    "size": size,
+                    "thumbnail": thumbnail
                 })
             return results
     finally:
         conn.close()
-
-@app.patch("/api/actions/downloads/{download_id:path}", tags=["Download Tracker"])
-def update_download_status(download_id: str, update: DownloadUpdate):
-    success = mysql_db_instance.update_download_status(download_id, update.status.upper())
-    if not success:
-        raise HTTPException(status_code=404, detail="Download entry not found or update failed")
-    return {"status": "success", "entry": download_id, "updated_status": update.status.upper()}
 
 @app.delete("/api/actions/downloads/{download_id:path}", tags=["Download Tracker"])
 def delete_download(download_id: str):
@@ -787,6 +812,8 @@ class DownloadEntryRequest(BaseModel):
 class UpdateEntryStatusRequest(BaseModel):
     entry: str
     status: str
+    size: int | None = None
+    thumbnail: str | None = None
 
 
 @app.post("/api/ytdlp/download-entry", tags=["Browser Plugin"])
@@ -821,11 +848,13 @@ def add_download_entry(req: DownloadEntryRequest):
 def update_entry_status(req: UpdateEntryStatusRequest):
     entry_text = req.entry.strip()
     status_text = req.status.strip().upper()
+    size_value = req.size
+    thumbnail_value = req.thumbnail
 
     if not entry_text or not status_text:
         raise HTTPException(status_code=400, detail="Entry and status are required")
 
-    success = mysql_db_instance.update_download_status(entry_text, status_text)
+    success = mysql_db_instance.update_download_status(entry_text, status_text, size_value or 0, thumbnail_value)
     if not success:
         raise HTTPException(status_code=404, detail="Entry not found or failed to update")
 
@@ -834,6 +863,13 @@ def update_entry_status(req: UpdateEntryStatusRequest):
         "entry": entry_text,
         "updated_status": status_text
     }
+
+@app.patch("/api/actions/downloads/{download_id:path}", tags=["Download Tracker"])
+def update_download_status(download_id: str, update: DownloadUpdate):
+    success = mysql_db_instance.update_download_status(download_id, update.status.upper())
+    if not success:
+        raise HTTPException(status_code=404, detail="Download entry not found or update failed")
+    return {"status": "success", "entry": download_id, "updated_status": update.status.upper()}
 
 class DeleteDownloadRequest(BaseModel):
     entry: str
@@ -855,86 +891,293 @@ def clean_record_from_index(path: str = Query(..., description="Absolute file pa
     mount_path = get_mount_path(path)
     return MediaActions.clean_record_from_index(file_path=mount_path)
 
+@app.delete("/api/admin/duplicates/clean", tags=["Admin"])
+def clean_duplicate_tables():
+    results = mysql_db_instance.truncate_duplicate_tables()
+    return {"status": "success", "results": results}
+
 
 @app.get("/api/admin/duplicates/groups", tags=["Admin"])
 def list_duplicate_groups(
     mount: str = Query(None),
-    status: str = Query(None, regex="^(PENDING_REVIEW|CONFIRMED_DUPLICATE|CONFIRMED_UNIQUE|AUTO_RESOLVED)$"),
+    folder: str = Query(None, description="Filter by folder path prefix (e.g. /media/storage/songs/Artist)"),
+    status: str = Query(None, regex="^(PENDING|DUPLICATE|REJECTED)$"),  # candidate status
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
-    rows = mysql_db_instance.get_duplicate_groups(mount=mount, status=status, limit=limit, offset=offset)
-    return {"total": len(rows), "items": rows}
+    groups = mysql_db_instance.get_duplicate_groups(
+        mount=mount, folder=folder, status=status, limit=limit, offset=offset
+    )
+    # Optionally compute total count without limit/offset for pagination metadata
+    return {"items": groups, "total": len(groups)}
+
 
 @app.get("/api/admin/duplicates/group", tags=["Admin"])
-def get_duplicate_group(group_key: str = Query(...)):
-    entries = mysql_db_instance.get_duplicate_group_by_group_key(group_key)
-    if not entries:
+def get_duplicate_group(group_id: str = Query(...)):
+    group = mysql_db_instance.get_duplicate_group_by_id(group_id)
+    if not group:
         raise HTTPException(status_code=404, detail="Group not found")
-    return {"group_key": group_key, "entries": entries}
+    return group
 
 @app.get("/api/admin/duplicates/folder", tags=["Admin"])
 def get_duplicates_for_folder(
     mount: str = Query(...),
     path: str = Query(""),
-    status: str = Query(None, regex="^(PENDING_REVIEW|CONFIRMED_DUPLICATE|CONFIRMED_UNIQUE|AUTO_RESOLVED)$"),
+    status: str = Query(None, regex="^(PENDING|DUPLICATE|REJECTED)$"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
     mnt = MOUNT_REGISTRY.get(mount)
     if not mnt:
         raise HTTPException(status_code=404, detail="Mount not found")
-    full_path = os.path.join(mnt.path, path).replace("\\", "/")
-    groups = mysql_db_instance.get_duplicate_groups_by_folder(full_path, status, limit, offset)
-    return {"items": groups, "total": len(groups)}   # total only for this batch
+    folder_path = os.path.join(mnt.path, path).replace("\\", "/")
+    groups = mysql_db_instance.get_duplicate_groups(
+        mount=mount, folder=folder_path, status=status, limit=limit, offset=offset
+    )
+    return {"items": groups, "total": len(groups)}
 
-# in main.py – replace the body of get_duplicates_for_file
-@app.get("/api/admin/duplicates/file")
-def get_duplicates_for_file(file_path: str = Query(...), vector_id: str = Query(None)):
-    if vector_id:
-        rows = mysql_db_instance.get_duplicate_group_by_vector_id(vector_id)
-        if rows:
-            group_key = rows[0]["group_key"]
-            all_entries = mysql_db_instance.get_duplicate_group_by_group_key(group_key)
-            return {"group_key": group_key, "entries": all_entries}
-
-    all_entries = mysql_db_instance.get_duplicate_group_by_file_path(file_path)
-    if not all_entries:
-        return {"group_key": None, "entries": []}   # empty instead of 404
-    group_key = all_entries[0]["group_key"]
-    # expand to the full group so the UI gets every sibling
-    full = mysql_db_instance.get_duplicate_group_by_group_key(group_key)
-    return {"group_key": group_key, "entries": full}
+@app.get("/api/admin/duplicates/file", tags=["Admin"])
+def get_duplicates_for_file(
+    file_path: str = Query(...),
+):
+    group = mysql_db_instance.get_duplicate_group_by_file(file_path)
+    if not group:
+        return {"group_id": None, "entries": []}   # empty instead of 404
+    return group
 
 @app.post("/api/admin/duplicates/action", tags=["Admin"])
 def update_duplicate_action(body: dict):
     file_path = body.get("file_path")
-    action = body.get("action")  # CONFIRM_DUPLICATE, CONFIRM_UNIQUE, AUTO_RESOLVED
+    action = body.get("action")  # DUPLICATE, REJECTED (status values)
     if not file_path or not action:
         raise HTTPException(status_code=400, detail="Missing file_path or action")
-    if action not in ("CONFIRM_DUPLICATE", "CONFIRM_UNIQUE", "AUTO_RESOLVED"):
-        raise HTTPException(status_code=400, detail="Invalid action")
-    success = mysql_db_instance.update_duplicate_status_by_file_path(file_path, action)
+    if action not in ("DUPLICATE", "REJECTED"):
+        raise HTTPException(status_code=400, detail="Invalid action; must be DUPLICATE or REJECTED")
+    success = mysql_db_instance.update_candidate_status(file_path, action)
     if not success:
-        raise HTTPException(status_code=404, detail="Entry not found or update failed")
+        raise HTTPException(status_code=404, detail="Candidate not found or update failed")
     return {"status": "updated", "file_path": file_path, "new_status": action}
 
 @app.post("/api/admin/duplicates/detect", tags=["Admin"])
-def trigger_duplicate_detection(mount: str = Query(None)):
-    """Runs duplicate detection for a specific mount, or all mounts if omitted."""
+def trigger_duplicate_detection(mount: str = Query(None), nameTierMinDf: int = Query(3, ge=3, description="Minimum document frequency for name tier")):
     if mount:
         if mount not in scanners:
             raise HTTPException(status_code=404, detail="Mount not found")
-        detector = DuplicateDetector(qdrant_client, COLLECTION_NAME,
-                                     similarity_threshold=settings.duplicates.similarity_threshold)
+        detector = DuplicateDetector(
+            qdrant_client, COLLECTION_NAME,
+            similarity_threshold=settings.duplicates.similarity_threshold,
+            media_type=MOUNT_REGISTRY[mount].media_type,
+            nameTierMinDf=nameTierMinDf
+        )
         detector.detect_for_mount(mount, MOUNT_REGISTRY[mount].path)
         return {"status": "success", "mount": mount}
     else:
         for name, mnt in MOUNT_REGISTRY.items():
-            detector = DuplicateDetector(qdrant_client, COLLECTION_NAME,
-                                         similarity_threshold=settings.duplicates.similarity_threshold)
+            detector = DuplicateDetector(
+                qdrant_client, COLLECTION_NAME,
+                similarity_threshold=settings.duplicates.similarity_threshold,
+                media_type=mnt.media_type,
+                nameTierMinDf=nameTierMinDf
+            )
             detector.detect_for_mount(name, mnt.path)
         return {"status": "success", "message": "Duplicate detection run for all mounts"}
+
+
+# ==========================================
+# LLM parsing & background jobs (decoupled from indexing)
+# ==========================================
+
+@app.post("/api/admin/llm-parse/run", tags=["Admin", "LLM Parsing"])
+def run_llm_parse_job(mount: str = Query(None, description="Limit to this mount; omit for all mounts")):
+    if mount and mount not in MOUNT_REGISTRY:
+        raise HTTPException(status_code=404, detail="Mount not found")
+    job_id = job_manager.start_llm_parse_job(mount)
+    return {"status": "started", "job_id": job_id}
+
+
+@app.post("/api/admin/llm-parse/single", tags=["Admin", "LLM Parsing"])
+def parse_single_title(file_path: str = Query(...), force: bool = Query(False)):
+    """Parses (or returns the cached parse of) a single file, independent
+    of any background job — useful for on-demand lookups from the UI."""
+    file_name = os.path.basename(file_path)
+    try:
+        result = parse_and_cache_title(file_name, file_path, force_reparse=force)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"LLM parse failed: {e}")
+    return result
+
+
+@app.get("/api/media/llm-metadata", tags=["Media Stream", "LLM Parsing"])
+def get_llm_metadata_for_file(file_path: str = Query(...)):
+    """Returns the cached llm_parsed_metadata row for a single file, if any.
+
+    This is intentionally separate from /api/search so the search results
+    query never has to join against llm_parsed_metadata for every hit — the
+    UI calls this lazily, only when the user expands a row's AI metadata
+    panel."""
+    if not mysql_db_instance.enabled:
+        return {"found": False}
+    file_name = os.path.basename(file_path)
+    data = mysql_db_instance.get_llm_metadata(file_name)
+    if not data:
+        return {"found": False}
+    return {"found": True, **data}
+
+
+@app.put("/api/media/llm-metadata", tags=["Media Stream", "LLM Parsing"])
+def update_llm_metadata_for_file(payload: LlmMetadataUpdate):
+    """Saves a user-edited version of a file's LLM-parsed metadata
+    (song title / movie-or-album / artists) from the search UI's expanded
+    row editor."""
+    if not mysql_db_instance.enabled:
+        raise HTTPException(status_code=503, detail="MySQL is not enabled")
+    file_name = os.path.basename(payload.file_path)
+    ok = mysql_db_instance.upsert_llm_metadata(
+        file_name=file_name,
+        full_path=payload.file_path,
+        song_title=payload.song_title,
+        movie_or_album=payload.movie_or_album,
+        artists=payload.artists or [],
+        model_name="manual-edit",
+        source_endpoint="ui_edit",
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save metadata")
+    data = mysql_db_instance.get_llm_metadata(file_name)
+    return {"status": "saved", **(data or {})}
+
+
+@app.post("/api/admin/duplicates/detect-job", tags=["Admin", "Duplicate Detection"])
+def run_duplicate_detect_job(mount: str = Query(None, description="Limit to this mount; omit for all mounts")):
+    """Decoupled, resource-gated, pause/resume-able duplicate detection —
+    unlike /api/admin/duplicates/detect, this returns immediately and runs
+    in the background job manager."""
+    if mount and mount not in MOUNT_REGISTRY:
+        raise HTTPException(status_code=404, detail="Mount not found")
+    job_id = job_manager.start_duplicate_detect_job(MOUNT_REGISTRY, mount)
+    return {"status": "started", "job_id": job_id}
+
+
+@app.get("/api/admin/jobs", tags=["Admin", "Jobs"])
+def list_background_jobs(job_type: str = Query(None, regex="^(llm_parse|duplicate_detect)$")):
+    return {"items": job_manager.list_jobs() if not job_type else
+            [j for j in job_manager.list_jobs() if j.get("job_type") == job_type]}
+
+
+@app.get("/api/admin/jobs/{job_id}", tags=["Admin", "Jobs"])
+def get_background_job(job_id: str):
+    job = job_manager.status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/api/admin/jobs/{job_id}/pause", tags=["Admin", "Jobs"])
+def pause_background_job(job_id: str):
+    if not job_manager.pause(job_id):
+        raise HTTPException(status_code=404, detail="Job not found or pause failed")
+    return {"status": "pause_requested", "job_id": job_id}
+
+
+@app.post("/api/admin/jobs/{job_id}/resume", tags=["Admin", "Jobs"])
+def resume_background_job(job_id: str):
+    try:
+        resumed_id = job_manager.resume(job_id, MOUNT_REGISTRY)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"status": "resumed", "job_id": resumed_id}
+
+
+@app.post("/api/admin/jobs/{job_id}/cancel", tags=["Admin", "Jobs"])
+def cancel_background_job(job_id: str):
+    if not job_manager.cancel(job_id):
+        raise HTTPException(status_code=404, detail="Job not found or cancel failed")
+    return {"status": "cancel_requested", "job_id": job_id}
+
+
+# ==========================================
+# Admin status dashboard
+# ==========================================
+
+def _check_qdrant() -> dict:
+    try:
+        cols = qdrant_client.get_collections()
+        return {"connected": True, "collections": [c.name for c in cols.collections]}
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
+
+
+def _check_mysql() -> dict:
+    if not mysql_db_instance.enabled:
+        return {"connected": False, "enabled": False}
+    conn = mysql_db_instance._get_connection()
+    if not conn:
+        return {"connected": False, "enabled": True}
+    try:
+        conn.close()
+        return {"connected": True, "enabled": True, "database": mysql_db_instance.cfg.database}
+    except Exception as e:
+        return {"connected": False, "enabled": True, "error": str(e)}
+
+
+def _check_redis() -> dict:
+    if not redis_db_instance.enabled or not redis_db_instance.client:
+        return {"connected": False, "enabled": getattr(redis_db_instance, "enabled", False)}
+    try:
+        redis_db_instance.client.ping()
+        return {"connected": True, "enabled": True}
+    except Exception as e:
+        return {"connected": False, "enabled": True, "error": str(e)}
+
+@app.get("/api/admin/mounts/status", tags=["Admin"])
+def get_mount_action_statuses():
+    """Returns per-mount status for indexing, LLM parsing, and duplicate detection."""
+    mounts = list(MOUNT_REGISTRY.keys())
+    statuses = mysql_db_instance.get_mount_action_statuses(mounts) if mysql_db_instance.enabled else {}
+    # Ensure all mounts are present even if MySQL is disabled
+    for m in mounts:
+        if m not in statuses:
+            statuses[m] = {'indexing': None, 'llm_parse': None, 'duplicate_detect': None}
+    return {"mounts": mounts, "statuses": statuses}
+
+@app.get("/api/admin/status", tags=["Admin"])
+def admin_status():
+    resource_ok, resource_reason = resource_gate.is_free()
+    jobs = job_manager.list_jobs()
+    for job in jobs:
+        job["eta_seconds"] = job_manager.get_eta(job["job_id"]) if job["job_type"] == "llm_parse" else None
+    return {
+        "qdrant": _check_qdrant(),
+        "mysql": _check_mysql(),
+        "redis": _check_redis(),
+        "ollama": {
+            "llm": llm_pool.status() if llm_pool else
+                   [{"endpoint": settings.llm.host, "healthy": llm_client.is_any_endpoint_available()}],
+            "embedding": embedding_pool.status() if embedding_pool else
+                         [{"endpoint": settings.embedding.host, "healthy": None}],
+        },
+        "resource_gate": {"free": resource_ok, "reason": resource_reason,
+                           "enabled": settings.jobs.resource_gate.enabled},
+        "jobs": jobs,
+        "mounts": list(MOUNT_REGISTRY.keys()),
+        "llm_parse_backlog": {
+            name: mysql_db_instance.count_files_needing_llm_parse(name) for name in MOUNT_REGISTRY
+        } if mysql_db_instance.enabled else {},
+    }
+
+
+@app.post("/api/admin/ollama/refresh", tags=["Admin"])
+def refresh_ollama_status():
+    return {
+        "llm": llm_pool.refresh_all() if llm_pool else [],
+        "embedding": embedding_pool.refresh_all() if embedding_pool else [],
+    }
+
+
+@app.get("/admin", include_in_schema=False)
+def serve_admin_ui():
+    return FileResponse("static/admin.html")
+
 
 @app.on_event("startup")
 def setup_cron():

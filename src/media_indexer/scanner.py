@@ -738,14 +738,22 @@ class DirectoryTreeScanner:
         job_info["current_index"] = total_files
         job_info["current_file"] = None
         self._save_manifest(manifest)
-        if settings.duplicates.enabled:
+
+        # Duplicate detection is decoupled from indexing: it no longer runs
+        # inline at the end of a scan. Trigger it independently per mount
+        # via POST /api/admin/duplicates/detect (or the background job
+        # manager), so a scan isn't held up by — or forced to re-run —
+        # duplicate detection every time. Set
+        # `duplicates.decoupled_from_indexing: false` to restore the old
+        # inline behavior.
+        if settings.duplicates.enabled and not settings.duplicates.decoupled_from_indexing:
             try:
                 from media_indexer.duplicates import DuplicateDetector
                 detector = DuplicateDetector(
                     qdrant_client=self.qdrant,
                     collection_name=self.collection_name,
                     similarity_threshold=settings.duplicates.similarity_threshold,
-                    media_type=self.media_type          # <-- pass the mount's media_type
+                    media_type=self.media_type   # already passed in __init__
                 )
                 detector.detect_for_mount(self.mount_name, str(self.mount_path))
                 self._emit("Duplicate detection completed.")

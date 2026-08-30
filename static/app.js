@@ -7,11 +7,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const searchHistoryMenu = document.getElementById("search-history-menu");
 
     const btnScan = document.getElementById("btn-scan");
+    const btnDetectDuplicates = document.getElementById("btn-detect-duplicates");
     const btnCleanIndex = document.getElementById("btn-clean-index");
+    const btnCleanDuplicates = document.getElementById("btn-clean-duplicates");
     const btnBulk = document.getElementById("btn-bulk");
     const btnYt = document.getElementById("btn-yt");
 
     const mountSelect = document.getElementById("mount-select");
+    const nameTierMinDf = document.getElementById("name-tier-min-df");
     const scanModeToggle = document.getElementById("scan-mode-toggle");
     const scanModeLabel = document.getElementById("scan-mode-label");
     const scanConsole = document.getElementById("scan-console");
@@ -626,6 +629,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const FOLDER_TAG_COLORS = ["#e67e22", "#2ecc71", "#3b82f6", "#e74c3c", "#9b59b6", "#f1c40f", "#1abc9c", "#34495e"];
 
+    // ==========================================
+    // DUPLICATE GROUP CHANGES: folderTagsHtml now shows dup-tag if group id present
+    // ==========================================
     function folderTagsHtml(item) {
         const tags = [];
         if (item.mount) {
@@ -636,17 +642,17 @@ document.addEventListener("DOMContentLoaded", () => {
             tags.push(...[...item.folder_tags].reverse());
         }
 
-        if (!tags.length) return "";
+        let dupHtml = '';
+        if (item.duplicate_group_id) {
+            dupHtml = `<span class="dup-tag" data-group-id="${escapeHtml(item.duplicate_group_id)}" data-file-path="${escapeHtml(item.file_path)}">Duplicates</span>`;
+        }
 
-        // <!-- Duplicate tag (new) -->
-        
-        return `<div class="folder-tags">` +
-                `<span class="dup-tag" data-file-path="${escapeHtml(item.file_path)}" data-vector-id="${escapeHtml(item.id || item.vector_id)}">Duplicates</span>` + 
-                tags.map((tag, i) => {
-                const color = FOLDER_TAG_COLORS[i % FOLDER_TAG_COLORS.length];
-                return `<span class="folder-tag" style="border-color:${color};color:${color};">${escapeHtml(tag)}</span>`;
-            }).join("")  +
-            `</div>`;
+        const tagHtml = tags.map((tag, i) => {
+            const color = FOLDER_TAG_COLORS[i % FOLDER_TAG_COLORS.length];
+            return `<span class="folder-tag" style="border-color:${color};color:${color};">${escapeHtml(tag)}</span>`;
+        }).join('');
+
+        return `<div class="folder-tags">${dupHtml}${tagHtml}</div>`;
     }
 
     // ==========================================
@@ -700,9 +706,12 @@ document.addEventListener("DOMContentLoaded", () => {
             ? [`${entry.item_count}${entry.count_capped ? "+" : ""} item${entry.item_count === 1 ? "" : "s"}`]
             : [entry.duration, entry.resolution, entry.size_human].filter(Boolean);
 
-        const dupTag = entry.duplicate_count ? `<span class="dup-tag" data-file-path="${escapeHtml(entry.file_path)}">${entry.duplicate_count} Duplicates</span> / ` : '';
-        // <span class="dup-tag" data-file-path="${escapeHtml(item.file_path)}" data-vector-id="${escapeHtml(item.id || item.vector_id)}"> ${entry.duplicate_count}Duplicates</span>
-        
+        // DUPLICATE GROUP: show dup tag for library files
+        let dupTag = '';
+        if (!isFolder && entry.duplicate_group_id) {
+            dupTag = `<span class="dup-tag" data-group-id="${escapeHtml(entry.duplicate_group_id)}" data-file-path="${escapeHtml(entry.file_path)}">Duplicates</span>`;
+        }
+
         const actionsHtml = isFolder ? "" : `
                     <div class="library-card-actions">
                         <button class="library-tile-icon-btn icon-rename" data-action="rename" title="Rename">
@@ -725,7 +734,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="library-card ${isFolder ? "is-folder" : "is-file"}" data-idx="${idx}" title="${escapeHtml(entry.name)}">
                 <div class="library-card-thumb">
                     ${thumbHtml}
-                    ${isFolder ? dupTag : ""}
+                    ${isFolder ? "" : dupTag}
                     ${isFolder ? `<span class="library-card-count-badge">${entry.item_count}${entry.count_capped ? "+" : ""}</span>` : ""}
                     ${actionsHtml}
                 </div>
@@ -822,18 +831,16 @@ document.addEventListener("DOMContentLoaded", () => {
                 renderLibraryGrid(false);
                 if (libraryMount !== "all") {
                     const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                    annotateLibraryItemsWithGroups(groups);
                     renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 } else {
-                    // Hide the duplicates section when viewing "All Mounts"
                     document.getElementById("library-duplicates-section").style.display = "none";
                 }
-                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 updateLibraryCount(cached.total);
                 return;
             }
 
-            // Fall back to IndexedDB so a previously-browsed folder renders
-            // instantly even after a full page reload, before hitting the server.
+            // Fall back to IndexedDB
             const idbCached = await idbGetLibraryCache(cacheKey);
             if (idbCached) {
                 libraryItems = idbCached.items;
@@ -843,12 +850,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 renderLibraryGrid(false);
                 if (libraryMount !== "all") {
                     const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                    annotateLibraryItemsWithGroups(groups);
                     renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 } else {
-                    // Hide the duplicates section when viewing "All Mounts"
                     document.getElementById("library-duplicates-section").style.display = "none";
                 }
-                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
                 updateLibraryCount(idbCached.total);
                 libraryPageCache.set(cacheKey, { ...idbCached, cachedAt: Date.now() });
                 return;
@@ -870,17 +876,25 @@ document.addEventListener("DOMContentLoaded", () => {
             });
             const res = await fetch(`/api/library/browse?${params.toString()}`);
             const data = await res.json();
-            if (token !== libraryRequestToken) return; // a newer navigation superseded this request
+            if (token !== libraryRequestToken) return;
             if (!res.ok) throw new Error(data.detail || "Failed to load folder");
 
-            libraryItems = reset ? data.items : libraryItems.concat(data.items);
+            // Merge new items
+            const newItems = reset ? data.items : libraryItems.concat(data.items);
+            libraryItems = newItems;
             libraryOffset = libraryItems.length;
             libraryHasMore = data.has_more;
 
             renderBreadcrumb(data.breadcrumb);
+            // Fetch duplicates for this folder (if not all mounts)
+            if (libraryMount !== "all") {
+                const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                annotateLibraryItemsWithGroups(groups);
+                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
+            } else {
+                document.getElementById("library-duplicates-section").style.display = "none";
+            }
             renderLibraryGrid(!reset);
-            const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
-            renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
             updateLibraryCount(data.total);
 
             const cacheEntry = {
@@ -901,12 +915,31 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    // DUPLICATE GROUP: annotate library items with group id from fetched groups
+    function annotateLibraryItemsWithGroups(groups) {
+        if (!groups || !groups.length) return;
+        const groupMap = {};
+        groups.forEach(group => {
+            if (group.candidates) {
+                group.candidates.forEach(cand => {
+                    if (cand.full_path) {
+                        groupMap[cand.full_path] = group.group_id;
+                    }
+                });
+            }
+        });
+        libraryItems.forEach(item => {
+            if (item.type === 'file' && item.file_path && groupMap[item.file_path]) {
+                item.duplicate_group_id = groupMap[item.file_path];
+            }
+        });
+    }
+
     function updateLibraryCount(total) {
         libraryCountEl.textContent = total ? `${libraryItems.length} / ${total} items` : "";
     }
 
-    // Infinite scroll: fetch the next page only once the sentinel enters view,
-    // instead of loading (or rendering) an entire huge folder up front.
+    // Infinite scroll
     const libraryObserver = new IntersectionObserver((entries) => {
         if (entries[0].isIntersecting && libraryHasMore && !libraryLoading) {
             loadLibrary({ reset: false });
@@ -926,8 +959,6 @@ document.addEventListener("DOMContentLoaded", () => {
         loadLibrary({ reset: true });
     });
 
-    // Reflect the restored (or default) card size in the UI immediately, so the
-    // active button and grid sizing match what will actually be rendered.
     cardSizeGroup.querySelectorAll(".card-size-btn").forEach((b) => b.classList.toggle("active", b.dataset.size === cardSize));
     libraryGrid.style.setProperty("--card-size", `${CARD_SIZE_PX[cardSize]}px`);
 
@@ -1101,6 +1132,28 @@ document.addEventListener("DOMContentLoaded", () => {
         btnScan.disabled = false;
     });
 
+    btnDetectDuplicates.addEventListener("click", async () => {
+        const ok = await askConfirm({
+            title: "Detect duplicate files",
+            message: "This will scan all mounted files and detect duplicates based on content hash. This may take a while.",
+            okLabel: "Start detection"
+        });
+        if (!ok) return;
+
+        try {
+            const res = await fetch(`/api/admin/duplicates/detect?mount=${encodeURIComponent(mountSelect.value)}&nameTierMinDf=${encodeURIComponent(nameTierMinDf.value)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({})
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || "Duplicate detection failed");
+            showToast(`Duplicate detection started. ${data.message || ""}`, "success");
+        } catch (err) {
+            showToast(`Duplicate detection failed: ${err.message}`, "error", 8000);
+        }
+    });
+
     function formatEta(seconds) {
         const total = Math.max(0, Math.round(Number(seconds) || 0));
         if (!total) return "--";
@@ -1176,27 +1229,27 @@ document.addEventListener("DOMContentLoaded", () => {
         };
     }
 
-    btnBulk.addEventListener("click", async () => {
-        const ok = await askConfirm({
-            title: "Bulk rename files on disk",
-            message: "Replace all underscores '_' with spaces in mounted file names? This renames files on disk.",
-            okLabel: "Rename files"
-        });
-        if (!ok) return;
+    // btnBulk.addEventListener("click", async () => {
+    //     const ok = await askConfirm({
+    //         title: "Bulk rename files on disk",
+    //         message: "Replace all underscores '_' with spaces in mounted file names? This renames files on disk.",
+    //         okLabel: "Rename files"
+    //     });
+    //     if (!ok) return;
 
-        try {
-            const res = await fetch("/api/actions/bulk-normalize-underscores", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({})
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || "Bulk rename failed");
-            showToast(`Bulk rename complete. Updated ${data.count} files.`, "success");
-        } catch (err) {
-            showToast(`Bulk rename failed: ${err.message}`, "error", 8000);
-        }
-    });
+    //     try {
+    //         const res = await fetch("/api/actions/bulk-normalize-underscores", {
+    //             method: "POST",
+    //             headers: { "Content-Type": "application/json" },
+    //             body: JSON.stringify({})
+    //         });
+    //         const data = await res.json();
+    //         if (!res.ok) throw new Error(data.detail || "Bulk rename failed");
+    //         showToast(`Bulk rename complete. Updated ${data.count} files.`, "success");
+    //     } catch (err) {
+    //         showToast(`Bulk rename failed: ${err.message}`, "error", 8000);
+    //     }
+    // });
 
     function updateCookieStatus() {
         const hasCookies = ytCookies.value.trim().length > 0;
@@ -1206,10 +1259,11 @@ document.addEventListener("DOMContentLoaded", () => {
         ytCookieStatus.classList.toggle("ok", hasCookies);
     }
 
-    btnYt.addEventListener("click", () => {
-        modalYt.classList.remove("hidden");
-        updateCookieStatus();
-    });
+    // btnYt.addEventListener("click", () => {
+    //     modalYt.classList.remove("hidden");
+    //     updateCookieStatus();
+    // });
+
     ytClose.addEventListener("click", () => modalYt.classList.add("hidden"));
     ytCookies.addEventListener("input", updateCookieStatus);
 
@@ -1235,7 +1289,7 @@ document.addEventListener("DOMContentLoaded", () => {
             mountStatus.clear();
             setMountStatus(
                 "admin",
-                `Vector DB cleaned: removed ${data.deleted_points} points from '${data.collection}', ` +
+                `Vector DB cleaned: removed ${data.deleted_points} from '${data.collection}', ` +
                 `cleared ${data.cleared_manifests.length} manifest(s). Ready for a fresh scan.`,
                 0,
                 0
@@ -1247,6 +1301,41 @@ document.addEventListener("DOMContentLoaded", () => {
         } finally {
             btnCleanIndex.innerText = original;
             btnCleanIndex.disabled = false;
+        }
+    });
+
+    btnCleanDuplicates.addEventListener("click", async () => {
+        const ok = await askConfirm({
+            title: "Clean duplicate groups",
+            message: "This will remove all duplicate group records from the database. It does not delete any files on disk.",
+            okLabel: "Clean duplicates"
+        });
+        if (!ok) return;
+
+        btnCleanDuplicates.disabled = true;
+        const original = btnCleanDuplicates.innerText;
+        btnCleanDuplicates.innerText = "Cleaning...";
+
+        try {
+            const res = await fetch("/api/admin/duplicates/clean", { method: "delete" });
+            const data = await res.json();
+
+            if (!res.ok) throw new Error(data.detail || "Clean failed");
+
+            // {
+            //     "status": "success",
+            //     "results": {
+            //         "duplicate_group_candidates": 0,
+            //         "duplicate_groups": 24
+            //     }
+            // }
+            showToast(`Duplicate groups cleaned. Removed ${JSON.stringify(data.results)} group(s).`, "success");
+            document.getElementById("library-duplicates-section").style.display = "none";
+        } catch (err) {
+            showToast(`Failed to clean duplicate groups: ${err.message}`, "error", 8000);
+        } finally {
+            btnCleanDuplicates.innerText = original;
+            btnCleanDuplicates.disabled = false;
         }
     });
 
@@ -1351,8 +1440,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return [startIndex, ...rest];
     }
 
-    // Keeps both the overlay-player controls and the Library toolbar controls
-    // in sync, since they share the same shuffle/loop state.
     function applyShuffleUI() {
         [playerShuffleBtn, libraryShuffleBtn].forEach((btn) => btn.classList.toggle("active", shuffleOn));
     }
@@ -1685,10 +1772,25 @@ document.addEventListener("DOMContentLoaded", () => {
             return `
             <tr>
                 <td class="col-thumb">
-                    <img class="thumb-img" src="${thumbnailUrl(item)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'"/>
+                    <img 
+                    class="thumb-img" 
+                    src="${thumbnailUrl(item)}" 
+                    alt="thumb" 
+                    loading="lazy" 
+                    onerror="this.src='${THUMB_PLACEHOLDER}'" 
+                    onclick="playMedia(${idx})"
+                    style="cursor: pointer; display: inline-block; position: relative; z-index: 10;"
+                    />
                 </td>
                 <td class="col-details">
-                    <div class="file-title" title="${escapeHtml(item.normalized_title)}">${escapeHtml(item.normalized_title)}</div>
+                    <div 
+                        class="file-title" 
+                        title="${escapeHtml(item.normalized_title)}" 
+                        onclick="playMedia(${idx})"
+                        style="cursor: pointer; position: relative; z-index: 10;"
+                        >
+                        ${escapeHtml(item.normalized_title)}
+                    </div>
                     <small class="file-name" title="${escapeHtml(item.file_name)}">${escapeHtml(item.file_name)}</small>
                     ${folderTagsHtml(item)}
                     
@@ -1704,6 +1806,13 @@ document.addEventListener("DOMContentLoaded", () => {
                                 <line x1="14" y1="11" x2="14" y2="17"></line>
                             </svg>
                         </button>
+                        <button class="btn-icon-llm" id="llm-toggle-${idx}" style="margin-left:auto;" onclick="toggleLlmMetadata(${idx})" title="View/edit AI-extracted metadata">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 2a4 4 0 0 0-4 4v1.17A4 4 0 0 0 5 11v2a4 4 0 0 0 2 3.46V18a4 4 0 0 0 8 0v-1.54A4 4 0 0 0 19 13v-2a4 4 0 0 0-3-3.83V6a4 4 0 0 0-4-4z"></path>
+                                <line x1="9" y1="11" x2="9.01" y2="11"></line>
+                                <line x1="15" y1="11" x2="15.01" y2="11"></line>
+                            </svg>
+                        </button>
                     </div>
                 </td>
                 <td class="col-resolution">${escapeHtml(item.resolution || item.metadata?.resolution || 'N/A')}<br/>
@@ -1712,17 +1821,184 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td class="col-size">${escapeHtml(item.size_human || item.metadata?.file_size_human || 'N/A')}</td>
                 <td class="col-score"><span style="color:var(--success-green);">${escapeHtml(item.score)}</span></td>
                 <td class="col-actions">
-                    <div class="row-actions">
-                        <!-- Dup button removed -->
-                        <button class="btn btn-secondary" onclick="playMedia(${idx})">Play</button>
-                        <button class="btn btn-secondary" onclick="renameMedia(${idx})">Rename</button>
-                        <button class="btn btn-danger" onclick="deleteMedia(${idx})">Delete</button>
+                <div class="row-actions d-flex gap-2 align-items-center">
+                    <button class="btn btn-secondary p-1 d-flex align-items-center justify-content-center" style="width: 32px; height: 32px;" onclick="playMedia(${idx})" title="Play">
+                        <svg style="width: 32px; height: 32px;" fill="currentColor" viewBox="0 0 16 16"><!-- Play Icon -->
+                        <path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.693-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/>
+                        </svg>
+                    </button>
+                    <button class="btn btn-secondary p-1 d-flex align-items-center justify-content-center" style="width: 32px; height: 32px;" onclick="renameMedia(${idx})" title="Rename">
+                        <svg style="width: 32px; height: 32px;" fill="currentColor" viewBox="0 0 16 16"><!-- Pencil Icon -->
+                        <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.204 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>
+                        </svg>
+                    </button>
+                    <button class="btn btn-danger p-1 d-flex align-items-center justify-content-center" style="width: 32px; height: 32px;" onclick="deleteMedia(${idx})" title="Delete">
+                        <svg style="width: 32px; height: 32px;" fill="currentColor" viewBox="0 0 16 16"><!-- Trash Icon -->
+                        <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/>
+                        <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/>
+                        </svg>
+                    </button>
+                </div>
+                </td>
+            </tr>
+            <tr class="llm-expand-row hidden" id="llm-row-${idx}">
+                <td colspan="7">
+                    <div class="llm-expand-content" id="llm-content-${idx}">
+                        <!-- populated lazily on first expand -->
                     </div>
                 </td>
             </tr>
             `;
         }).join("");
     }
+
+    // ==========================================
+    // AI/LLM Metadata: expand-row viewer + editor
+    // ==========================================
+    const llmMetadataCache = {}; // idx -> last-loaded metadata payload
+
+    function llmMetadataLoadingHtml() {
+        return `<div class="llm-loading">Loading AI metadata&hellip;</div>`;
+    }
+
+    function llmMetadataFormHtml(idx, item, data) {
+        const found = !!(data && data.found);
+        const songTitle = found ? (data.song_title || "") : "";
+        const movieOrAlbum = found ? (data.movie_or_album || "") : "";
+        const artists = found && Array.isArray(data.artists) ? data.artists.join(", ") : "";
+        const source = found ? (data.source_endpoint || "") : "";
+        const emptyNote = found ? "" : `<div class="llm-empty-note">No AI-extracted metadata cached for this file yet.</div>`;
+
+        return `
+            <div class="llm-meta-header">
+                <strong>AI-Extracted Metadata</strong><span> [${source}]</span>
+                <div class="llm-meta-actions">
+                    <button class="btn-icon-llm-action btn-llm-reparse" onclick="reparseLlmMetadata(${idx})" title="Re-parse with AI">
+                        <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                        Re-parse
+                    </button>
+                    <button class="btn-icon-llm-action btn-llm-save" onclick="saveLlmMetadata(${idx})" title="Save">
+                        <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                        Save
+                    </button>
+                </div>
+            </div>
+            ${emptyNote}
+            <div class="llm-meta-fields">
+                <!-- Song title – full width + inline buttons (reparse/save also here) -->
+                <div class="llm-song-row">
+                    <input type="text" class="llm-song-input" id="llm-song-${idx}" title="Song Title" placeholder="Song Title" value="${escapeHtml(songTitle)}" />
+                </div>
+                <!-- Two‑column row: movie (30%) + artists (60%) -->
+                <div class="llm-meta-row">
+                    <div class="llm-movie-col">
+                        <input type="text" id="llm-movie-${idx}" title="Movie / Album" placeholder="Movie / Album" value="${escapeHtml(movieOrAlbum)}" />
+                    </div>
+                    <div class="llm-artists-col">
+                        <input type="text" id="llm-artists-${idx}" title="Artists (comma-separated)" placeholder="Artists (comma-separated)" value="${escapeHtml(artists)}" />
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    async function fetchLlmMetadata(filePath) {
+        const res = await fetch(`/api/media/llm-metadata?file_path=${encodeURIComponent(filePath)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    }
+
+    async function loadLlmMetadataContent(idx) {
+        const item = currentResults[idx];
+        const contentEl = document.getElementById(`llm-content-${idx}`);
+        if (!item || !contentEl) return;
+
+        contentEl.innerHTML = llmMetadataLoadingHtml();
+        try {
+            const data = await fetchLlmMetadata(item.file_path);
+            llmMetadataCache[idx] = data;
+            contentEl.innerHTML = llmMetadataFormHtml(idx, item, data);
+        } catch (err) {
+            contentEl.innerHTML = `<div class="llm-empty-note">Failed to load AI metadata: ${escapeHtml(err.message)}</div>`;
+        }
+    }
+
+    window.toggleLlmMetadata = async (idx) => {
+        const row = document.getElementById(`llm-row-${idx}`);
+        if (!row) return;
+
+        const isHidden = row.classList.contains("hidden");
+        if (isHidden) {
+            row.classList.remove("hidden");
+            if (!row.dataset.loaded) {
+                await loadLlmMetadataContent(idx);
+                row.dataset.loaded = "1";
+            }
+        } else {
+            row.classList.add("hidden");
+        }
+    };
+
+    window.saveLlmMetadata = async (idx) => {
+        const item = currentResults[idx];
+        if (!item) return;
+
+        const songTitle = document.getElementById(`llm-song-${idx}`)?.value.trim() || null;
+        const movieOrAlbum = document.getElementById(`llm-movie-${idx}`)?.value.trim() || null;
+        const artistsRaw = document.getElementById(`llm-artists-${idx}`)?.value.trim() || "";
+        const artists = artistsRaw ? artistsRaw.split(",").map(a => a.trim()).filter(Boolean) : [];
+
+        try {
+            const res = await fetch("/api/media/llm-metadata", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    file_path: item.file_path,
+                    song_title: songTitle,
+                    movie_or_album: movieOrAlbum,
+                    artists
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast(`Save failed: ${data.detail || res.statusText}`, "error", 8000);
+                return;
+            }
+            llmMetadataCache[idx] = { found: true, ...data };
+            const contentEl = document.getElementById(`llm-content-${idx}`);
+            if (contentEl) contentEl.innerHTML = llmMetadataFormHtml(idx, item, llmMetadataCache[idx]);
+            showToast("AI metadata saved.", "success");
+        } catch (err) {
+            showToast(`Save failed: ${err.message}`, "error", 8000);
+        }
+    };
+
+    window.reparseLlmMetadata = async (idx) => {
+        const item = currentResults[idx];
+        if (!item) return;
+
+        const contentEl = document.getElementById(`llm-content-${idx}`);
+        if (contentEl) contentEl.innerHTML = llmMetadataLoadingHtml();
+
+        try {
+            const res = await fetch(
+                `/api/admin/llm-parse/single?file_path=${encodeURIComponent(item.file_path)}&force=true`,
+                { method: "POST" }
+            );
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast(`Re-parse failed: ${data.detail || res.statusText}`, "error", 8000);
+                if (contentEl) contentEl.innerHTML = llmMetadataFormHtml(idx, item, llmMetadataCache[idx]);
+                return;
+            }
+            const fresh = { found: true, ...data };
+            llmMetadataCache[idx] = fresh;
+            if (contentEl) contentEl.innerHTML = llmMetadataFormHtml(idx, item, fresh);
+            showToast("Re-parsed with AI.", "success");
+        } catch (err) {
+            showToast(`Re-parse failed: ${err.message}`, "error", 8000);
+        }
+    };
 
     // ---- Toast Notifications ----
     const toastContainer = document.getElementById("toast-container");
@@ -2011,9 +2287,37 @@ document.addEventListener("DOMContentLoaded", () => {
     const allTabBtns = [tabBtnSearch, tabBtnLibrary, tabBtnDownloads];
     const allTabPanels = [tabPanelSearch, tabPanelLibrary, tabPanelDownloads];
 
+    let downloadsPollInterval = null;
+
+    function startDownloadsPolling() {
+        if (downloadsPollInterval) return; // already running
+        downloadsPollInterval = setInterval(() => {
+            if (downloadsTabActive) {
+                fetchDownloads();
+            }
+        }, 60000);
+    }
+
+    function stopDownloadsPolling() {
+        if (downloadsPollInterval) {
+            clearInterval(downloadsPollInterval);
+            downloadsPollInterval = null;
+        }
+    }
+
     function activateTab(btn, panel) {
         allTabBtns.forEach((b) => b?.classList.toggle("active", b === btn));
         allTabPanels.forEach((p) => p?.classList.toggle("active", p === panel));
+
+        // Handle downloads polling
+        if (panel === tabPanelDownloads) {
+            downloadsTabActive = true;
+            startDownloadsPolling();
+            // fetch immediately if not loaded? Already called in click handler; we can also ensure.
+        } else {
+            downloadsTabActive = false;
+            stopDownloadsPolling();
+        }
     }
 
     tabBtnSearch?.addEventListener("click", () => activateTab(tabBtnSearch, tabPanelSearch));
@@ -2071,7 +2375,32 @@ document.addEventListener("DOMContentLoaded", () => {
 
         renderDownloads(items);
     }
+    function bytesToMB(bytes, decimals = 2) {
+        if (bytes === 0) return '0.00 MB';
+        
+        const mb = bytes / (1024 * 1024); // 1,048,576 bytes in a MB
+        return `${mb.toFixed(decimals)} MB`;
+    }
+    function formatDate(dateString) {
+        if (!dateString) return 'N/A';
+        const d = new Date(dateString);
+        if (isNaN(d)) return 'N/A';
 
+        const pad = (n) => String(n).padStart(2, '0');
+        
+        const month = pad(d.getMonth() + 1);
+        const day = pad(d.getDate());
+        
+        let hours = d.getHours();
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        hours = hours % 12 || 12; // Convert 0 to 12 for 12-hour format
+        
+        const formattedHours = pad(hours);
+        const minutes = pad(d.getMinutes());
+        const seconds = pad(d.getSeconds());
+
+        return `${month}-${day} ${formattedHours}:${minutes}:${seconds} ${ampm}`;
+    }
     function renderDownloads(items) {
         const downloadsBody = document.getElementById("downloads-body");
         const downloadsCount = document.getElementById("downloads-count");
@@ -2091,6 +2420,10 @@ document.addEventListener("DOMContentLoaded", () => {
         downloadsBody.innerHTML = items.map((item, idx) => `
             <tr>
                 <td>${idx + 1}</td>
+                <td class="col-thumb">
+                    <!-- item.thumbnail is a base64 image -->
+                    <img class="download-thumb-img" src="${item.thumbnail ? `data:image/jpg;base64,${item.thumbnail}` : THUMB_PLACEHOLDER}" alt="thumb" loading="lazy"/>
+                </td>
                 <td>${escapeHtml(item.title)}</td>
                 <td class="col-details">
                     <div class="file-title" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</div>
@@ -2098,7 +2431,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 </td>
                 <td><strong>${escapeHtml(item.actress || 'N/A')}</strong></td>
                 <td><code>${escapeHtml(item.quality || 'N/A')}</code></td>
-                <td><small>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString() : 'N/A')}</small></td>
+                <td>${item.size ? bytesToMB(item.size) : 'N/A'}</td>
+                <td><small>${escapeHtml(formatDate(item.created_at))}</small></td>
                 <td><span class="status-badge ${escapeHtml((item.status || 'pending').toLowerCase())}">${escapeHtml(item.status || 'Pending')}</span></td>
                 <td class="col-actions">
                     <div class="row-actions" style="display: flex; align-items: center; gap: 6px;">
@@ -2216,8 +2550,12 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     };
 
+    // ==========================================
+    // DUPLICATE GROUP: fetch and render functions
+    // ==========================================
+
     async function fetchDuplicatesForFolder(mount, path) {
-        if (mount === "all") return [];   // no duplicates at the top level
+        if (mount === "all") return [];
         try {
             const params = new URLSearchParams({ mount, path });
             const res = await fetch(`/api/admin/duplicates/folder?${params.toString()}`);
@@ -2230,13 +2568,24 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    async function fetchDuplicatesForFile(filePath, vectorId) {
+    async function fetchDuplicateGroupById(groupId) {
+        try {
+            const res = await fetch(`/api/admin/duplicates/group?group_id=${encodeURIComponent(groupId)}`);
+            if (!res.ok) throw new Error('No group found');
+            return await res.json();
+        } catch (err) {
+            throw new Error(`Failed to fetch duplicate group: ${err.message}`);
+        }
+    }
+
+    async function fetchDuplicateGroupByFile(filePath) {
         try {
             const params = new URLSearchParams({ file_path: filePath });
-            if (vectorId) params.append("vector_id", vectorId);
             const res = await fetch(`/api/admin/duplicates/file?${params.toString()}`);
-            if (!res.ok) return null;
-            return await res.json();
+            if (!res.ok) throw new Error('No group found');
+            const data = await res.json();
+            if (data && data.group_id) return data;
+            return null;
         } catch (err) {
             console.error("Failed to fetch duplicates for file:", err);
             return null;
@@ -2258,6 +2607,153 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    // Show duplicate group modal
+    async function showDuplicateGroupModal(groupId) {
+        const modal = document.getElementById('modal-duplicate-group');
+        const container = document.getElementById('dup-group-candidates');
+        const groupIdDisplay = document.getElementById('dup-group-id-display');
+        groupIdDisplay.textContent = groupId;
+
+        try {
+            const group = await fetchDuplicateGroupById(groupId);
+            renderCandidates(group.candidates, container, groupId);
+            modal.classList.remove('hidden');
+        } catch (err) {
+            showToast(`Failed to load duplicate group: ${err.message}`, 'error');
+        }
+    }
+
+    function renderCandidates(candidates, container, groupId) {
+        if (!candidates || candidates.length === 0) {
+            container.innerHTML = '<div class="empty-state">No candidates in this group.</div>';
+            return;
+        }
+
+        let html = `<table class="vscode-table">
+            <thead><tr><th>File</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+        candidates.forEach(cand => {
+            const relPath = getRelativePath(cand.full_path, cand.mount || '');
+            const status = cand.status || 'PENDING';
+            const isCanonical = cand.file_id === cand.canonical_file_id; // may not exist, fallback
+            const typeLabel = isCanonical ? '<span class="badge-original">Original</span>' : '';
+
+            html += `<tr data-file-path="${escapeHtml(cand.full_path)}" data-mount="${escapeHtml(cand.mount || '')}">
+                <td title="${escapeHtml(cand.full_path)}">${escapeHtml(relPath)} ${typeLabel}</td>
+                <td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>
+                <td>
+                    <div class="row-actions" style="gap: 4px;">
+                        <button class="btn-icon-play" data-action="play" title="Play">▶</button>
+                        <button class="btn-icon-rename" data-action="rename" title="Rename">✏</button>
+                        <button class="btn-icon-delete" data-action="delete" title="Delete">🗑</button>
+                        <button class="btn-icon-status" data-action="status-duplicate" title="Mark as Duplicate">✓</button>
+                        <button class="btn-icon-status" data-action="status-unique" title="Mark as Unique">✗</button>
+                        <button class="btn-icon-status" data-action="status-pending" title="Reset to Pending">⟳</button>
+                    </div>
+                </td>
+            </tr>`;
+        });
+        html += `</tbody></table>`;
+        container.innerHTML = html;
+    }
+
+    // Event delegation for actions inside the duplicate group modal
+    document.getElementById('dup-group-candidates').addEventListener('click', async (e) => {
+        const btn = e.target.closest('button[data-action]');
+        if (!btn) return;
+        const tr = btn.closest('tr');
+        const filePath = tr.dataset.filePath;
+        const mount = tr.dataset.mount || '';
+        const action = btn.dataset.action;
+
+        switch (action) {
+            case 'play': {
+                // Build minimal item to play
+                const fileName = filePath.split(/[\\/]/).pop() || 'file';
+                const item = { file_path: filePath, file_name: fileName, mount: mount };
+                openPlayer(item, [item], 0);
+                break;
+            }
+            case 'rename': {
+                // Build item for rename modal
+                const fileName = filePath.split(/[\\/]/).pop() || 'file';
+                const item = { file_path: filePath, file_name: fileName, mount: mount };
+                openRenameModal(item, 'search');
+                break;
+            }
+            case 'delete': {
+                const ok = await askConfirm({
+                    title: 'Delete file',
+                    message: `Delete this file from disk?<br/><br/><strong>${escapeHtml(filePath)}</strong>`,
+                    okLabel: 'Delete'
+                });
+                if (!ok) return;
+                try {
+                    const res = await fetch(`/api/actions/file?path=${encodeURIComponent(filePath)}`, { method: 'DELETE' });
+                    if (!res.ok) throw new Error('Delete failed');
+                    showToast('File deleted', 'success');
+                    // Refresh the modal content by re-fetching group
+                    const groupId = document.getElementById('dup-group-id-display').textContent;
+                    showDuplicateGroupModal(groupId);
+                } catch (err) {
+                    showToast(`Delete failed: ${err.message}`, 'error');
+                }
+                break;
+            }
+            case 'status-duplicate':
+            case 'status-unique':
+            case 'status-pending': {
+                let newStatus = action === 'status-duplicate' ? 'DUPLICATE' : (action === 'status-unique' ? 'REJECTED' : 'PENDING');
+                try {
+                    await updateDuplicateAction(filePath, newStatus);
+                    showToast(`Status updated to ${newStatus}`, 'success');
+                    // Refresh modal
+                    const groupId = document.getElementById('dup-group-id-display').textContent;
+                    showDuplicateGroupModal(groupId);
+                    // Also refresh library duplicates section if active
+                    if (libraryMount !== 'all') {
+                        const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                        annotateLibraryItemsWithGroups(groups);
+                        renderDuplicatesGroups(groups, document.getElementById('library-duplicates-content'));
+                    }
+                } catch (err) {
+                    showToast(`Status update failed: ${err.message}`, 'error');
+                }
+                break;
+            }
+        }
+    });
+
+    // Close duplicate group modal
+    document.getElementById('dup-group-close').addEventListener('click', () => {
+        document.getElementById('modal-duplicate-group').classList.add('hidden');
+    });
+
+    // Click handler for .dup-tag tags
+    document.addEventListener('click', async (e) => {
+        const tag = e.target.closest('.dup-tag');
+        if (!tag) return;
+        const groupId = tag.dataset.groupId;
+        if (groupId) {
+            showDuplicateGroupModal(groupId);
+        } else {
+            // Fallback: fetch by file path
+            const filePath = tag.dataset.filePath;
+            if (filePath) {
+                try {
+                    const group = await fetchDuplicateGroupByFile(filePath);
+                    if (group && group.group_id) {
+                        showDuplicateGroupModal(group.group_id);
+                    } else {
+                        showToast('No duplicate group found for this file.', 'info');
+                    }
+                } catch (err) {
+                    showToast(`Failed to load duplicate info: ${err.message}`, 'error');
+                }
+            }
+        }
+    });
+
+    // Render duplicate groups in the library duplicates section
     function renderDuplicatesGroups(groups, container) {
         if (!groups || groups.length === 0) {
             container.innerHTML = "<div class='duplicates-empty'>No duplicate groups found in this folder.</div>";
@@ -2266,35 +2762,25 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         document.getElementById("library-duplicates-section").style.display = "block";
 
-        // group by group_key
-        const groupMap = {};
-        groups.forEach(row => {
-            const key = row.group_key;
-            if (!groupMap[key]) groupMap[key] = [];
-            groupMap[key].push(row);
-        });
-
+        // Each group already has a 'candidates' list
         let html = "";
-        for (const [groupKey, entries] of Object.entries(groupMap)) {
-            // Sort: canonical first (file_path === canonical_file_path)
-            entries.sort((a, b) => {
-                const aIsCanonical = (a.file_path === a.canonical_file_path);
-                const bIsCanonical = (b.file_path === b.canonical_file_path);
-                if (aIsCanonical && !bIsCanonical) return -1;
-                if (!aIsCanonical && bIsCanonical) return 1;
+        groups.forEach(group => {
+            html += `<div class="duplicate-group" data-group-id="${escapeHtml(group.group_id)}">`;
+            html += `<div class="duplicate-group-header">Group: ${escapeHtml(group.group_id)}</div>`;
+            html += `<table class="vscode-table"><thead><tr><th>File</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+            const candidates = group.candidates || [];
+            // Sort: canonical first if we can determine
+            candidates.sort((a, b) => {
+                // assume canonical is the one with status ORIGINAL? We'll just keep order from DB
                 return 0;
             });
-
-            html += `<div class="duplicate-group" data-group-key="${escapeHtml(groupKey)}">`;
-            html += `<div class="duplicate-group-header">Group: ${escapeHtml(groupKey)}</div>`;
-            html += `<table class="vscode-table"><thead><tr><th>File</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
-            entries.forEach(entry => {
-                const isCanonical = (entry.file_path === entry.canonical_file_path);
-                const status = entry.status || 'PENDING_REVIEW';
-                const relPath = getRelativePath(entry.file_path, entry.mount);
+            candidates.forEach(cand => {
+                const isCanonical = cand.file_id === cand.canonical_file_id;
+                const relPath = getRelativePath(cand.full_path, cand.mount || '');
+                const status = cand.status || 'PENDING';
                 const typeLabel = isCanonical ? '<span class="badge-original">Original</span>' : 'Duplicate';
-                html += `<tr data-file-path="${escapeHtml(entry.file_path)}">`;
-                html += `<td title="${escapeHtml(entry.file_path)}">${escapeHtml(relPath)}</td>`;
+                html += `<tr data-file-path="${escapeHtml(cand.full_path)}" data-mount="${escapeHtml(cand.mount || '')}">`;
+                html += `<td title="${escapeHtml(cand.full_path)}">${escapeHtml(relPath)}</td>`;
                 html += `<td>${typeLabel}</td>`;
                 html += `<td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>`;
                 html += `<td>
@@ -2305,10 +2791,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 html += `</tr>`;
             });
             html += `</tbody></table></div>`;
-        }
+        });
         container.innerHTML = html;
 
-        // Re-attach event listeners (same as before)
+        // Attach action listeners for the library duplicates section (keep existing logic)
         container.querySelectorAll(".dup-action").forEach(btn => {
             btn.addEventListener("click", async (e) => {
                 const tr = btn.closest("tr");
@@ -2318,99 +2804,12 @@ document.addEventListener("DOMContentLoaded", () => {
                     await updateDuplicateAction(filePath, action);
                     showToast(`Action ${action} applied to ${filePath}`, "success");
                     const freshGroups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
+                    annotateLibraryItemsWithGroups(freshGroups);
                     renderDuplicatesGroups(freshGroups, document.getElementById("library-duplicates-content"));
                 } catch (err) {
                     showToast(`Failed to update: ${err.message}`, "error");
                 }
             });
         });
-    }
-
-    document.addEventListener("click", async (e) => {
-        const btn = e.target.closest(".dup-tag");
-        if (!btn) return;
-        const filePath = btn.dataset.filePath;
-        const vectorId = btn.dataset.vectorId;   // ← retrieve from dataset
-        const row = btn.closest("tr");
-        // Toggle expansion if already open
-        const nextRow = row.nextElementSibling;
-        if (nextRow && nextRow.classList.contains("dup-expand-row")) {
-            nextRow.remove();
-            return;
-        }
-        const data = await fetchDuplicatesForFile(filePath, vectorId);  // pass vectorId
-        if (!data || !data.entries || data.entries.length === 0) {
-            showToast("No duplicate group found for this file.", "info");
-            return;
-        }
-        // Create expansion row
-        const expandRow = document.createElement("tr");
-        expandRow.classList.add("dup-expand-row");
-        const td = document.createElement("td");
-        td.colSpan = 7; // adjust to match total columns
-        renderDuplicateEntries(data.entries, td); // <-- use this
-        expandRow.appendChild(td);
-        row.parentNode.insertBefore(expandRow, row.nextSibling);
-        // Attach actions inside expansion
-        expandRow.querySelectorAll(".dup-action").forEach(btn => {
-            btn.addEventListener("click", async (e) => {
-                const tr = btn.closest("tr");
-                const filePath = tr.dataset.filePath;
-                const action = btn.dataset.action;
-                try {
-                    await updateDuplicateAction(filePath, action);
-                    showToast(`Action ${action} applied to ${filePath}`, "success");
-                    // Refresh expansion: re-fetch and re-render the expansion content
-                    const updatedData = await fetchDuplicatesForFile(filePath);
-                    if (updatedData) {
-                        const expandRow = tr.closest(".dup-expand-row");
-                        if (expandRow) {
-                            const td = expandRow.querySelector("td");
-                            // re-build html (same as above) and set innerHTML
-                            // We'll reuse the same generation code or simply reload the row by calling the same render logic.
-                            // For simplicity, we can just re-fetch and replace the content.
-                            // We'll wrap the rendering in a small function or inline.
-                            // ...
-                            // We'll create a helper to render duplicate entries into a container.
-                            renderDuplicateEntries(updatedData.entries, td);
-                        }
-                    }
-                } catch (err) {
-                    showToast(`Failed to update: ${err.message}`, "error");
-                }
-            });
-        });
-    });
-
-    // Helper to render duplicate entries into a td
-    function renderDuplicateEntries(entries, container) {
-        // Sort: canonical first
-        entries.sort((a, b) => {
-            const aIsCanonical = (a.file_path === a.canonical_file_path);
-            const bIsCanonical = (b.file_path === b.canonical_file_path);
-            if (aIsCanonical && !bIsCanonical) return -1;
-            if (!aIsCanonical && bIsCanonical) return 1;
-            return 0;
-        });
-
-        let html = `<div class="dup-expand-content"><strong>Duplicate Group</strong><table class="vscode-table"><thead><tr><th>File</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
-        entries.forEach(entry => {
-            const isCanonical = (entry.file_path === entry.canonical_file_path);
-            const status = entry.status || 'PENDING_REVIEW';
-            const relPath = getRelativePath(entry.file_path, entry.mount);
-            const typeLabel = isCanonical ? '<span class="badge-original">Original</span>' : 'Duplicate';
-            html += `<tr data-file-path="${escapeHtml(entry.file_path)}">`;
-            html += `<td title="${escapeHtml(entry.file_path)}">${escapeHtml(relPath)}</td>`;
-            html += `<td>${typeLabel}</td>`;
-            html += `<td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>`;
-            html += `<td>
-                <button class="btn btn-secondary dup-action" data-action="CONFIRM_DUPLICATE">Confirm Duplicate</button>
-                <button class="btn btn-secondary dup-action" data-action="CONFIRM_UNIQUE">Confirm Unique</button>
-                <button class="btn btn-secondary dup-action" data-action="AUTO_RESOLVED">Auto-resolve</button>
-            </td>`;
-            html += `</tr>`;
-        });
-        html += `</tbody></table></div>`;
-        container.innerHTML = html;
     }
 });

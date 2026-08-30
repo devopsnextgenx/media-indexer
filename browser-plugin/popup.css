@@ -114,8 +114,9 @@ body {
 .result-row-overlay {
     position: absolute;
     inset: 0;
-    background: rgba(18, 18, 18, 0.75);
-    backdrop-filter: blur(2px);
+    background: rgba(18, 18, 18, 0.5);
+    backdrop-filter: blur(0.25px); /* Reduced from 2px */
+    -webkit-backdrop-filter: blur(0.25px); /* Added for Safari support */
     z-index: 1;
 }
 

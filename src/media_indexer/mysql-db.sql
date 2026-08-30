@@ -1,16 +1,3 @@
-CREATE TABLE `media_files` (
-  `file_id` int NOT NULL,
-  `full_path` varchar(1024) NOT NULL,
-  `filename` varchar(512) DEFAULT NULL,
-  `parent_folder` varchar(255) DEFAULT NULL,
-  `title_tokens` text,
-  `movie_tokens` text,
-  `artist_tokens` text,
-  `scanned_at` datetime DEFAULT NULL,
-  PRIMARY KEY (`file_id`),
-  UNIQUE KEY `uq_media_files_path` (`full_path`(768))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-
 CREATE TABLE `download_tracker` (
   `entry` varchar(768) NOT NULL,
   `status` varchar(50) DEFAULT 'PENDING',
@@ -84,6 +71,36 @@ CREATE TABLE `processed_files` (
   PRIMARY KEY (`id`),
   KEY `idx_file_path` (`file_path`(255)),
   KEY `idx_mount` (`mount`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+CREATE TABLE `llm_parsed_metadata` (
+  `file_name` varchar(512) NOT NULL COMMENT 'normalized basename without extension, lowercased — reused across mounts',
+  `full_path` varchar(1024) DEFAULT NULL,
+  `song_title` varchar(512) DEFAULT NULL,
+  `movie_or_album` varchar(512) DEFAULT NULL,
+  `artists_json` text,
+  `model_name` varchar(255) DEFAULT NULL,
+  `source_endpoint` varchar(255) DEFAULT NULL,
+  `parsed_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`file_name`),
+  KEY `idx_full_path` (`full_path`(255))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+
+CREATE TABLE `background_jobs` (
+  `job_id` varchar(255) NOT NULL,
+  `job_type` varchar(50) NOT NULL COMMENT 'llm_parse | duplicate_detect',
+  `mount_name` varchar(255) DEFAULT NULL COMMENT 'NULL = all mounts',
+  `status` varchar(50) DEFAULT 'PENDING' COMMENT 'PENDING|RUNNING|PAUSED|COMPLETED|FAILED|CANCELLED',
+  `requested_status` varchar(50) DEFAULT NULL COMMENT 'set by API; runner polls this to pause/resume/cancel',
+  `total_items` int DEFAULT '0',
+  `processed_items` int DEFAULT '0',
+  `failed_items` int DEFAULT '0',
+  `checkpoint` varchar(1024) DEFAULT NULL COMMENT 'last processed file_name or mount name, for resume',
+  `last_error` text,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`job_id`),
+  KEY `idx_type_status` (`job_type`,`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 
 CREATE TABLE `token_stats` (

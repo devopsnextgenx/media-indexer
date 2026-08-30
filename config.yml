@@ -66,11 +66,11 @@ mysql:
   user: minis
   password: m1nIspsswd
   database: medialib
-  root_pwd: p@ssw0rd
+  root_pwd: rootpassword
 
 redis:
   enabled: true
-  host: "host.docker.internal"
+  host: host.docker.internal
   port: 6379
   db: 0
   password: m1nIspsswd
@@ -84,7 +84,14 @@ embedding:
 llm:
   provider: "ollama"
   host: "http://host.docker.internal:11434"
+  # Additional Ollama servers to pool/failover across for LLM title parsing.
+  # `host` above is always tried first; these are extra machines.
+  endpoints:
+    - "http://host.docker.internal:11434"
+    - "http://192.168.12.222:11434"
   model_name: "gemma4:e2b"
+  unhealthy_backoff_seconds: 30
+  retry_wait_seconds: 15
 
 indexing:
   # Concurrent embedding workers used per scan chunk
@@ -110,6 +117,23 @@ downloads:
 
 jellyfin:
   enabled: true
-  url: "http://192.168.12.111:8096"
+  url: "http://zbox.local:8096"
   api_key: "2f74464824354b2195e85757d4aaa723"
   user_id: "3610636a4f02446bbaa335524466ba9e"
+
+duplicates:
+  enabled: true
+  similarity_threshold: 0.85
+  decoupled_from_indexing: true
+  use_llm_metadata: true
+
+jobs:
+  resource_gate:
+    enabled: true
+    max_load_average_1m: 15.0
+    max_cpu_percent: 75.0
+    check_interval_seconds: 5
+  llm_parsing:
+    enabled: true
+    model_name: "gemma4:e2b"
+    batch_size: 20
