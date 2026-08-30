@@ -67,6 +67,22 @@ class ParserPaused(Exception):
     """Raised internally when a caller-supplied should_stop() aborts a wait."""
 
 
+class LLMParseFailed(Exception):
+    """Raised when an Ollama endpoint answered but its response couldn't be
+    turned into valid metadata (e.g. malformed JSON, schema mismatch) --
+    a problem with this file's title, not with the endpoint."""
+
+
+class LLMEndpointUnavailable(Exception):
+    """Raised when the actual Ollama call (chat/generate) itself failed --
+    a connectivity/HTTP problem with the endpoint that served (or tried to
+    serve) this request, not a problem with the file's title. The pool in
+    media_indexer.llms already marks that endpoint unhealthy internally;
+    this just tells the caller the failure wasn't the file's fault, so it's
+    worth retrying (ideally against a different endpoint) rather than
+    counting it as a permanent per-file failure."""
+
+
 # ---------------------------------------------------------------------------
 # Core parse-with-cache
 # ---------------------------------------------------------------------------
@@ -112,13 +128,26 @@ def parse_and_cache_title(
             options={"temperature": 0},
             timeout=60,
         )
+    except Exception as e:
+        # The Ollama call itself failed (connection error, timeout, 5xx...).
+        # llms.py's pool already marked that endpoint unhealthy internally;
+        # this isn't the file's fault, so let the caller retry it rather
+        # than caching a failure or counting it as a permanent per-file
+        # failure.
+        raise LLMEndpointUnavailable(f"Ollama call failed while parsing '{file_name}': {e}") from e
+
+    try:
         parsed = TrackMetadata.model_validate_json(content)
         result = parsed.model_dump()
     except Exception as e:
         logger.error(f"LLM parse failed for '{file_name[:60]}': {e}")
-        # Fall back to a minimal record rather than losing the file entirely;
-        # callers can retry later with force_reparse=True.
-        result = {"song_title": title_for_prompt, "movie_or_album": None, "artists": []}
+        # Do NOT cache a fallback record: get_files_needing_llm_parse only
+        # checks whether a row exists, not whether it's good data, so
+        # writing a placeholder here would permanently mark this file as
+        # "parsed" and it would never be retried. Instead, propagate so the
+        # caller can count it as a genuine failure and leave it unwritten
+        # for a later incremental rerun to pick up again.
+        raise LLMParseFailed(f"Could not parse metadata for '{file_name}': {e}") from e
 
     endpoint = client.pool.get_available_endpoint() if client.pool else client.base_url
     mysql_db_instance.upsert_llm_metadata(
@@ -191,10 +220,23 @@ def main():
     results = []
     processed = 0
     cached_hits = 0
+    failed = 0
     for file_name, full_path in source:
-        record = parse_and_cache_title(
-            file_name, full_path, client=client, force_reparse=args.force, on_waiting_for_ollama=on_waiting
-        )
+        try:
+            record = parse_and_cache_title(
+                file_name, full_path, client=client, force_reparse=args.force, on_waiting_for_ollama=on_waiting
+            )
+        except ParserPaused:
+            logger.error("No Ollama endpoint became available; stopping run.")
+            break
+        except LLMEndpointUnavailable as e:
+            failed += 1
+            logger.warning(f"{e} (endpoint issue, not this title -- rerun to retry)")
+            continue
+        except LLMParseFailed as e:
+            failed += 1
+            logger.warning(f"{e} (left uncached; rerun without --force, or with --force, to retry)")
+            continue
         if record.get("cached"):
             cached_hits += 1
         artists_str = ", ".join(record["artists"]) if record.get("artists") else "N/A"
@@ -206,7 +248,7 @@ def main():
             logger.info(f"Processed {processed}/{total_hint} ({cached_hits} cache hits)")
 
     logger.info(f"Done: {processed} processed, {cached_hits} served from cache, "
-                f"{processed - cached_hits} newly parsed by the LLM.")
+                f"{processed - cached_hits} newly parsed by the LLM, {failed} failed.")
 
     if args.input:
         try:

@@ -1866,11 +1866,12 @@ document.addEventListener("DOMContentLoaded", () => {
         const songTitle = found ? (data.song_title || "") : "";
         const movieOrAlbum = found ? (data.movie_or_album || "") : "";
         const artists = found && Array.isArray(data.artists) ? data.artists.join(", ") : "";
+        const source = found ? (data.source_endpoint || "") : "";
         const emptyNote = found ? "" : `<div class="llm-empty-note">No AI-extracted metadata cached for this file yet.</div>`;
 
         return `
             <div class="llm-meta-header">
-                <strong>AI-Extracted Metadata</strong>
+                <strong>AI-Extracted Metadata</strong><span> [${source}]</span>
                 <div class="llm-meta-actions">
                     <button class="btn-icon-llm-action btn-llm-reparse" onclick="reparseLlmMetadata(${idx})" title="Re-parse with AI">
                         <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>

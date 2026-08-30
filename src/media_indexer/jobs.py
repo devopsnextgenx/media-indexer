@@ -10,6 +10,7 @@ backfill and duplicate detection. Both job types:
 """
 import logging
 import os
+import queue as _queue
 import threading
 import time
 from typing import Optional
@@ -17,7 +18,7 @@ from collections import deque
 
 from media_indexer.config import settings
 from media_indexer.database import mysql_db_instance
-from media_indexer.llm_parser import parse_and_cache_title, ParserPaused
+from media_indexer.llm_parser import parse_and_cache_title, ParserPaused, LLMParseFailed, LLMEndpointUnavailable
 from media_indexer.llms import OllamaLLMClient
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,18 @@ class BackgroundJobManager:
         if not job:
             total = mysql_db_instance.count_files_needing_llm_parse(mount)
             mysql_db_instance.create_job(job_id, "llm_parse", mount, total_items=total)
+        elif job.get("status") in _TERMINAL_STATES:
+            # A previous run of this job finished, failed, or was cancelled.
+            # Reset its checkpoint/counters so this incremental rerun scans
+            # from the start again: the "needs parsing" query already
+            # excludes anything that was written to the DB on a prior
+            # success, so this naturally picks up only missing/failed files
+            # without reprocessing everything that already succeeded.
+            total = mysql_db_instance.count_files_needing_llm_parse(mount)
+            mysql_db_instance.update_job(
+                job_id, status="PENDING", checkpoint=None,
+                processed_items=0, failed_items=0, total_items=total, last_error=None,
+            )
         mysql_db_instance.update_job(job_id, status="RUNNING", requested_status=None, last_error=None)
 
         t = threading.Thread(target=self._run_llm_parse, args=(job_id, mount), daemon=True)
@@ -125,27 +138,38 @@ class BackgroundJobManager:
 
     def _run_llm_parse(self, job_id: str, mount: Optional[str]):
         should_stop = self._should_stop_factory(job_id)
-        client = OllamaLLMClient(model_name=settings.jobs.llm_parsing.model_name)
         batch_size = settings.jobs.llm_parsing.batch_size
 
+        # media_indexer.llms already pools/load-balances across every
+        # configured Ollama endpoint (client.pool) and tracks its own
+        # endpoint health/backoff internally (llm.unhealthy_backoff_seconds).
+        # We don't need to reimplement that here — we just need enough
+        # concurrent requests in flight to keep every healthy endpoint busy,
+        # so we run one worker thread per configured endpoint, all sharing
+        # a single pooled client.
+        client = OllamaLLMClient(model_name=settings.jobs.llm_parsing.model_name)
+        num_workers = max(1, len(settings.llm.all_endpoints()))
+
         def on_waiting():
-            mysql_db_instance.update_job(job_id, status="RUNNING", last_error="waiting for an Ollama endpoint...")
+            mysql_db_instance.update_job(job_id, status="RUNNING", last_error="waiting for a healthy Ollama endpoint...")
 
         job = mysql_db_instance.get_job(job_id) or {}
         after = job.get("checkpoint")
         processed = job.get("processed_items", 0) or 0
         failed = job.get("failed_items", 0) or 0
+        counter_lock = threading.Lock()
 
         try:
             while True:
                 if should_stop():
-                    mysql_db_instance.update_job(job_id, status="PAUSED", checkpoint=after)
+                    mysql_db_instance.update_job(job_id, status="PAUSED", checkpoint=after,
+                                                  processed_items=processed, failed_items=failed)
                     logger.info(f"Job {job_id} paused at checkpoint '{after}'")
                     return
-                start = time.time()      
 
                 if not resource_gate.wait_until_free(should_stop=should_stop):
-                    mysql_db_instance.update_job(job_id, status="PAUSED", checkpoint=after)
+                    mysql_db_instance.update_job(job_id, status="PAUSED", checkpoint=after,
+                                                  processed_items=processed, failed_items=failed)
                     return
 
                 rows = mysql_db_instance.get_files_needing_llm_parse(
@@ -154,29 +178,104 @@ class BackgroundJobManager:
                 if not rows:
                     break
 
+                # Fan this page out across `num_workers` threads pulling
+                # from a shared queue, so the pool can keep every healthy
+                # endpoint working concurrently instead of one file at a time.
+                # Each queued item tracks how many endpoint-level failures
+                # it's already survived, so a file isn't retried forever
+                # against a genuinely broken setup.
+                max_endpoint_retries = max(2, num_workers)
+                work_q: "_queue.Queue" = _queue.Queue()
                 for row in rows:
-                    if should_stop():
-                        mysql_db_instance.update_job(job_id, status="PAUSED", checkpoint=after,
-                                                      processed_items=processed, failed_items=failed)
-                        logger.info(f"Job {job_id} paused mid-batch at checkpoint '{after}'")
-                        return
-                    try:
-                        parse_and_cache_title(
-                            row["file_name"], row.get("file_path", ""),
-                            client=client, on_waiting_for_ollama=on_waiting, should_stop=should_stop,
-                        )
-                        processed += 1
-                    except ParserPaused:
-                        mysql_db_instance.update_job(job_id, status="PAUSED", checkpoint=after,
-                                                      processed_items=processed, failed_items=failed)
-                        return
-                    except Exception as e:
-                        failed += 1
-                        logger.error(f"LLM parse job {job_id} failed on {row['file_name']}: {e}")
-                    after = row["file_name"]
-                    elapsed = time.time() - start 
-                    self._record_time(job_id, elapsed)
+                    work_q.put((row, 0))
+                paused = threading.Event()
+                no_endpoint = threading.Event()
 
+                def worker():
+                    nonlocal processed, failed
+                    while not paused.is_set():
+                        if should_stop():
+                            paused.set()
+                            return
+                        try:
+                            row, attempt = work_q.get_nowait()
+                        except _queue.Empty:
+                            return
+                        start = time.time()
+                        try:
+                            parse_and_cache_title(
+                                row["file_name"], row.get("file_path", ""),
+                                client=client, on_waiting_for_ollama=on_waiting, should_stop=should_stop,
+                            )
+                            # A file is only ever counted/marked done here
+                            # on success; parse_and_cache_title itself only
+                            # writes to the DB when parsing succeeded.
+                            with counter_lock:
+                                processed += 1
+                            self._record_time(job_id, time.time() - start)
+                        except ParserPaused:
+                            # No Ollama endpoint reachable at all. Put the
+                            # file back untouched (never attempted) and
+                            # stop this whole page — it'll resume later.
+                            work_q.put((row, attempt))
+                            paused.set()
+                            no_endpoint.set()
+                            return
+                        except LLMEndpointUnavailable as e:
+                            # The endpoint that handled this call failed
+                            # (connection/HTTP error) -- not this file's
+                            # fault. llms.py's pool already marked that
+                            # endpoint unhealthy, so retrying will tend to
+                            # land on a different, healthy one.
+                            if attempt + 1 < max_endpoint_retries:
+                                logger.warning(
+                                    f"{e}; retrying {row['file_name']} "
+                                    f"({attempt + 1}/{max_endpoint_retries})"
+                                )
+                                work_q.put((row, attempt + 1))
+                            else:
+                                with counter_lock:
+                                    failed += 1
+                                logger.error(
+                                    f"LLM parse job {job_id}: giving up on {row['file_name']} "
+                                    f"after {max_endpoint_retries} endpoint failures: {e}"
+                                )
+                        except LLMParseFailed as e:
+                            # A healthy endpoint answered but this title
+                            # didn't parse. Count it as failed and move on:
+                            # nothing is written for it, so a later
+                            # incremental rerun (fresh checkpoint) retries
+                            # it automatically.
+                            with counter_lock:
+                                failed += 1
+                            logger.error(f"LLM parse job {job_id}: {e}")
+                        except Exception as e:
+                            with counter_lock:
+                                failed += 1
+                            logger.error(f"LLM parse job {job_id} failed on {row['file_name']}: {e}")
+
+                threads = [threading.Thread(target=worker, daemon=True) for _ in range(num_workers)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+
+                if should_stop():
+                    mysql_db_instance.update_job(job_id, status="PAUSED", checkpoint=after,
+                                                  processed_items=processed, failed_items=failed)
+                    logger.info(f"Job {job_id} paused mid-batch at checkpoint '{after}'")
+                    return
+
+                if no_endpoint.is_set():
+                    mysql_db_instance.update_job(
+                        job_id, status="PAUSED", checkpoint=after,
+                        processed_items=processed, failed_items=failed,
+                        last_error="no Ollama endpoint became available",
+                    )
+                    logger.error(f"Job {job_id} paused: no Ollama endpoint reachable")
+                    return
+
+                after = rows[-1]["file_name"]
                 mysql_db_instance.update_job(
                     job_id, status="RUNNING", checkpoint=after,
                     processed_items=processed, failed_items=failed, last_error=None,

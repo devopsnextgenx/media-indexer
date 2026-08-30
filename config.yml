@@ -88,6 +88,7 @@ llm:
   # `host` above is always tried first; these are extra machines.
   endpoints:
     - "http://host.docker.internal:11434"
+    - "http://192.168.12.222:11434"
   model_name: "gemma4:e2b"
   unhealthy_backoff_seconds: 30
   retry_wait_seconds: 15
