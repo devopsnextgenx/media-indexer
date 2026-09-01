@@ -108,9 +108,8 @@ class DuplicatesConfig(BaseModel):
     # inline; detection is a separate job triggered independently per mount
     # (via API or the background job scheduler).
     decoupled_from_indexing: bool = True
-    # Use llm_parsed_metadata (song/movie/artist) when available instead of
-    # the heuristic token classifier for a given file's tiers.
-    use_llm_metadata: bool = True
+    # Mounts detection is allowed to run for. Empty list means "all mounts".
+    mounts: list[str] = ["songs"]
 
 class LLMParsingConfig(BaseModel):
     enabled: bool = True

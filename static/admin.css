@@ -173,12 +173,12 @@
     flex-shrink: 0;
 }
 .btn-icon-action:hover:not(:disabled) {
-    background: var(--accent-blue);
-    border-color: var(--accent-blue);
-    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+    border-color: #555;
+    color: var(--text-active);
 }
 .btn-icon-action:disabled {
-    opacity: 0.4;
+    opacity: 0.35;
     cursor: not-allowed;
 }
 .btn-icon-action:disabled:hover {
@@ -186,3 +186,5 @@
     border-color: #3d3d4a;
     color: #b0b0c0;
 }
+
+

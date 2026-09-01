@@ -16,8 +16,7 @@
                 <select id="mount-select" class="form-select" style="background: #252526; color: #fff; border: 1px solid #3c3c3c; padding: 4px 8px; border-radius: 3px; font-size: 13px;">
                     <option value="all">All Mounts</option>
                 </select>
-                <input type="text" id="name-tier-min-df" class="name-tier-min-df form-input" placeholder="Name Tier Min DF" value="3"/>
-                
+
                 <button id="scan-mode-toggle" type="button" data-mode="incremental" style="background: #252526; color: #fff; border: 1px solid #3c3c3c; padding: 4px 10px; border-radius: 3px; font-size: 13px; cursor: pointer;">
                     Mode: <span id="scan-mode-label" style="font-weight: 600; color: #4ec9b0;">Incremental</span>
                 </button>
@@ -51,10 +50,11 @@
                 <div class="library-toolbar-controls">
                     <span id="library-count" class="results-count"></span>
 
+                    <!-- Playback actions using icon buttons -->
                     <div class="library-playback-group" id="library-playback-group">
-                        <button id="library-play-folder" class="btn btn-primary" title="Play all files in this folder">&#9654;</button>
-                        <button id="library-shuffle" class="player-btn" title="Shuffle">&#128256;</button>
-                        <button id="library-loop" class="player-btn" data-mode="off" title="Loop: off">&#128257;</button>
+                        <button id="library-play-folder" class="btn-icon-action btn-play" title="Play all files in folder">▶</button>
+                        <button id="library-shuffle" class="btn-icon-action" title="Shuffle Playback">🔀</button>
+                        <button id="library-loop" class="btn-icon-action" data-mode="off" title="Loop: off">🔁</button>
                     </div>
 
                     <label class="results-sort-label" for="library-sort">Sort:</label>
@@ -64,7 +64,7 @@
                         <option value="resolution">Resolution</option>
                         <option value="duration">Duration</option>
                     </select>
-                    <button id="library-sort-dir" class="btn btn-secondary" data-dir="asc">&#8593; Asc</button>
+                    <button id="library-sort-dir" class="btn-icon-action" data-dir="asc" title="Toggle Sort Direction">↑ Asc</button>
 
                     <div class="card-size-group" id="card-size-group">
                         <button class="card-size-btn" data-size="xs">XS</button>
@@ -74,7 +74,7 @@
                         <button class="card-size-btn" data-size="xl">XL</button>
                     </div>
 
-                    <button id="btn-library-refresh" class="btn btn-secondary" title="Refresh this folder">&#8635; Refresh</button>
+                    <button id="btn-library-refresh" class="btn-icon-action" title="Refresh Folder Content">↻</button>
                 </div>
             </div>
 
@@ -83,11 +83,6 @@
                 <div id="library-sentinel" class="library-sentinel"></div>
                 <div id="library-loading" class="library-loading hidden">Loading&hellip;</div>
             </section>
-
-            <div id="library-duplicates-section" class="library-duplicates-section" style="margin-top: 20px; display: none;">
-                <h3>Duplicate Groups in this Folder</h3>
-                <div id="library-duplicates-content"></div>
-            </div>
         </div>
 
         <!-- Tab: Media Explorer View -->
@@ -284,19 +279,6 @@
             <div class="modal-buttons">
                 <button id="confirm-cancel" class="btn btn-secondary">Cancel</button>
                 <button id="confirm-ok" class="btn btn-danger">Delete from disk</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- DUPLICATE GROUP: modal to show candidates -->
-    <div id="modal-duplicate-group" class="modal hidden">
-        <div class="modal-content" style="width: min(820px, 92vw);">
-            <h3>Duplicate Group: <span id="dup-group-id-display"></span></h3>
-            <div id="dup-group-candidates" style="max-height: 400px; overflow-y: auto;">
-                <!-- populated by JS -->
-            </div>
-            <div class="modal-buttons">
-                <button id="dup-group-close" class="btn btn-secondary">Close</button>
             </div>
         </div>
     </div>

@@ -125,7 +125,10 @@ duplicates:
   enabled: true
   similarity_threshold: 0.85
   decoupled_from_indexing: true
-  use_llm_metadata: true
+  # Detection currently only makes sense for the songs layout (xhd/hd/sd
+  # folders under the same artist folder). Leave empty to allow all mounts.
+  mounts:
+    - songs
 
 jobs:
   resource_gate:

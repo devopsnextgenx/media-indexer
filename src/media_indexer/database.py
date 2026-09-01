@@ -208,12 +208,14 @@ class MySQLDatabase:
                 CREATE TABLE IF NOT EXISTS duplicate_groups (
                     group_id VARCHAR(80) PRIMARY KEY,
                     title_key VARCHAR(512),
+                    scope_key VARCHAR(512),
                     member_count INT DEFAULT 0,
                     mount VARCHAR(255),
                     folder_path VARCHAR(1024),
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     INDEX idx_mount (mount),
+                    INDEX idx_scope (scope_key(255)),
                     INDEX idx_folder (folder_path(255))
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """,
@@ -223,7 +225,14 @@ class MySQLDatabase:
                     group_id VARCHAR(80) NOT NULL,
                     file_id VARCHAR(255) NOT NULL,
                     full_path VARCHAR(1024) NOT NULL,
+                    file_name VARCHAR(512),
                     mount VARCHAR(255),
+                    resolution VARCHAR(16),
+                    rank_in_group INT DEFAULT 0,
+                    is_primary TINYINT(1) DEFAULT 0,
+                    song_title VARCHAR(512),
+                    movie_or_album VARCHAR(512),
+                    artists_json TEXT,
                     title_score DECIMAL(5,1),
                     movie_score DECIMAL(5,1),
                     artist_score DECIMAL(5,1),
@@ -236,18 +245,10 @@ class MySQLDatabase:
                     UNIQUE KEY uq_group_file (group_id, file_id),
                     INDEX idx_group_id (group_id),
                     INDEX idx_mount (mount),
+                    INDEX idx_file_name (file_name(255)),
                     INDEX idx_full_path (full_path(255)),
                     CONSTRAINT fk_candidate_group FOREIGN KEY (group_id)
                         REFERENCES duplicate_groups(group_id) ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-            """,
-            "token_stats": """
-                CREATE TABLE IF NOT EXISTS token_stats (
-                    phonetic_code VARCHAR(32) PRIMARY KEY,
-                    example_word VARCHAR(255),
-                    tier ENUM('title','movie','artist') DEFAULT 'title',
-                    doc_frequency INT,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """,
             "llm_parsed_metadata": """
@@ -293,8 +294,7 @@ class MySQLDatabase:
         try:
             with conn.cursor() as cursor:
                 # Drop and recreate duplicate‑related tables to guarantee new schema
-                tables_to_recreate = ["duplicate_groups", "duplicate_group_candidates", "token_stats"]
-                for table in tables_to_recreate:
+                for table in ("duplicate_group_candidates", "duplicate_groups", "token_stats"):
                     cursor.execute(f"DROP TABLE IF EXISTS {table}")
                 # Now create all tables from definitions (including processed_files)
                 for name, ddl in self._get_table_definitions().items():
@@ -392,7 +392,7 @@ class MySQLDatabase:
             with conn.cursor() as cursor:
                 cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
 
-                for table in ["duplicate_group_candidates", "duplicate_groups"]:
+                for table in ("duplicate_group_candidates", "duplicate_groups"):
                     cursor.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
                     removed = (cursor.fetchone() or {}).get("cnt", 0)
                     cursor.execute(f"TRUNCATE TABLE {table}")
@@ -406,7 +406,8 @@ class MySQLDatabase:
         return results
 
     def insert_duplicate_group(self, group_id: str, title_key: str,
-                               member_count: int, mount: str, folder_path: str) -> bool:
+                               member_count: int, mount: str, folder_path: str,
+                               scope_key: str = None) -> bool:
         if not self.enabled:
             return False
         conn = self._get_connection()
@@ -416,15 +417,16 @@ class MySQLDatabase:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO duplicate_groups
-                    (group_id, title_key, member_count, mount, folder_path)
-                    VALUES (%s, %s, %s, %s, %s)
+                    (group_id, title_key, scope_key, member_count, mount, folder_path)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                         title_key = VALUES(title_key),
+                        scope_key = VALUES(scope_key),
                         member_count = VALUES(member_count),
                         mount = VALUES(mount),
                         folder_path = VALUES(folder_path),
                         updated_at = CURRENT_TIMESTAMP
-                """, (group_id, title_key, member_count, mount, folder_path))
+                """, (group_id, title_key, scope_key, member_count, mount, folder_path))
             conn.close()
             return True
         except Exception as e:
@@ -434,23 +436,35 @@ class MySQLDatabase:
     def insert_candidate(self, group_id: str, file_id: str, full_path: str,
                          mount: str, title_score: float, movie_score: float,
                          artist_score: float, overall_score: float,
-                         confidence: str, status: str, stats_json: dict) -> bool:
+                         confidence: str, status: str, stats_json: dict,
+                         file_name: str = None, resolution: str = None,
+                         rank_in_group: int = 0, is_primary: bool = False,
+                         song_title: str = None, movie_or_album: str = None,
+                         artists: list = None) -> bool:
         if not self.enabled:
             return False
         conn = self._get_connection()
         if not conn:
             return False
         try:
-            import json
             with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO duplicate_group_candidates
-                    (group_id, file_id, full_path, mount, title_score, movie_score,
-                     artist_score, overall_score, confidence, status, stats_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (group_id, file_id, full_path, file_name, mount, resolution,
+                     rank_in_group, is_primary, song_title, movie_or_album, artists_json,
+                     title_score, movie_score, artist_score, overall_score,
+                     confidence, status, stats_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                         full_path = VALUES(full_path),
+                        file_name = VALUES(file_name),
                         mount = VALUES(mount),
+                        resolution = VALUES(resolution),
+                        rank_in_group = VALUES(rank_in_group),
+                        is_primary = VALUES(is_primary),
+                        song_title = VALUES(song_title),
+                        movie_or_album = VALUES(movie_or_album),
+                        artists_json = VALUES(artists_json),
                         title_score = VALUES(title_score),
                         movie_score = VALUES(movie_score),
                         artist_score = VALUES(artist_score),
@@ -459,7 +473,10 @@ class MySQLDatabase:
                         status = VALUES(status),
                         stats_json = VALUES(stats_json),
                         updated_at = CURRENT_TIMESTAMP
-                """, (group_id, file_id, full_path, mount, title_score, movie_score,
+                """, (group_id, file_id, full_path,
+                      file_name or os.path.basename(full_path), mount, resolution,
+                      rank_in_group, 1 if is_primary else 0, song_title, movie_or_album,
+                      json.dumps(artists or []), title_score, movie_score,
                       artist_score, overall_score, confidence, status, json.dumps(stats_json)))
             conn.close()
             return True
@@ -489,6 +506,26 @@ class MySQLDatabase:
             logger.error(f"Failed to delete duplicate groups for mount {mount}: {e}")
             return 0
 
+    @staticmethod
+    def _decode_candidate(row: dict) -> dict:
+        for key, default in (("stats_json", {}), ("artists_json", [])):
+            raw = row.get(key)
+            if isinstance(raw, str):
+                try:
+                    row[key] = json.loads(raw)
+                except Exception:
+                    row[key] = default
+        row["artists"] = row.get("artists_json") or []
+        return row
+
+    def _fetch_candidates(self, cursor, group_id: str) -> list:
+        cursor.execute("""
+            SELECT * FROM duplicate_group_candidates
+            WHERE group_id = %s
+            ORDER BY rank_in_group ASC, overall_score DESC
+        """, (group_id,))
+        return [self._decode_candidate(row) for row in cursor.fetchall()]
+
     def get_duplicate_groups(self, mount: str = None, folder: str = None,
                              status: str = None, limit: int = 100, offset: int = 0) -> list:
         """
@@ -513,8 +550,7 @@ class MySQLDatabase:
                 params.append(folder)
 
             query = """
-                SELECT g.group_id, g.title_key, g.member_count, g.mount, g.folder_path,
-                       g.created_at, g.updated_at
+                SELECT g.*
                 FROM duplicate_groups g
                 WHERE 1=1
             """
@@ -529,26 +565,10 @@ class MySQLDatabase:
                 cursor.execute(query, params)
                 groups = cursor.fetchall()
 
-            result = []
-            for grp in groups:
-                group_id = grp["group_id"]
-                cursor.execute("""
-                    SELECT id, file_id, full_path, mount, title_score, movie_score,
-                           artist_score, overall_score, confidence, status, stats_json,
-                           created_at, updated_at
-                    FROM duplicate_group_candidates
-                    WHERE group_id = %s
-                    ORDER BY overall_score DESC
-                """, (group_id,))
-                candidates = cursor.fetchall()
-                for c in candidates:
-                    if c.get("stats_json"):
-                        try:
-                            c["stats_json"] = json.loads(c["stats_json"])
-                        except:
-                            pass
-                grp["candidates"] = candidates
-                result.append(grp)
+                result = []
+                for grp in groups:
+                    grp["candidates"] = self._fetch_candidates(cursor, grp["group_id"])
+                    result.append(grp)
             conn.close()
             return result
         except Exception as e:
@@ -564,30 +584,11 @@ class MySQLDatabase:
             return {}
         try:
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT group_id, title_key, member_count, mount, folder_path,
-                           created_at, updated_at
-                    FROM duplicate_groups WHERE group_id = %s
-                """, (group_id,))
+                cursor.execute("SELECT * FROM duplicate_groups WHERE group_id = %s", (group_id,))
                 group = cursor.fetchone()
                 if not group:
                     return {}
-                cursor.execute("""
-                    SELECT id, file_id, full_path, mount, title_score, movie_score,
-                           artist_score, overall_score, confidence, status, stats_json,
-                           created_at, updated_at
-                    FROM duplicate_group_candidates
-                    WHERE group_id = %s
-                    ORDER BY overall_score DESC
-                """, (group_id,))
-                candidates = cursor.fetchall()
-                for c in candidates:
-                    if c.get("stats_json"):
-                        try:
-                            c["stats_json"] = json.loads(c["stats_json"])
-                        except:
-                            pass
-                group["candidates"] = candidates
+                group["candidates"] = self._fetch_candidates(cursor, group_id)
             conn.close()
             return group
         except Exception as e:
@@ -595,7 +596,9 @@ class MySQLDatabase:
             return {}
 
     def get_duplicate_group_by_file(self, file_path: str) -> dict:
-        """Find the group that contains the given file path."""
+        """Return only the duplicates of the given file: the file itself plus
+        the candidates it directly scored against (recorded in stats_json as
+        `matched_file_ids`), never every other member of the folder scope."""
         if not self.enabled:
             return {}
         conn = self._get_connection()
@@ -603,34 +606,53 @@ class MySQLDatabase:
             return {}
         try:
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT group_id FROM duplicate_group_candidates
-                    WHERE full_path = %s
-                """, (file_path,))
-                row = cursor.fetchone()
-                if not row:
+                cursor.execute(
+                    "SELECT * FROM duplicate_group_candidates WHERE full_path = %s LIMIT 1",
+                    (self._normalize_path(file_path),),
+                )
+                target = cursor.fetchone()
+                if not target:
                     return {}
-                group_id = row["group_id"]
+                group_id = target["group_id"]
+                target = self._decode_candidate(target)
+
+                cursor.execute("SELECT * FROM duplicate_groups WHERE group_id = %s", (group_id,))
+                group = cursor.fetchone() or {"group_id": group_id}
+                candidates = self._fetch_candidates(cursor, group_id)
             conn.close()
-            return self.get_duplicate_group_by_id(group_id)
+
+            matched_ids = set((target.get("stats_json") or {}).get("matched_file_ids") or [])
+            matched_ids.add(target["file_id"])
+            group["candidates"] = [c for c in candidates if c["file_id"] in matched_ids]
+            group["member_count"] = len(group["candidates"])
+            group["requested_file_path"] = file_path
+            return group
         except Exception as e:
             logger.error(f"Failed to fetch duplicate group for file {file_path}: {e}")
             return {}
 
     def get_duplicate_group_ids_for_paths(self, file_paths: list[str]) -> dict:
-        """Return dict mapping file_path -> group_id for files that belong to any duplicate group."""
+        """Return dict mapping file_path (original, as passed in) -> group_id
+        for files that belong to any duplicate group. `full_path` in the
+        candidates table always uses forward slashes, while callers may pass
+        OS-native (backslash) paths, so matching is done on normalized paths."""
         if not self.enabled or not file_paths:
             return {}
         conn = self._get_connection()
         if not conn:
             return {}
         try:
+            normalized_to_original = {self._normalize_path(p): p for p in file_paths}
+            normalized_paths = list(normalized_to_original.keys())
             with conn.cursor() as cursor:
-                placeholders = ','.join(['%s'] * len(file_paths))
+                placeholders = ','.join(['%s'] * len(normalized_paths))
                 query = f"SELECT full_path, group_id FROM duplicate_group_candidates WHERE full_path IN ({placeholders})"
-                cursor.execute(query, tuple(file_paths))
+                cursor.execute(query, tuple(normalized_paths))
                 rows = cursor.fetchall()
-                result = {row["full_path"]: row["group_id"] for row in rows}
+                result = {
+                    normalized_to_original.get(row["full_path"], row["full_path"]): row["group_id"]
+                    for row in rows
+                }
             conn.close()
             return result
         except Exception as e:
@@ -649,7 +671,7 @@ class MySQLDatabase:
                     UPDATE duplicate_group_candidates
                     SET status = %s, updated_at = CURRENT_TIMESTAMP
                     WHERE full_path = %s
-                """, (new_status, file_path))
+                """, (new_status, self._normalize_path(file_path)))
                 updated = cursor.rowcount > 0
             conn.close()
             return updated
@@ -657,15 +679,180 @@ class MySQLDatabase:
             logger.error(f"Failed to update candidate status for {file_path}: {e}")
             return False
 
+    def get_file_details_by_paths(self, file_paths: list[str]) -> dict:
+        """Return {normalized_path: processed_files row (metadata decoded)} so
+        duplicate candidates can be shown with size / resolution / duration."""
+        if not self.enabled or not file_paths:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        try:
+            normalized = list({self._normalize_path(p) for p in file_paths if p})
+            result: dict = {}
+            with conn.cursor() as cursor:
+                chunk_size = 500
+                for i in range(0, len(normalized), chunk_size):
+                    chunk = normalized[i:i + chunk_size]
+                    placeholders = ','.join(['%s'] * len(chunk))
+                    cursor.execute(
+                        "SELECT file_path, file_name, file_size, jellyfin_id, metadata_json "
+                        f"FROM processed_files WHERE REPLACE(file_path, '\\\\', '/') IN ({placeholders})",
+                        chunk,
+                    )
+                    for row in cursor.fetchall():
+                        raw = row.pop("metadata_json", None)
+                        try:
+                            row["metadata"] = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                        except Exception:
+                            row["metadata"] = {}
+                        result[self._normalize_path(row["file_path"])] = row
+            conn.close()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch processed_files details for paths: {e}")
+            return {}
+
+    def get_file_details_for_duplicate_candidates(self, candidates: list[dict]) -> dict:
+        """Return processed_files details keyed by duplicate candidate file_id and path."""
+        if not self.enabled or not candidates:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        try:
+            file_ids = list({c.get("file_id") for c in candidates if c.get("file_id")})
+            normalized_paths = list({
+                self._normalize_path(c.get("full_path") or c.get("file_path"))
+                for c in candidates
+                if c.get("full_path") or c.get("file_path")
+            })
+            result: dict = {}
+            with conn.cursor() as cursor:
+                conditions = []
+                params = []
+                if file_ids:
+                    conditions.append(f"id IN ({','.join(['%s'] * len(file_ids))})")
+                    params.extend(file_ids)
+                if normalized_paths:
+                    conditions.append(f"REPLACE(file_path, '\\\\', '/') IN ({','.join(['%s'] * len(normalized_paths))})")
+                    params.extend(normalized_paths)
+                if not conditions:
+                    return {}
+
+                cursor.execute(
+                    "SELECT id, file_path, file_name, file_size, jellyfin_id, metadata_json "
+                    f"FROM processed_files WHERE {' OR '.join(conditions)}",
+                    tuple(params),
+                )
+                for row in cursor.fetchall():
+                    raw = row.pop("metadata_json", None)
+                    try:
+                        row["metadata"] = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                    except Exception:
+                        row["metadata"] = {}
+                    result[row["id"]] = row
+                    result[self._normalize_path(row["file_path"])] = row
+            conn.close()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch duplicate candidate details: {e}")
+            return {}
+
+    def delete_duplicate_group(self, group_id: str) -> bool:
+        """Remove a group and all of its candidate rows (files are untouched)."""
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM duplicate_group_candidates WHERE group_id = %s", (group_id,))
+                cursor.execute("DELETE FROM duplicate_groups WHERE group_id = %s", (group_id,))
+                deleted = cursor.rowcount > 0
+            conn.close()
+            return deleted
+        except Exception as e:
+            logger.error(f"Failed to delete duplicate group {group_id}: {e}")
+            return False
+
+    def delete_duplicate_candidate(self, file_path: str) -> dict:
+        """Drop a single candidate row. When the owning group is left with one
+        member or none it is removed too, so the file stops being flagged."""
+        if not self.enabled:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        try:
+            normalized = self._normalize_path(file_path)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT group_id FROM duplicate_group_candidates WHERE full_path = %s",
+                    (normalized,),
+                )
+                group_ids = {row["group_id"] for row in cursor.fetchall()}
+                cursor.execute(
+                    "DELETE FROM duplicate_group_candidates WHERE full_path = %s",
+                    (normalized,),
+                )
+                removed = cursor.rowcount
+
+                groups_removed = []
+                for group_id in group_ids:
+                    cursor.execute(
+                        "SELECT COUNT(*) AS cnt FROM duplicate_group_candidates WHERE group_id = %s",
+                        (group_id,),
+                    )
+                    remaining = (cursor.fetchone() or {}).get("cnt", 0)
+                    if remaining <= 1:
+                        cursor.execute("DELETE FROM duplicate_group_candidates WHERE group_id = %s", (group_id,))
+                        cursor.execute("DELETE FROM duplicate_groups WHERE group_id = %s", (group_id,))
+                        groups_removed.append(group_id)
+                    else:
+                        cursor.execute(
+                            "UPDATE duplicate_groups SET member_count = %s, updated_at = CURRENT_TIMESTAMP WHERE group_id = %s",
+                            (remaining, group_id),
+                        )
+            conn.close()
+            return {
+                "candidates_removed": removed,
+                "groups_removed": groups_removed,
+                "group_ids": list(group_ids),
+            }
+        except Exception as e:
+            logger.error(f"Failed to delete duplicate candidate {file_path}: {e}")
+            return {}
+
+    def delete_llm_metadata(self, file_name: str) -> int:
+        if not self.enabled:
+            return 0
+        conn = self._get_connection()
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM llm_parsed_metadata WHERE file_name = %s",
+                    (self._normalize_file_key(file_name),),
+                )
+                count = cursor.rowcount
+            conn.close()
+            return count
+        except Exception as e:
+            logger.error(f"Failed to delete llm_parsed_metadata for {file_name}: {e}")
+            return 0
+
     # ----------------------------------------------------------------------
     # Truncate tables (used by admin clean)
     # ----------------------------------------------------------------------
     def truncate_tables(self, tables: list = None) -> dict:
-        """Truncate given tables; default list: token_stats, processed_files,
+        """Truncate given tables; default list: processed_files,
         duplicate_group_candidates, duplicate_groups (if exists)."""
         if not self.enabled:
             return {}
-        default_tables = ["token_stats", "processed_files",
+        default_tables = ["processed_files",
                           "duplicate_group_candidates", "duplicate_groups"]
         to_truncate = tables if tables is not None else default_tables
         conn = self._get_connection()
@@ -955,6 +1142,12 @@ class MySQLDatabase:
     def _normalize_file_key(file_name: str) -> str:
         return os.path.splitext(os.path.basename(file_name))[0].strip().lower()
 
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        # duplicate_group_candidates.full_path is always stored with forward
+        # slashes; callers may pass OS-native (backslash) paths on Windows.
+        return path.replace("\\", "/") if path else path
+
     def get_llm_metadata(self, file_name: str) -> dict | None:
         if not self.enabled:
             return None
@@ -979,6 +1172,38 @@ class MySQLDatabase:
         except Exception as e:
             logger.error(f"Failed to fetch llm_parsed_metadata for {file_name}: {e}")
             return None
+
+    def get_llm_metadata_bulk(self, file_names: list[str]) -> dict:
+        """Batched version of get_llm_metadata: returns {normalized_key: row}
+        so duplicate detection doesn't open a connection per file."""
+        if not self.enabled or not file_names:
+            return {}
+        keys = sorted({self._normalize_file_key(name) for name in file_names})
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        result: dict = {}
+        try:
+            with conn.cursor() as cursor:
+                chunk_size = 500
+                for i in range(0, len(keys), chunk_size):
+                    chunk = keys[i:i + chunk_size]
+                    placeholders = ",".join(["%s"] * len(chunk))
+                    cursor.execute(
+                        f"SELECT * FROM llm_parsed_metadata WHERE file_name IN ({placeholders})",
+                        chunk,
+                    )
+                    for row in cursor.fetchall():
+                        try:
+                            row["artists"] = json.loads(row.pop("artists_json") or "[]")
+                        except Exception:
+                            row["artists"] = []
+                        result[row["file_name"]] = row
+            conn.close()
+            return result
+        except Exception as e:
+            logger.error(f"Failed to bulk fetch llm_parsed_metadata: {e}")
+            return result
 
     def upsert_llm_metadata(
         self,

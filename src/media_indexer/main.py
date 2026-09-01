@@ -897,6 +897,29 @@ def clean_duplicate_tables():
     return {"status": "success", "results": results}
 
 
+def _enrich_candidates(candidates: list) -> list:
+    """Adds size / resolution / duration / thumbnail hints from processed_files
+    so the duplicate UI can show the same detail as search results."""
+    if not candidates:
+        return candidates
+    details = mysql_db_instance.get_file_details_for_duplicate_candidates(candidates)
+    for candidate in candidates:
+        candidate_path = (candidate.get("full_path") or candidate.get("file_path") or "").replace("\\", "/")
+        row = details.get(candidate.get("file_id")) or details.get(candidate_path) or {}
+        meta = row.get("metadata") or {}
+        size_bytes = meta.get("file_size") or meta.get("size") or row.get("file_size") or 0
+        candidate["file_size"] = size_bytes
+        candidate["size_human"] = _human_size(size_bytes)
+        candidate["size_mb"] = round(size_bytes / (1024 * 1024), 2) if size_bytes else None
+        candidate["media_resolution"] = meta.get("resolution")
+        candidate["quality"] = meta.get("quality")
+        candidate["duration"] = meta.get("duration")
+        candidate["duration_formatted"] = meta.get("duration_formatted")
+        candidate["jellyfin_id"] = row.get("jellyfin_id")
+        candidate["primary_image_tag"] = meta.get("primary_image_tag")
+    return candidates
+
+
 @app.get("/api/admin/duplicates/groups", tags=["Admin"])
 def list_duplicate_groups(
     mount: str = Query(None),
@@ -908,6 +931,8 @@ def list_duplicate_groups(
     groups = mysql_db_instance.get_duplicate_groups(
         mount=mount, folder=folder, status=status, limit=limit, offset=offset
     )
+    for group in groups:
+        _enrich_candidates(group.get("candidates") or [])
     # Optionally compute total count without limit/offset for pagination metadata
     return {"items": groups, "total": len(groups)}
 
@@ -917,7 +942,47 @@ def get_duplicate_group(group_id: str = Query(...)):
     group = mysql_db_instance.get_duplicate_group_by_id(group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
+    _enrich_candidates(group.get("candidates") or [])
     return group
+
+@app.delete("/api/admin/duplicates/group", tags=["Admin"])
+def delete_duplicate_group(group_id: str = Query(..., description="Group to drop; files on disk are untouched")):
+    """Marks a group as a false positive by removing it and its candidates."""
+    if not mysql_db_instance.delete_duplicate_group(group_id):
+        raise HTTPException(status_code=404, detail="Group not found")
+    return {"status": "deleted", "group_id": group_id}
+
+@app.delete("/api/admin/duplicates/candidate", tags=["Admin"])
+def delete_duplicate_candidate(
+    file_path: str = Query(..., description="Absolute path of the candidate file"),
+    delete_from_disk: bool = Query(True, description="Also remove the file from disk"),
+):
+    """Removes one candidate from a group and, by default, deletes the file
+    from disk plus its processed_files / vector / LLM metadata records. The
+    group itself is dropped once fewer than two members remain."""
+    resolved_path = get_mount_path(file_path)
+    file_name = os.path.basename(resolved_path)
+
+    group_result = mysql_db_instance.delete_duplicate_candidate(resolved_path)
+    if not group_result.get("candidates_removed"):
+        mysql_db_instance.delete_duplicate_candidate(file_path)
+
+    if delete_from_disk:
+        file_result = MediaActions.delete_file(file_path=resolved_path)
+    else:
+        file_result = MediaActions.clean_record_from_index(file_path=resolved_path)
+
+    llm_removed = mysql_db_instance.delete_llm_metadata(file_name)
+
+    return {
+        "status": "deleted",
+        "file_path": resolved_path,
+        "deleted_from_disk": delete_from_disk,
+        "llm_metadata_removed": llm_removed,
+        "groups_removed": group_result.get("groups_removed", []),
+        "candidates_removed": group_result.get("candidates_removed", 0),
+        "file_result": file_result,
+    }
 
 @app.get("/api/admin/duplicates/folder", tags=["Admin"])
 def get_duplicates_for_folder(
@@ -934,15 +999,20 @@ def get_duplicates_for_folder(
     groups = mysql_db_instance.get_duplicate_groups(
         mount=mount, folder=folder_path, status=status, limit=limit, offset=offset
     )
+    for group in groups:
+        _enrich_candidates(group.get("candidates") or [])
     return {"items": groups, "total": len(groups)}
 
 @app.get("/api/admin/duplicates/file", tags=["Admin"])
 def get_duplicates_for_file(
     file_path: str = Query(...),
 ):
+    """Returns only the candidates that actually matched this file, not every
+    duplicate found in the folder it lives in."""
     group = mysql_db_instance.get_duplicate_group_by_file(file_path)
     if not group:
-        return {"group_id": None, "entries": []}   # empty instead of 404
+        return {"group_id": None, "candidates": [], "entries": []}   # empty instead of 404
+    _enrich_candidates(group.get("candidates") or [])
     return group
 
 @app.post("/api/admin/duplicates/action", tags=["Admin"])
@@ -959,28 +1029,30 @@ def update_duplicate_action(body: dict):
     return {"status": "updated", "file_path": file_path, "new_status": action}
 
 @app.post("/api/admin/duplicates/detect", tags=["Admin"])
-def trigger_duplicate_detection(mount: str = Query(None), nameTierMinDf: int = Query(3, ge=3, description="Minimum document frequency for name tier")):
+def trigger_duplicate_detection(mount: str = Query(None)):
+    allowed = settings.duplicates.mounts or list(MOUNT_REGISTRY.keys())
     if mount:
-        if mount not in scanners:
+        if mount not in MOUNT_REGISTRY:
             raise HTTPException(status_code=404, detail="Mount not found")
+        if mount not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Duplicate detection is not enabled for mount '{mount}' (allowed: {allowed})",
+            )
+        targets = [mount]
+    else:
+        targets = [name for name in MOUNT_REGISTRY if name in allowed]
+
+    for name in targets:
+        mnt = MOUNT_REGISTRY[name]
         detector = DuplicateDetector(
             qdrant_client, COLLECTION_NAME,
             similarity_threshold=settings.duplicates.similarity_threshold,
-            media_type=MOUNT_REGISTRY[mount].media_type,
-            nameTierMinDf=nameTierMinDf
+            media_type=mnt.media_type,
         )
-        detector.detect_for_mount(mount, MOUNT_REGISTRY[mount].path)
-        return {"status": "success", "mount": mount}
-    else:
-        for name, mnt in MOUNT_REGISTRY.items():
-            detector = DuplicateDetector(
-                qdrant_client, COLLECTION_NAME,
-                similarity_threshold=settings.duplicates.similarity_threshold,
-                media_type=mnt.media_type,
-                nameTierMinDf=nameTierMinDf
-            )
-            detector.detect_for_mount(name, mnt.path)
-        return {"status": "success", "message": "Duplicate detection run for all mounts"}
+        detector.detect_for_mount(name, mnt.path)
+
+    return {"status": "success", "mounts": targets}
 
 
 # ==========================================
@@ -1054,6 +1126,12 @@ def run_duplicate_detect_job(mount: str = Query(None, description="Limit to this
     in the background job manager."""
     if mount and mount not in MOUNT_REGISTRY:
         raise HTTPException(status_code=404, detail="Mount not found")
+    allowed = settings.duplicates.mounts or list(MOUNT_REGISTRY.keys())
+    if mount and mount not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Duplicate detection is not enabled for mount '{mount}' (allowed: {allowed})",
+        )
     job_id = job_manager.start_duplicate_detect_job(MOUNT_REGISTRY, mount)
     return {"status": "started", "job_id": job_id}
 
