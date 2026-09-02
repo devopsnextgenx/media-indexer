@@ -4,7 +4,7 @@ import logging
 import subprocess
 from fastapi import HTTPException
 from media_indexer.config import settings
-from media_indexer.database import db_instance, mysql_db_instance
+from media_indexer.database import db_instance, mysql_db_instance, redis_db_instance
 from media_indexer.utils import generate_file_id, normalize_text
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class MediaActions:
 
     @staticmethod
     def _sync_index_after_rename(old_path: str, new_path: str) -> int:
-        """Repoints existing vectors and MySQL DB records at the new file location."""
+        """Repoints existing vectors, MySQL DB records, and Redis cached tree nodes at the new file location."""
         new_name = os.path.basename(new_path)
         base_updates = {
             "file_path": new_path,
@@ -59,8 +59,11 @@ class MediaActions:
         if legacy_id not in updated_ids:
             db_instance.delete_media_item(legacy_id)
 
-        # Update MySQL Database
+        # Update MySQL Database (media_files, llm_parsed_metadata, duplicate_group_candidates)
         mysql_updated = mysql_db_instance.update_file_path(old_path, new_path, new_name)
+
+        # Update Redis Database (mount tree nodes)
+        redis_db_instance.rename_file_node(old_path, new_path)
 
         if points:
             logger.info(f"Updated {len(points)} vector payload(s) and {mysql_updated} MySQL record(s) for renamed file: {new_path}")
@@ -123,16 +126,25 @@ class MediaActions:
         # Synchronize MySQL DB
         mysql_removed = mysql_db_instance.delete_file_by_path(file_path)
 
-        if removed or mysql_removed:
-            logger.info(f"Removed {removed} vector point(s) and {mysql_removed} MySQL record(s) for deleted file: {file_path}")
-        else:
-            logger.warning(f"No vector point or MySQL record found for deleted file: {file_path}")
+        # Synchronize Redis DB
+        redis_removed = redis_db_instance.remove_file_node(file_path)
 
-        return {"status": "success", "message": f"Deleted {file_path}", "index_removed": removed, "mysql_removed": mysql_removed}
+        if removed or mysql_removed or redis_removed:
+            logger.info(f"Removed {removed} vector point(s), {mysql_removed} MySQL record(s), and {redis_removed} Redis node(s) for deleted file: {file_path}")
+        else:
+            logger.warning(f"No vector point, MySQL record, or Redis node found for deleted file: {file_path}")
+
+        return {
+            "status": "success",
+            "message": f"Deleted {file_path}",
+            "index_removed": removed,
+            "mysql_removed": mysql_removed,
+            "redis_removed": redis_removed,
+        }
 
     @staticmethod
     def clean_record_from_index(file_path: str) -> dict:
-        """Removes records from both Qdrant and MySQL DB without deleting the disk file."""
+        """Removes records from Qdrant, MySQL DB, and Redis without deleting the disk file."""
         # Clean Vector DB
         removed = db_instance.delete_by_file_path(file_path)
         if not removed:
@@ -143,11 +155,15 @@ class MediaActions:
         # Clean MySQL DB
         mysql_removed = mysql_db_instance.delete_file_by_path(file_path)
 
-        logger.info(f"Cleaned index: {removed} vector point(s) and {mysql_removed} MySQL record(s) for path: {file_path}")
+        # Clean Redis DB
+        redis_removed = redis_db_instance.remove_file_node(file_path)
+
+        logger.info(f"Cleaned index: {removed} vector point(s), {mysql_removed} MySQL record(s), and {redis_removed} Redis node(s) for path: {file_path}")
 
         return {
             "status": "success",
             "message": f"Cleaned index records for {file_path}",
             "vector_removed": removed,
-            "mysql_removed": mysql_removed
+            "mysql_removed": mysql_removed,
+            "redis_removed": redis_removed,
         }

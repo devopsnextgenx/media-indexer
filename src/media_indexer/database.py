@@ -3,6 +3,7 @@ import json
 import logging
 from qdrant_client import QdrantClient, models
 from media_indexer.config import settings
+from media_indexer.utils import generate_file_id
 import redis
 
 logger = logging.getLogger(__name__)
@@ -931,14 +932,47 @@ class MySQLDatabase:
         if not conn:
             return 0
         try:
+            old_name = os.path.basename(old_path)
+            old_norm = self._normalize_path(old_path)
+            new_norm = self._normalize_path(new_path)
+            old_key = self._normalize_file_key(old_name)
+            new_key = self._normalize_file_key(new_name)
+            old_file_id = generate_file_id(old_path)
+            new_file_id = generate_file_id(new_path)
+
             with conn.cursor() as cursor:
+                # 1. Update media_files
                 if relative_path:
                     query = "UPDATE media_files SET file_path=%s, file_name=%s, relative_path=%s WHERE file_path=%s OR file_name=%s"
-                    cursor.execute(query, (new_path, new_name, relative_path, old_path, os.path.basename(old_path)))
+                    cursor.execute(query, (new_path, new_name, relative_path, old_path, old_name))
                 else:
                     query = "UPDATE media_files SET file_path=%s, file_name=%s WHERE file_path=%s OR file_name=%s"
-                    cursor.execute(query, (new_path, new_name, old_path, os.path.basename(old_path)))
+                    cursor.execute(query, (new_path, new_name, old_path, old_name))
                 count = cursor.rowcount
+
+                # 2. Update llm_parsed_metadata (both file_name and full_path)
+                if old_key != new_key:
+                    cursor.execute("DELETE FROM llm_parsed_metadata WHERE file_name = %s", (new_key,))
+                    cursor.execute(
+                        "UPDATE llm_parsed_metadata SET file_name=%s, full_path=%s WHERE file_name=%s OR full_path=%s",
+                        (new_key, new_norm, old_key, old_norm)
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE llm_parsed_metadata SET full_path=%s WHERE file_name=%s OR full_path=%s",
+                        (new_norm, old_key, old_norm)
+                    )
+
+                # 3. Update duplicate_group_candidates (file_id, full_path, file_name)
+                cursor.execute(
+                    """
+                    UPDATE duplicate_group_candidates
+                    SET full_path = %s, file_name = %s, file_id = %s
+                    WHERE full_path = %s OR file_name = %s OR file_id = %s
+                    """,
+                    (new_norm, new_name, new_file_id, old_norm, old_name, old_file_id)
+                )
+
             conn.close()
             return count
         except Exception as e:
@@ -952,15 +986,56 @@ class MySQLDatabase:
         if not conn:
             return 0
         try:
+            file_name = os.path.basename(file_path)
+            normalized_path = self._normalize_path(file_path)
+            file_key = self._normalize_file_key(file_name)
+            file_id = generate_file_id(file_path)
+
             with conn.cursor() as cursor:
-                query = "DELETE FROM media_files WHERE file_path=%s OR file_name=%s"
-                cursor.execute(query, (file_path, os.path.basename(file_path)))
+                # 1. Delete from media_files
+                query = "DELETE FROM media_files WHERE file_path=%s OR file_name=%s OR id=%s"
+                cursor.execute(query, (file_path, file_name, file_id))
                 count = cursor.rowcount
+
+                # 2. Delete from llm_parsed_metadata
+                cursor.execute(
+                    "DELETE FROM llm_parsed_metadata WHERE file_name=%s OR full_path=%s OR file_name=%s",
+                    (file_name, normalized_path, file_key)
+                )
+
+                # 3. Delete candidate from duplicate_group_candidates and prune empty duplicate_groups
+                cursor.execute(
+                    "SELECT group_id FROM duplicate_group_candidates WHERE full_path=%s OR file_name=%s OR file_id=%s",
+                    (normalized_path, file_name, file_id)
+                )
+                group_ids = {row["group_id"] for row in cursor.fetchall()}
+
+                cursor.execute(
+                    "DELETE FROM duplicate_group_candidates WHERE full_path=%s OR file_name=%s OR file_id=%s",
+                    (normalized_path, file_name, file_id)
+                )
+
+                for group_id in group_ids:
+                    cursor.execute(
+                        "SELECT COUNT(*) AS cnt FROM duplicate_group_candidates WHERE group_id = %s",
+                        (group_id,)
+                    )
+                    remaining = (cursor.fetchone() or {}).get("cnt", 0)
+                    if remaining <= 1:
+                        cursor.execute("DELETE FROM duplicate_group_candidates WHERE group_id = %s", (group_id,))
+                        cursor.execute("DELETE FROM duplicate_groups WHERE group_id = %s", (group_id,))
+                    else:
+                        cursor.execute(
+                            "UPDATE duplicate_groups SET member_count = %s, updated_at = CURRENT_TIMESTAMP WHERE group_id = %s",
+                            (remaining, group_id)
+                        )
+
             conn.close()
             return count
         except Exception as e:
             logger.error(f"MySQL delete failed for {file_path}: {e}")
             return 0
+
 
     def get_tracked_files_by_mount(self, mount: str) -> dict:
         """Returns dict mapping relative_path -> row dict."""
@@ -981,7 +1056,7 @@ class MySQLDatabase:
             return {}
         
     def get_tracked_files_map(self, mount: str) -> dict:
-        """Returns map: relative_path -> {mtime, file_size, id, vector_id}"""
+        """Returns map: relative_path -> {mtime, file_size, id, vector_id, status, jellyfin_id, metadata_json}"""
         if not self.enabled:
             return {}
         conn = self._get_connection()
@@ -989,7 +1064,7 @@ class MySQLDatabase:
             return {}
         try:
             with conn.cursor() as cursor:
-                query = "SELECT id, relative_path, file_path, file_size, mtime, vector_id FROM media_files WHERE mount=%s"
+                query = "SELECT id, relative_path, file_path, file_size, mtime, status, vector_id, jellyfin_id, metadata_json FROM media_files WHERE mount=%s"
                 cursor.execute(query, (mount,))
                 rows = cursor.fetchall()
             conn.close()
@@ -1504,6 +1579,7 @@ class RedisDatabase:
         width: int = None,
         height: int = None,
         duration: str = None,
+        status: str = "INDEXED",
     ):
         tree = self.get_mount_tree(mount_name)
         if not tree:
@@ -1518,6 +1594,7 @@ class RedisDatabase:
                 for child in curr.get("children", []):
                     if child.get("name") == part and child.get("type") == "file":
                         child["vector_id"] = vector_id
+                        child["status"] = status
                         if jellyfin_id:
                             child["jellyfin_id"] = jellyfin_id
                         if primary_image_tag:
@@ -1530,19 +1607,123 @@ class RedisDatabase:
                             child["duration"] = duration
                         found = True
                         break
+                if not found:
+                    new_file_node = {
+                        "name": part,
+                        "type": "file",
+                        "path": rel_path,
+                        "status": status,
+                        "vector_id": vector_id,
+                        "jellyfin_id": jellyfin_id,
+                        "primary_image_tag": primary_image_tag,
+                        "width": width,
+                        "height": height,
+                        "duration": duration,
+                    }
+                    curr.setdefault("children", []).append(new_file_node)
+                    found = True
             else:
                 matched_dir = None
                 for child in curr.get("children", []):
                     if child.get("name") == part and child.get("type") == "folder":
                         matched_dir = child
                         break
-                if matched_dir:
-                    curr = matched_dir
-                else:
-                    break
+                if not matched_dir:
+                    curr_path = "/".join(parts[: i + 1])
+                    matched_dir = {
+                        "name": part,
+                        "type": "folder",
+                        "path": curr_path,
+                        "children": [],
+                    }
+                    curr.setdefault("children", []).append(matched_dir)
+                curr = matched_dir
 
         if found:
             self.set_mount_tree(mount_name, tree)
+
+    def rename_file_node(self, old_path: str, new_path: str):
+        if not self.enabled or not self.client:
+            return
+        try:
+            old_name = os.path.basename(old_path)
+            new_name = os.path.basename(new_path)
+            keys = list(self.client.scan_iter(match="mount:tree:*"))
+            for key in keys:
+                data = self.client.get(key)
+                if not data:
+                    continue
+                tree = json.loads(data)
+                modified = self._rename_node_in_tree(tree, old_path, new_path, old_name, new_name)
+                if modified:
+                    self.client.set(key, json.dumps(tree))
+        except Exception as e:
+            logger.error(f"Failed to rename Redis node from {old_path} to {new_path}: {e}")
+
+    def _rename_node_in_tree(self, node: dict, old_path: str, new_path: str, old_name: str, new_name: str) -> bool:
+        modified = False
+        children = node.get("children", [])
+        for child in children:
+            if child.get("type") == "file":
+                child_path = child.get("path", "")
+                child_name = child.get("name", "")
+                if child_path == old_path or child_name == old_name or child_path.endswith(f"/{old_name}"):
+                    child["name"] = new_name
+                    if child_path.endswith(old_name):
+                        child["path"] = child_path[:-len(old_name)] + new_name
+                    else:
+                        child["path"] = new_path
+                    modified = True
+            elif child.get("type") == "folder":
+                if self._rename_node_in_tree(child, old_path, new_path, old_name, new_name):
+                    modified = True
+        return modified
+
+    def remove_file_node(self, file_path: str) -> int:
+        if not self.enabled or not self.client:
+            return 0
+        removed_count = 0
+        try:
+            file_name = os.path.basename(file_path)
+            keys = list(self.client.scan_iter(match="mount:tree:*"))
+            for key in keys:
+                data = self.client.get(key)
+                if not data:
+                    continue
+                tree = json.loads(data)
+                count, modified = self._remove_node_from_tree(tree, file_path, file_name)
+                if modified:
+                    self.client.set(key, json.dumps(tree))
+                    removed_count += count
+        except Exception as e:
+            logger.error(f"Failed to remove Redis node for {file_path}: {e}")
+        return removed_count
+
+    def _remove_node_from_tree(self, node: dict, file_path: str, file_name: str) -> tuple[int, bool]:
+        modified = False
+        removed = 0
+        children = node.get("children", [])
+        new_children = []
+        for child in children:
+            if child.get("type") == "file":
+                child_path = child.get("path", "")
+                child_name = child.get("name", "")
+                if child_path == file_path or child_name == file_name or child_path.endswith(f"/{file_name}"):
+                    modified = True
+                    removed += 1
+                else:
+                    new_children.append(child)
+            elif child.get("type") == "folder":
+                sub_removed, sub_mod = self._remove_node_from_tree(child, file_path, file_name)
+                if sub_mod:
+                    modified = True
+                    removed += sub_removed
+                new_children.append(child)
+            else:
+                new_children.append(child)
+        if modified:
+            node["children"] = new_children
+        return removed, modified
 
     def clear_all_mount_trees(self) -> int:
         if not self.enabled or not self.client:

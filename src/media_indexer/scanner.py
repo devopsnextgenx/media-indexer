@@ -55,6 +55,7 @@ class DirectoryTreeScanner:
         self._collection_recovery_failures = 0
         self._events: Deque[Dict[str, Any]] = deque(maxlen=settings.indexing.log_buffer)
         self._event_seq = 0
+        self._full_disk_entries: List[Dict[str, Any]] = []
 
         if self.qdrant:
             self._ensure_collection()
@@ -233,7 +234,8 @@ class DirectoryTreeScanner:
         mysql_db_instance.upsert_job_record(data["job_info"])
 
         # Sync Nested Tree to Redis
-        nested_tree = self._build_nested_tree(data["tree"])
+        tree_to_build = self._full_disk_entries if self._full_disk_entries else data["tree"]
+        nested_tree = self._build_nested_tree(tree_to_build)
         redis_db_instance.set_mount_tree(self.mount_name, nested_tree)
 
         temp_manifest_path = self.manifest_path.with_suffix(".tmp")
@@ -386,6 +388,21 @@ class DirectoryTreeScanner:
                         entries_to_process.append(entry)
                         updated_count += 1
                     else:
+                        entry["operation"] = "SKIP"
+                        entry["status"] = mysql_rec.get("status", "INDEXED")
+                        entry["vector_id"] = mysql_rec.get("vector_id")
+                        entry["jellyfin_id"] = mysql_rec.get("jellyfin_id")
+                        meta_raw = mysql_rec.get("metadata_json")
+                        if meta_raw:
+                            try:
+                                meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+                            except Exception:
+                                meta = {}
+                            if isinstance(meta, dict):
+                                entry["primary_image_tag"] = meta.get("primary_image_tag")
+                                entry["width"] = meta.get("width")
+                                entry["height"] = meta.get("height")
+                                entry["duration"] = meta.get("duration")
                         skipped_count += 1
 
             self._emit(
@@ -398,6 +415,8 @@ class DirectoryTreeScanner:
                 entry["operation"] = "ADD"
             entries_to_process = all_disk_entries
             added_count = len(all_disk_entries)
+
+        self._full_disk_entries = all_disk_entries
 
         now = datetime.now(timezone.utc).isoformat()
         manifest = {
@@ -694,6 +713,7 @@ class DirectoryTreeScanner:
                         width=file_entry["width"],
                         height=file_entry["height"],
                         duration=file_entry["duration"],
+                        status="INDEXED",
                     )
 
                     job_info["media_files"] += 1
