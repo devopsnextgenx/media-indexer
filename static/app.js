@@ -1328,8 +1328,39 @@ document.addEventListener("DOMContentLoaded", () => {
     const playerVolume = document.getElementById("player-volume");
     const playerCurrent = document.getElementById("player-current");
     const playerDuration = document.getElementById("player-duration");
+    const playerSeekBadge = document.getElementById("player-seek-badge");
 
     let seeking = false;
+    let arrowSeekSteps = [3, 5, 7, 10];
+    let arrowSeekIndex = 0;
+    let arrowSeekTimer = null;
+    let seekBadgeTimer = null;
+
+    function getSeekIncrement() {
+        const step = arrowSeekSteps[Math.min(arrowSeekIndex, arrowSeekSteps.length - 1)];
+        arrowSeekIndex++;
+        clearTimeout(arrowSeekTimer);
+        arrowSeekTimer = setTimeout(() => {
+            arrowSeekIndex = 0;
+        }, 2000);
+        return step;
+    }
+
+    function showSeekBadge(direction, step) {
+        if (!playerSeekBadge) return;
+        playerSeekBadge.classList.remove("hidden", "left", "right");
+        if (direction === "left") {
+            playerSeekBadge.classList.add("left");
+            playerSeekBadge.innerHTML = `&#171; -${step}s`;
+        } else {
+            playerSeekBadge.classList.add("right");
+            playerSeekBadge.innerHTML = `+${step}s &#187;`;
+        }
+        clearTimeout(seekBadgeTimer);
+        seekBadgeTimer = setTimeout(() => {
+            playerSeekBadge.classList.add("hidden");
+        }, 800);
+    }
 
     function formatClock(seconds) {
         if (!isFinite(seconds)) return "00:00";
@@ -1573,6 +1604,11 @@ document.addEventListener("DOMContentLoaded", () => {
         currentPlaylist = [];
         playOrder = [];
         orderPos = -1;
+        clearTimeout(arrowSeekTimer);
+        arrowSeekTimer = null;
+        arrowSeekIndex = 0;
+        clearTimeout(seekBadgeTimer);
+        if (playerSeekBadge) playerSeekBadge.classList.add("hidden");
     }
 
     playerClose.addEventListener("click", closePlayer);
@@ -1587,6 +1623,21 @@ document.addEventListener("DOMContentLoaded", () => {
             togglePlay();
         }
         if (e.key === "f" || e.key === "F") toggleFullscreen();
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            const isInputTarget = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target?.tagName);
+            if (!isInputTarget) {
+                e.preventDefault();
+                const step = getSeekIncrement();
+                if (e.key === "ArrowLeft") {
+                    playerVideo.currentTime = Math.max(0, playerVideo.currentTime - step);
+                    showSeekBadge("left", step);
+                } else {
+                    const maxTime = isFinite(playerVideo.duration) ? playerVideo.duration : playerVideo.currentTime + step;
+                    playerVideo.currentTime = Math.min(maxTime, playerVideo.currentTime + step);
+                    showSeekBadge("right", step);
+                }
+            }
+        }
     });
 
     function togglePlay() {
