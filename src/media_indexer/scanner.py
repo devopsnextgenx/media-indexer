@@ -410,7 +410,7 @@ class DirectoryTreeScanner:
                 "last_updated": now,
                 "total_files": len(all_disk_entries),
                 "to_process_files": len(entries_to_process),
-                "processed_files": 0,
+                "media_files": 0,
                 "skipped_files": skipped_count,
                 "added_files": 0,
                 "updated_files": 0,
@@ -696,10 +696,10 @@ class DirectoryTreeScanner:
                         duration=file_entry["duration"],
                     )
 
-                    job_info["processed_files"] += 1
+                    job_info["media_files"] += 1
                     
                     self._emit(
-                        f"[{job_info['processed_files']}/{total_remaining}] {op}ED {file_entry['path']}"
+                        f"[{job_info['media_files']}/{total_remaining}] {op}ED {file_entry['path']}"
                     )
 
                 last_index = chunk_start + len(chunk) - 1
@@ -777,7 +777,7 @@ class DirectoryTreeScanner:
                         job = manifest.get("job_info", {})
                         total = job.get("total_files", 0)
                         to_process = job.get("to_process_files", total)
-                        processed = job.get("processed_files", 0)
+                        processed = job.get("media_files", 0)
 
                         data = {
                             "job_id": job.get("job_id"),
@@ -786,7 +786,7 @@ class DirectoryTreeScanner:
                             "eta_seconds": job.get("eta_seconds", 0),
                             "total_files": total,
                             "to_process_files": to_process,
-                            "processed_files": processed,
+                            "media_files": processed,
                             "skipped_files": job.get("skipped_files", 0),
                             "added_files": job.get("added_files", 0),
                             "updated_files": job.get("updated_files", 0),

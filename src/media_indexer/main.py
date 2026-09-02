@@ -649,19 +649,21 @@ def delete_file(path: str = Query(...)):
     mount_path = get_mount_path(path)
     return MediaActions.delete_file(file_path=mount_path)
 
-
-@app.post("/api/admin/index/clean", tags=["Admin"])
-def clean_index(
-    mode: str = Query("truncate", pattern="^(truncate|recreate)$", description="truncate keeps the collection, recreate drops and rebuilds it"),
-    clear_manifests: bool = Query(True, description="Also drop scan manifests so the next scan re-walks the disk"),
+@app.post("/api/admin/clean", tags=["Admin"])
+def clean_database(
+    mode: str = Query("duplicates", pattern="^(database|duplicates)$", description="truncates the database or duplucates based on argument")
 ):
-    removed = (
-        db_instance.reset_collection() if mode == "recreate" else db_instance.truncate_collection()
-    )
 
-    # MySQL: wipe processed_files only. download_tracker and indexing_jobs
+    if mode == "duplicates":
+        results = mysql_db_instance.truncate_duplicate_tables()
+        return {"status": "success", "results": results}
+
+    # MySQL: wipe media_files only. download_tracker and indexing_jobs
     # are separate tables and are intentionally left untouched.
     truncate_tables = mysql_db_instance.truncate_tables()
+
+    # Truncate the vector collection to remove all points
+    removed = db_instance.truncate_collection()
 
     # Redis: drop every cached mount tree so the Library tab doesn't keep
     # serving stale folder/file data after a clean.
@@ -669,12 +671,11 @@ def clean_index(
     _LIBRARY_SUMMARY_CACHE.clear()
 
     cleared = []
-    if clear_manifests:
-        for scanner in scanners.values():
-            manifest = getattr(scanner, "manifest_path", None)
-            if manifest and manifest.exists():
-                manifest.unlink()
-                cleared.append(str(manifest))
+    for scanner in scanners.values():
+        manifest = getattr(scanner, "manifest_path", None)
+        if manifest and manifest.exists():
+            manifest.unlink()
+            cleared.append(str(manifest))
 
     return {
         "status": "success",
@@ -891,14 +892,8 @@ def clean_record_from_index(path: str = Query(..., description="Absolute file pa
     mount_path = get_mount_path(path)
     return MediaActions.clean_record_from_index(file_path=mount_path)
 
-@app.delete("/api/admin/duplicates/clean", tags=["Admin"])
-def clean_duplicate_tables():
-    results = mysql_db_instance.truncate_duplicate_tables()
-    return {"status": "success", "results": results}
-
-
 def _enrich_candidates(candidates: list) -> list:
-    """Adds size / resolution / duration / thumbnail hints from processed_files
+    """Adds size / resolution / duration / thumbnail hints from media_files
     so the duplicate UI can show the same detail as search results."""
     if not candidates:
         return candidates
@@ -958,7 +953,7 @@ def delete_duplicate_candidate(
     delete_from_disk: bool = Query(True, description="Also remove the file from disk"),
 ):
     """Removes one candidate from a group and, by default, deletes the file
-    from disk plus its processed_files / vector / LLM metadata records. The
+    from disk plus its media_files / vector / LLM metadata records. The
     group itself is dropped once fewer than two members remain."""
     resolved_path = get_mount_path(file_path)
     file_name = os.path.basename(resolved_path)

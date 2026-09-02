@@ -238,7 +238,7 @@ async function triggerMountAction(mount, action) {
                 } else {
                     const pct = data.progress_percentage ?? 0;
                     const eta = data.eta_seconds ? formatEta(data.eta_seconds) : "--";
-                    MOUNT_ACTION_STATUS.textContent = `Indexing ${mount}: ${data.processed_files || 0}/${data.total_files || 0} (${pct}%) ETA ${eta}`;
+                    MOUNT_ACTION_STATUS.textContent = `Indexing ${mount}: ${data.media_files || 0}/${data.total_files || 0} (${pct}%) ETA ${eta}`;
                 }
             };
             mountActionStream.onerror = () => {

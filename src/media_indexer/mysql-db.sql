@@ -14,7 +14,7 @@ CREATE TABLE `indexing_jobs` (
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `total_files` int DEFAULT '0',
-  `processed_files` int DEFAULT '0',
+  `media_files` int DEFAULT '0',
   `added_files` int DEFAULT '0',
   `updated_files` int DEFAULT '0',
   `skipped_files` int DEFAULT '0',
@@ -71,7 +71,7 @@ CREATE TABLE `duplicate_group_candidates` (
   CONSTRAINT `fk_dgc_group` FOREIGN KEY (`group_id`) REFERENCES `duplicate_groups` (`group_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 
-CREATE TABLE `processed_files` (
+CREATE TABLE `media_files` (
   `id` varchar(255) NOT NULL,
   `file_path` varchar(1024) NOT NULL,
   `file_name` varchar(255) NOT NULL,

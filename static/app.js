@@ -1134,7 +1134,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const status = (data.status || "").toUpperCase();
             const total = data.total_files ?? data.total ?? 0;
-            const processed = data.current_index ?? data.processed_files ?? 0;
+            const processed = data.current_index ?? data.media_files ?? 0;
 
             if (status === "FAILED" && data.error) {
                 setMountStatus(mountName, `Scan aborted: ${data.error} (processed ${processed}/${total}, failed: ${data.failed_files || 0})`, processed, total);
@@ -1222,10 +1222,13 @@ document.addEventListener("DOMContentLoaded", () => {
         btnCleanIndex.innerText = "Cleaning...";
 
         try {
-            const res = await fetch("/api/admin/index/clean?mode=recreate&clear_manifests=true", { method: "POST" });
+            const res = await fetch("/api/admin/clean?mode=database", { method: "POST" });
             const data = await res.json();
 
             if (!res.ok) throw new Error(data.detail || "Clean failed");
+
+            showToast(`Cleaned database.`, "success");
+
 
             scanConsole.classList.remove("hidden");
             mountStatus.clear();
@@ -1259,7 +1262,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btnCleanDuplicates.innerText = "Cleaning...";
 
         try {
-            const res = await fetch("/api/admin/duplicates/clean", { method: "delete" });
+            const res = await fetch("/api/admin/clean?mode=duplicates", { method: "POST" });
             const data = await res.json();
 
             if (!res.ok) throw new Error(data.detail || "Clean failed");

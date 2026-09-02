@@ -186,8 +186,8 @@ class MySQLDatabase:
     # ----------------------------------------------------------------------
     def _get_table_definitions(self) -> dict:
         return {
-            "processed_files": """
-                CREATE TABLE IF NOT EXISTS processed_files (
+            "media_files": """
+                CREATE TABLE IF NOT EXISTS media_files (
                     id VARCHAR(255) PRIMARY KEY,
                     file_path VARCHAR(1024) NOT NULL,
                     file_name VARCHAR(255) NOT NULL,
@@ -296,7 +296,7 @@ class MySQLDatabase:
                 # Drop and recreate duplicate‑related tables to guarantee new schema
                 for table in ("duplicate_group_candidates", "duplicate_groups", "token_stats"):
                     cursor.execute(f"DROP TABLE IF EXISTS {table}")
-                # Now create all tables from definitions (including processed_files)
+                # Now create all tables from definitions (including media_files)
                 for name, ddl in self._get_table_definitions().items():
                     cursor.execute(ddl)
             conn.close()
@@ -361,7 +361,7 @@ class MySQLDatabase:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         total_files INT DEFAULT 0,
-                        processed_files INT DEFAULT 0,
+                        media_files INT DEFAULT 0,
                         added_files INT DEFAULT 0,
                         updated_files INT DEFAULT 0,
                         skipped_files INT DEFAULT 0,
@@ -680,7 +680,7 @@ class MySQLDatabase:
             return False
 
     def get_file_details_by_paths(self, file_paths: list[str]) -> dict:
-        """Return {normalized_path: processed_files row (metadata decoded)} so
+        """Return {normalized_path: media_files row (metadata decoded)} so
         duplicate candidates can be shown with size / resolution / duration."""
         if not self.enabled or not file_paths:
             return {}
@@ -697,7 +697,7 @@ class MySQLDatabase:
                     placeholders = ','.join(['%s'] * len(chunk))
                     cursor.execute(
                         "SELECT file_path, file_name, file_size, jellyfin_id, metadata_json "
-                        f"FROM processed_files WHERE REPLACE(file_path, '\\\\', '/') IN ({placeholders})",
+                        f"FROM media_files WHERE REPLACE(file_path, '\\\\', '/') IN ({placeholders})",
                         chunk,
                     )
                     for row in cursor.fetchall():
@@ -710,11 +710,11 @@ class MySQLDatabase:
             conn.close()
             return result
         except Exception as e:
-            logger.error(f"Failed to fetch processed_files details for paths: {e}")
+            logger.error(f"Failed to fetch media_files details for paths: {e}")
             return {}
 
     def get_file_details_for_duplicate_candidates(self, candidates: list[dict]) -> dict:
-        """Return processed_files details keyed by duplicate candidate file_id and path."""
+        """Return media_files details keyed by duplicate candidate file_id and path."""
         if not self.enabled or not candidates:
             return {}
         conn = self._get_connection()
@@ -742,7 +742,7 @@ class MySQLDatabase:
 
                 cursor.execute(
                     "SELECT id, file_path, file_name, file_size, jellyfin_id, metadata_json "
-                    f"FROM processed_files WHERE {' OR '.join(conditions)}",
+                    f"FROM media_files WHERE {' OR '.join(conditions)}",
                     tuple(params),
                 )
                 for row in cursor.fetchall():
@@ -848,11 +848,11 @@ class MySQLDatabase:
     # Truncate tables (used by admin clean)
     # ----------------------------------------------------------------------
     def truncate_tables(self, tables: list = None) -> dict:
-        """Truncate given tables; default list: processed_files,
+        """Truncate given tables; default list: media_files,
         duplicate_group_candidates, duplicate_groups (if exists)."""
         if not self.enabled:
             return {}
-        default_tables = ["processed_files",
+        default_tables = ["media_files",
                           "duplicate_group_candidates", "duplicate_groups"]
         to_truncate = tables if tables is not None else default_tables
         conn = self._get_connection()
@@ -903,7 +903,7 @@ class MySQLDatabase:
         try:
             meta_str = json.dumps(metadata) if metadata else None
             query = """
-                INSERT INTO processed_files 
+                INSERT INTO media_files 
                 (id, file_path, file_name, relative_path, mount, file_size, mtime, status, vector_id, jellyfin_id, metadata_json)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
@@ -933,10 +933,10 @@ class MySQLDatabase:
         try:
             with conn.cursor() as cursor:
                 if relative_path:
-                    query = "UPDATE processed_files SET file_path=%s, file_name=%s, relative_path=%s WHERE file_path=%s OR file_name=%s"
+                    query = "UPDATE media_files SET file_path=%s, file_name=%s, relative_path=%s WHERE file_path=%s OR file_name=%s"
                     cursor.execute(query, (new_path, new_name, relative_path, old_path, os.path.basename(old_path)))
                 else:
-                    query = "UPDATE processed_files SET file_path=%s, file_name=%s WHERE file_path=%s OR file_name=%s"
+                    query = "UPDATE media_files SET file_path=%s, file_name=%s WHERE file_path=%s OR file_name=%s"
                     cursor.execute(query, (new_path, new_name, old_path, os.path.basename(old_path)))
                 count = cursor.rowcount
             conn.close()
@@ -953,7 +953,7 @@ class MySQLDatabase:
             return 0
         try:
             with conn.cursor() as cursor:
-                query = "DELETE FROM processed_files WHERE file_path=%s OR file_name=%s"
+                query = "DELETE FROM media_files WHERE file_path=%s OR file_name=%s"
                 cursor.execute(query, (file_path, os.path.basename(file_path)))
                 count = cursor.rowcount
             conn.close()
@@ -971,7 +971,7 @@ class MySQLDatabase:
             return {}
         try:
             with conn.cursor() as cursor:
-                query = "SELECT id, file_path, relative_path, file_size, mtime, status, vector_id FROM processed_files WHERE mount=%s"
+                query = "SELECT id, file_path, relative_path, file_size, mtime, status, vector_id FROM media_files WHERE mount=%s"
                 cursor.execute(query, (mount,))
                 rows = cursor.fetchall()
             conn.close()
@@ -989,7 +989,7 @@ class MySQLDatabase:
             return {}
         try:
             with conn.cursor() as cursor:
-                query = "SELECT id, relative_path, file_path, file_size, mtime, vector_id FROM processed_files WHERE mount=%s"
+                query = "SELECT id, relative_path, file_path, file_size, mtime, vector_id FROM media_files WHERE mount=%s"
                 cursor.execute(query, (mount,))
                 rows = cursor.fetchall()
             conn.close()
@@ -1007,7 +1007,7 @@ class MySQLDatabase:
         try:
             with conn.cursor() as cursor:
                 format_strings = ','.join(['%s'] * len(file_paths))
-                cursor.execute(f"DELETE FROM processed_files WHERE file_path IN ({format_strings})", tuple(file_paths))
+                cursor.execute(f"DELETE FROM media_files WHERE file_path IN ({format_strings})", tuple(file_paths))
                 count = cursor.rowcount
             conn.close()
             return count
@@ -1015,7 +1015,7 @@ class MySQLDatabase:
             logger.error(f"Failed deleting records: {e}")
             return 0
 
-    def truncate_processed_files(self) -> int:
+    def truncate_media_files(self) -> int:
         if not self.enabled:
             return 0
         conn = self._get_connection()
@@ -1023,14 +1023,14 @@ class MySQLDatabase:
             return 0
         try:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) AS cnt FROM processed_files")
+                cursor.execute("SELECT COUNT(*) AS cnt FROM media_files")
                 removed = (cursor.fetchone() or {}).get("cnt", 0)
-                cursor.execute("TRUNCATE TABLE processed_files")
+                cursor.execute("TRUNCATE TABLE media_files")
             conn.close()
-            logger.info(f"Truncated 'processed_files' table ({removed} rows removed)")
+            logger.info(f"Truncated 'media_files' table ({removed} rows removed)")
             return removed
         except Exception as e:
-            logger.error(f"Failed to truncate processed_files table: {e}")
+            logger.error(f"Failed to truncate media_files table: {e}")
             return 0
 
     # ----------------------------------------------------------------------
@@ -1107,12 +1107,12 @@ class MySQLDatabase:
         try:
             query = """
                 INSERT INTO indexing_jobs 
-                (job_id, mount_name, status, total_files, processed_files, added_files, updated_files, skipped_files, failed_files, cleaned_orphans, eta_seconds, error_message)
+                (job_id, mount_name, status, total_files, media_files, added_files, updated_files, skipped_files, failed_files, cleaned_orphans, eta_seconds, error_message)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     status = VALUES(status),
                     total_files = VALUES(total_files),
-                    processed_files = VALUES(processed_files),
+                    media_files = VALUES(media_files),
                     added_files = VALUES(added_files),
                     updated_files = VALUES(updated_files),
                     skipped_files = VALUES(skipped_files),
@@ -1124,7 +1124,7 @@ class MySQLDatabase:
             with conn.cursor() as cursor:
                 cursor.execute(query, (
                     job_info["job_id"], job_info["mount_name"], job_info["status"],
-                    job_info.get("total_files", 0), job_info.get("processed_files", 0),
+                    job_info.get("total_files", 0), job_info.get("media_files", 0),
                     job_info.get("added_files", 0), job_info.get("updated_files", 0),
                     job_info.get("skipped_files", 0), job_info.get("failed_files", 0),
                     job_info.get("cleaned_orphans", 0), job_info.get("eta_seconds", 0),
@@ -1248,7 +1248,7 @@ class MySQLDatabase:
 
     def get_files_needing_llm_parse(self, mount: str = None, limit: int = 100,
                                      after_file_name: str = None) -> list[dict]:
-        """Files tracked in processed_files that have no llm_parsed_metadata
+        """Files tracked in media_files that have no llm_parsed_metadata
         row yet (or whose row is older than the file's last index time).
         Paginated by file_name for cheap checkpoint/resume."""
         if not self.enabled:
@@ -1260,7 +1260,7 @@ class MySQLDatabase:
             params = []
             query = """
                 SELECT p.id, p.file_path, p.file_name, p.mount
-                FROM processed_files p
+                FROM media_files p
                 LEFT JOIN llm_parsed_metadata m
                     ON m.file_name = LOWER(REGEXP_REPLACE(p.file_name, '\\.[^.]+$', ''))
                 WHERE m.file_name IS NULL
@@ -1292,7 +1292,7 @@ class MySQLDatabase:
             params = []
             query = """
                 SELECT COUNT(*) AS cnt
-                FROM processed_files p
+                FROM media_files p
                 LEFT JOIN llm_parsed_metadata m
                     ON m.file_name = LOWER(REGEXP_REPLACE(p.file_name, '\\.[^.]+$', ''))
                 WHERE m.file_name IS NULL
