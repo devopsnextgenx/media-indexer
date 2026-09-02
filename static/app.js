@@ -74,19 +74,32 @@ document.addEventListener("DOMContentLoaded", () => {
     let downloadSortDir = "desc";
 
     // Library tab state
-    let libraryMount = "all";
-    let libraryPath = "";
+    // Restore last-visited mount/folder/sort so a page refresh doesn't dump the
+    // user back at "All Mounts". Falls back to defaults if nothing was saved yet.
+    const SAVED_LIBRARY_MOUNT = localStorage.getItem("library_mount");
+    const SAVED_LIBRARY_PATH = localStorage.getItem("library_path");
+    const SAVED_LIBRARY_SORT = localStorage.getItem("library_sort");
+    const SAVED_LIBRARY_SORT_DIR = localStorage.getItem("library_sort_dir");
+    let libraryMount = SAVED_LIBRARY_MOUNT || "all";
+    let libraryPath = SAVED_LIBRARY_PATH || "";
     let libraryOffset = 0;
     const LIBRARY_PAGE_SIZE = 150;
     let libraryHasMore = false;
     let libraryLoading = false;
     let libraryItems = [];          // accumulated items for the current folder (across pages)
-    let librarySort = "name";
-    let librarySortDir = "asc";
+    let librarySort = ["name", "size", "resolution", "duration"].includes(SAVED_LIBRARY_SORT) ? SAVED_LIBRARY_SORT : "name";
+    let librarySortDir = (SAVED_LIBRARY_SORT_DIR === "asc" || SAVED_LIBRARY_SORT_DIR === "desc") ? SAVED_LIBRARY_SORT_DIR : "asc";
     const CARD_SIZE_PX = { xs: 96, s: 126, m: 150, l: 270, xl: 420 };
     const SAVED_CARD_SIZE = localStorage.getItem("library_card_size");
     let cardSize = (SAVED_CARD_SIZE && CARD_SIZE_PX.hasOwnProperty(SAVED_CARD_SIZE)) ? SAVED_CARD_SIZE : "m";
     let libraryRequestToken = 0;    // guards against out-of-order responses when navigating fast
+
+    function saveLibraryState() {
+        localStorage.setItem("library_mount", libraryMount);
+        localStorage.setItem("library_path", libraryPath);
+        localStorage.setItem("library_sort", librarySort);
+        localStorage.setItem("library_sort_dir", librarySortDir);
+    }
     // Short-lived client cache so breadcrumb "back" navigation doesn't re-hit the server
     const libraryPageCache = new Map(); // key: `${mount}::${path}::${sort}::${sortDir}` -> {items, hasMore, total}
     const LIBRARY_CLIENT_CACHE_TTL = 20000;
@@ -334,7 +347,7 @@ document.addEventListener("DOMContentLoaded", () => {
             resultsCount.textContent = "";
         }
     });
-    
+
     // Focus input when clicking inside wrapper (excluding the history button)
     const searchInputWrapper = document.querySelector(".search-input-wrapper");
     if (searchInputWrapper && searchInput) {
@@ -387,7 +400,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (typeof val === 'number') return val;
         if (!val) return 0;
         const str = String(val).trim().toLowerCase();
-        
+
         let total = 0;
         const matches = [...str.matchAll(/(\d+)\s*([hms])?/g)];
         if (matches.length > 0) {
@@ -431,7 +444,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function evaluateToken(item, token) {
         const kvMatch = token.match(/^([a-zA-Z0-9_-]+)(:|=|>=|<=|>|<)(.*)$/);
-        
+
         if (!kvMatch) {
             const needle = token.toLowerCase();
             const tagsStr = (item.folder_tags || []).join(" ").toLowerCase();
@@ -463,7 +476,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             const standardResolutions = [480, 576, 720, 1080, 1440, 2160];
-            const closestStandard = standardResolutions.reduce((prev, curr) => 
+            const closestStandard = standardResolutions.reduce((prev, curr) =>
                 Math.abs(curr - itemRes) < Math.abs(prev - itemRes) ? curr : prev
             );
 
@@ -476,12 +489,12 @@ document.addEventListener("DOMContentLoaded", () => {
             const activeOp = op === ':' ? '=' : op;
 
             switch (activeOp) {
-                case '>':  return itemDur > targetDur;
-                case '<':  return itemDur < targetDur;
+                case '>': return itemDur > targetDur;
+                case '<': return itemDur < targetDur;
                 case '>=': return itemDur >= targetDur;
                 case '<=': return itemDur <= targetDur;
                 case '=':
-                default:   return Math.abs(itemDur - targetDur) <= 5;
+                default: return Math.abs(itemDur - targetDur) <= 5;
             }
         }
 
@@ -491,12 +504,12 @@ document.addEventListener("DOMContentLoaded", () => {
             const activeOp = op === ':' ? '=' : op;
 
             switch (activeOp) {
-                case '>':  return itemSizeBytes > targetBytes;
-                case '<':  return itemSizeBytes < targetBytes;
+                case '>': return itemSizeBytes > targetBytes;
+                case '<': return itemSizeBytes < targetBytes;
                 case '>=': return itemSizeBytes >= targetBytes;
                 case '<=': return itemSizeBytes <= targetBytes;
-                case '=':  return Math.abs(itemSizeBytes - targetBytes) <= targetBytes * 0.05;
-                default:   return false;
+                case '=': return Math.abs(itemSizeBytes - targetBytes) <= targetBytes * 0.05;
+                default: return false;
             }
         }
 
@@ -794,6 +807,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function navigateLibrary(mount, path) {
         libraryMount = mount;
         libraryPath = path || "";
+        saveLibraryState();
         loadLibrary({ reset: true });
     }
 
@@ -889,8 +903,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }, { rootMargin: "300px" });
     libraryObserver.observe(librarySentinel);
 
+    // Restore sort controls to reflect any persisted state before wiring listeners.
+    librarySortSelect.value = librarySort;
+    librarySortDirBtn.dataset.dir = librarySortDir;
+    librarySortDirBtn.innerHTML = librarySortDir === "asc" ? "&#8593; Asc" : "&#8595; Desc";
+
     librarySortSelect.addEventListener("change", () => {
         librarySort = librarySortSelect.value;
+        saveLibraryState();
         loadLibrary({ reset: true });
     });
 
@@ -898,6 +918,7 @@ document.addEventListener("DOMContentLoaded", () => {
         librarySortDir = librarySortDir === "asc" ? "desc" : "asc";
         librarySortDirBtn.dataset.dir = librarySortDir;
         librarySortDirBtn.innerHTML = librarySortDir === "asc" ? "&#8593; Asc" : "&#8595; Desc";
+        saveLibraryState();
         loadLibrary({ reset: true });
     });
 
@@ -1458,7 +1479,7 @@ document.addEventListener("DOMContentLoaded", () => {
         playerVideo.src = streamUrl(item);
         playerOverlay.classList.remove("hidden");
         playerVideo.volume = Number(playerVolume.value);
-        playerVideo.play().catch(() => {});
+        playerVideo.play().catch(() => { });
         updateQueueInfo();
     }
 
@@ -1589,7 +1610,7 @@ document.addEventListener("DOMContentLoaded", () => {
     playerVideo.addEventListener("ended", () => {
         if (loopMode === "one") {
             playerVideo.currentTime = 0;
-            playerVideo.play().catch(() => {});
+            playerVideo.play().catch(() => { });
             return;
         }
         nextTrack();
@@ -2256,16 +2277,16 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!ok) return;
 
         try {
-            const res = await fetch(`/api/actions/clean-record?path=${encodeURIComponent(item.file_path)}`, { 
-                method: "DELETE" 
+            const res = await fetch(`/api/actions/clean-record?path=${encodeURIComponent(item.file_path)}`, {
+                method: "DELETE"
             });
             const data = await res.json().catch(() => ({}));
-            
+
             if (!res.ok) {
                 showToast(`Cleaning failed: ${data.detail || res.statusText}`, "error", 8000);
                 return;
             }
-            
+
             showToast(`Removed DB records for ${item.file_name}. Disk file preserved.`, "success");
             performSearch();
         } catch (err) {
@@ -2302,9 +2323,17 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    function activateTab(btn, panel) {
+    const ACTIVE_TAB_KEY = "active_tab";
+    const TAB_IDS = { search: [tabBtnSearch, tabPanelSearch], library: [tabBtnLibrary, tabPanelLibrary], downloads: [tabBtnDownloads, tabPanelDownloads] };
+
+    function activateTab(btn, panel, persist = true) {
         allTabBtns.forEach((b) => b?.classList.toggle("active", b === btn));
         allTabPanels.forEach((p) => p?.classList.toggle("active", p === panel));
+
+        if (persist) {
+            const tabId = Object.keys(TAB_IDS).find((key) => TAB_IDS[key][0] === btn);
+            if (tabId) localStorage.setItem(ACTIVE_TAB_KEY, tabId);
+        }
 
         // Handle downloads polling
         if (panel === tabPanelDownloads) {
@@ -2337,10 +2366,19 @@ document.addEventListener("DOMContentLoaded", () => {
         fetchDownloads();
     });
 
-    // Library is the default active tab on page load (see index.html), so the
-    // click handler above never fires on its own — load its data now too.
+    // Restore whichever tab was active before the last refresh. Library is the
+    // default active tab in the markup, so if nothing was saved (or the saved
+    // value is invalid) we fall through to that default.
+    const savedTabId = localStorage.getItem(ACTIVE_TAB_KEY);
+    const savedTab = savedTabId && TAB_IDS[savedTabId];
+    if (savedTab && savedTab[0] && savedTab[1]) {
+        activateTab(savedTab[0], savedTab[1], false);
+    }
+
     if (tabPanelLibrary?.classList.contains("active")) {
         ensureLibraryLoaded();
+    } else if (tabPanelDownloads?.classList.contains("active")) {
+        fetchDownloads();
     }
 
     // Download API Handlers
@@ -2374,7 +2412,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     function bytesToMB(bytes, decimals = 2) {
         if (bytes === 0) return '0.00 MB';
-        
+
         const mb = bytes / (1024 * 1024); // 1,048,576 bytes in a MB
         return `${mb.toFixed(decimals)} MB`;
     }
@@ -2384,14 +2422,14 @@ document.addEventListener("DOMContentLoaded", () => {
         if (isNaN(d)) return 'N/A';
 
         const pad = (n) => String(n).padStart(2, '0');
-        
+
         const month = pad(d.getMonth() + 1);
         const day = pad(d.getDate());
-        
+
         let hours = d.getHours();
         const ampm = hours >= 12 ? 'PM' : 'AM';
         hours = hours % 12 || 12; // Convert 0 to 12 for 12-hour format
-        
+
         const formattedHours = pad(hours);
         const minutes = pad(d.getMinutes());
         const seconds = pad(d.getSeconds());
@@ -2413,7 +2451,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (downloadsCount) {
             downloadsCount.textContent = `${items.length} / ${downloadsList.length} items`;
         }
-        
+
         downloadsBody.innerHTML = items.map((item, idx) => `
             <tr>
                 <td>${idx + 1}</td>
