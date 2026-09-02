@@ -11,9 +11,18 @@
     <header class="vscode-header">
         <div class="logo"><span>VS</span> Media Indexer — Admin</div>
         <div class="header-actions">
-            <button id="btn-refresh" class="btn btn-secondary">&#8635; Refresh</button>
-            <a href="/" class="btn btn-secondary">&larr; Back to Explorer</a>
-            <a href="/docs" target="_blank" class="btn btn-info">Swagger Docs</a>
+            <button id="btn-refresh" class="btn btn-secondary btn-icon-label">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6"/><path d="M2 11.5a10 10 0 0 1 18.8-4.3L21.5 8M22 12.5a10 10 0 0 1-18.8 4.2L2.5 16"/></svg>
+                <span>Refresh</span>
+            </button>
+            <a href="/" class="btn btn-secondary btn-icon-label">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+                <span>Back to Explorer</span>
+            </a>
+            <a href="/docs" target="_blank" class="btn btn-info btn-icon-label">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                <span>Swagger Docs</span>
+            </a>
         </div>
     </header>
 
@@ -25,10 +34,15 @@
         </section>
 
         <section class="admin-section">
-            <h2>Ollama Servers</h2>
-            <div class="admin-subhead">
-                <span class="admin-hint">LLM parsing pauses automatically when every endpoint below is unreachable, and resumes as soon as one recovers.</span>
-                <button id="btn-refresh-ollama" class="btn btn-secondary btn-sm">Re-probe now</button>
+            <div class="admin-section-header">
+                <h2>Ollama Servers</h2>
+                <div class="admin-subhead">
+                    <span class="admin-hint">LLM parsing pauses automatically when every endpoint below is unreachable, and resumes as soon as one recovers.</span>
+                    <button id="btn-refresh-ollama" class="btn btn-secondary btn-sm btn-icon-label">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6"/><path d="M2 11.5a10 10 0 0 1 18.8-4.3L21.5 8M22 12.5a10 10 0 0 1-18.8 4.2L2.5 16"/></svg>
+                        <span>Re-probe now</span>
+                    </button>
+                </div>
             </div>
             <h3>LLM (parsing)</h3>
             <div id="ollama-llm-grid" class="status-grid"></div>
@@ -38,19 +52,39 @@
 
         <!-- Mount Actions Card -->
         <section class="admin-section">
-            <h2>Mount Actions</h2>
-            <div class="admin-subhead">
-                <span class="admin-hint">Last run status and quick start buttons for each mount.</span>
-                <button id="btn-refresh-mounts" class="btn btn-secondary btn-sm">&#8635; Refresh</button>
+            <div class="admin-section-header">
+                <h2>Mount Actions</h2>
+                <div class="admin-subhead">
+                    <span class="admin-hint">Last run status and quick start actions per mount.</span>
+                    <button id="btn-refresh-mounts" class="btn btn-secondary btn-sm btn-icon-label" title="Refresh Mount Statuses">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6"/><path d="M2 11.5a10 10 0 0 1 18.8-4.3L21.5 8M22 12.5a10 10 0 0 1-18.8 4.2L2.5 16"/></svg>
+                        <span>Refresh</span>
+                    </button>
+                </div>
             </div>
-            <div id="mount-actions-table-wrapper">
-                <table class="jobs-table" id="mount-actions-table">
+            <div id="mount-actions-table-wrapper" class="mount-table-container">
+                <table class="jobs-table mount-table" id="mount-actions-table">
                     <thead>
                         <tr>
-                            <th>Mount</th>
-                            <th>Indexing</th>
-                            <th>LLM Parse</th>
-                            <th>Duplicate Detect</th>
+                            <th class="col-mount">Mount</th>
+                            <th class="col-action">
+                                <div class="th-accent-head header-indexing">
+                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><circle cx="11" cy="13" r="3"/><path d="m14 16 2.5 2.5"/></svg>
+                                    <span>Indexing</span>
+                                </div>
+                            </th>
+                            <th class="col-action">
+                                <div class="th-accent-head header-llm">
+                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3z"/><path d="M5 3v4M3 5h4M19 17v4M17 19h4"/></svg>
+                                    <span>LLM Parse</span>
+                                </div>
+                            </th>
+                            <th class="col-action">
+                                <div class="th-accent-head header-dup">
+                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                    <span>Duplicate Detect</span>
+                                </div>
+                            </th>
                         </tr>
                     </thead>
                     <tbody id="mount-actions-tbody"></tbody>
@@ -61,8 +95,14 @@
                 <div class="scan-console-head">
                     <div id="mount-action-status" class="scan-status">Ready</div>
                     <div class="scan-console-tools">
-                        <button id="mount-action-clear" class="btn btn-secondary btn-sm">Clear</button>
-                        <button id="mount-action-hide" class="btn btn-secondary btn-sm">Hide</button>
+                        <button id="mount-action-clear" class="btn btn-secondary btn-sm btn-icon-label">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                            <span>Clear</span>
+                        </button>
+                        <button id="mount-action-hide" class="btn btn-secondary btn-sm btn-icon-label">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            <span>Hide</span>
+                        </button>
                     </div>
                 </div>
                 <div id="mount-action-log" class="scan-log" style="height:160px;"></div>
@@ -73,7 +113,10 @@
             <h2>LLM Metadata Backfill</h2>
             <div class="admin-subhead">
                 <select id="llm-mount-select" class="form-select"><option value="">All Mounts</option></select>
-                <button id="btn-start-llm-job" class="btn btn-primary">Start / Resume Parse Job</button>
+                <button id="btn-start-llm-job" class="btn btn-primary btn-icon-label">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3z"/><path d="M5 3v4M3 5h4M19 17v4M17 19h4"/></svg>
+                    <span>Start / Resume Parse Job</span>
+                </button>
             </div>
             <div id="llm-backlog-list" class="backlog-list"></div>
         </section>
@@ -82,22 +125,27 @@
             <h2>Duplicate Detection</h2>
             <div class="admin-subhead">
                 <select id="dup-mount-select" class="form-select"><option value="">All Mounts</option></select>
-                <button id="btn-start-dup-job" class="btn btn-primary">Start / Resume Detection Job</button>
+                <button id="btn-start-dup-job" class="btn btn-primary btn-icon-label">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    <span>Start / Resume Detection Job</span>
+                </button>
                 <span class="admin-hint">Runs independently of scanning/indexing — trigger it whenever you like, per mount.</span>
             </div>
         </section>
 
         <section class="admin-section">
             <h2>Background Jobs</h2>
-            <table class="jobs-table">
-                <thead>
-                    <tr>
-                        <th>Job</th><th>Type</th><th>Mount</th><th>Status</th>
-                        <th>ETA</th><th>Progress</th><th>Failed</th><th>Updated</th><th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="jobs-tbody"></tbody>
-            </table>
+            <div class="jobs-table-container">
+                <table class="jobs-table">
+                    <thead>
+                        <tr>
+                            <th>Job</th><th>Type</th><th>Mount</th><th>Status</th>
+                            <th>ETA</th><th>Progress</th><th>Failed</th><th>Updated</th><th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobs-tbody"></tbody>
+                </table>
+            </div>
         </section>
     </main>
 
