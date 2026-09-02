@@ -2605,7 +2605,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const duration = candidate.duration_formatted || "—";
                 const score = candidate.overall_score != null ? `${candidate.overall_score}%` : "—";
                 return `<tr>
-                    <td>${escapeHtml(rank)}${keeper}</td>
+                    <td>${escapeHtml(rank)}</td>
                     <td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(candidate)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" /></td>
                     <td title="${escapeHtml(filePath)}">${escapeHtml(getRelativePath(filePath, candidate.mount))}</td>
                     <td>${escapeHtml(candidateSizeMb(candidate))}</td>

@@ -285,23 +285,19 @@ class MySQLDatabase:
         }
 
     def _ensure_tables(self):
-        """Create (or recreate) duplicate‑related tables with the latest schema.
-        This drops and re‑creates the tables managed by this module to ensure
-        columns like `mount` exist. Existing data in these tables will be lost.
+        """Create tables if they do not exist with the latest schema.
+        Data in existing tables will be preserved on initialization/restart.
         """
         conn = self._get_connection()
         if not conn:
             return
         try:
             with conn.cursor() as cursor:
-                # Drop and recreate duplicate‑related tables to guarantee new schema
-                for table in ("duplicate_group_candidates", "duplicate_groups", "token_stats"):
-                    cursor.execute(f"DROP TABLE IF EXISTS {table}")
-                # Now create all tables from definitions (including media_files)
+                # Create all tables from definitions if they do not exist
                 for name, ddl in self._get_table_definitions().items():
                     cursor.execute(ddl)
             conn.close()
-            logger.info("MySQL duplicate‑related tables recreated with latest schema.")
+            logger.info("MySQL tables initialized safely without dropping existing tables.")
         except Exception as e:
             logger.error(f"Failed to create MySQL tables: {e}")
 
