@@ -2651,6 +2651,16 @@ document.addEventListener("DOMContentLoaded", () => {
     // Builds the expandable "match stats" panel for a single duplicate candidate,
     // surfacing song_title / movie_or_album / artists and the underlying scoring
     // details from stats_json (similarities, token breakdowns, gate result, etc).
+    function candStatTokenListDiff(tokensA, tokensB) {
+        if (!tokensA || !tokensA.length) return "—";
+        const setB = new Set((tokensB || []).map(t => String(t).toLowerCase()));
+        return tokensA.map(t => {
+            const isCommon = setB.has(String(t).toLowerCase());
+            const cls = isCommon ? "cand-stat-chip" : "cand-stat-chip cand-stat-chip-diff";
+            return `<span class="${cls}">${escapeHtml(String(t))}</span>`;
+        }).join(" ");
+    }
+
     function candidateStatsHtml(candidate) {
         const stats = candidate.stats_json || {};
         const artists = candidate.artists || candidate.artists_json || stats.artists || [];
@@ -2663,43 +2673,58 @@ document.addEventListener("DOMContentLoaded", () => {
         if (stats.gate_passed === true) gateHtml = `<span class="status-badge completed">PASSED</span>`;
         else if (stats.gate_passed === false) gateHtml = `<span class="status-badge failed">FAILED</span>`;
 
-        return `<div class="cand-stats-grid">
-            <div class="cand-stats-block">
-                <div class="cand-stats-block-title">Identified As</div>
-                ${candStatLine("Song Title", escapeHtml(songTitle))}
-                ${candStatLine("Movie / Album", movieOrAlbum ? escapeHtml(movieOrAlbum) : "<em>—</em>")}
-                ${candStatLine("Artists", candStatTokenList(artists))}
+        // Side-by-side token rows so differences between "this file" and the
+        // matched file jump out immediately instead of being read top-to-bottom.
+        const compareRows = [
+            ["Title Tokens", candStatTokenListDiff(stats.title_tokens_a, stats.title_tokens_b), candStatTokenListDiff(stats.title_tokens_b, stats.title_tokens_a)],
+            ["Artist Tokens", candStatTokenListDiff(stats.artist_tokens_a, stats.artist_tokens_b), candStatTokenListDiff(stats.artist_tokens_b, stats.artist_tokens_a)],
+        ];
+        if (hasMovieTokens) {
+            compareRows.push(["Movie Tokens", candStatTokenListDiff(stats.movie_tokens_a, stats.movie_tokens_b), candStatTokenListDiff(stats.movie_tokens_b, stats.movie_tokens_a)]);
+        }
+
+        return `<div class="cand-stats-wrap">
+            <div class="cand-stats-summary-row">
+                <div class="cand-stats-block">
+                    <div class="cand-stats-block-title">Identified As</div>
+                    ${candStatLine("Song Title", escapeHtml(songTitle))}
+                    ${candStatLine("Movie / Album", movieOrAlbum ? escapeHtml(movieOrAlbum) : "<em>—</em>")}
+                    ${candStatLine("Artists", candStatTokenList(artists))}
+                </div>
+                <div class="cand-stats-block">
+                    <div class="cand-stats-block-title">Match Scores</div>
+                    ${candStatLine("Overall", candStatScore(candidate.overall_score))}
+                    ${candStatLine("Title Score", candStatScore(candidate.title_score))}
+                    ${candStatLine("Movie Score", candStatScore(candidate.movie_score))}
+                    ${candStatLine("Artist Score", candStatScore(candidate.artist_score))}
+                    ${candStatLine("Confidence", escapeHtml(candidate.confidence || "—"))}
+                    ${candStatLine("Gate", gateHtml)}
+                </div>
+                <div class="cand-stats-block">
+                    <div class="cand-stats-block-title">Similarity Detail</div>
+                    ${candStatLine("Title Similarity", candStatPercent(stats.title_similarity))}
+                    ${candStatLine("Artist Similarity", candStatPercent(stats.artist_similarity))}
+                    ${candStatLine("Movie Similarity", candStatPercent(stats.movie_similarity))}
+                    ${candStatLine("Coverage (long)", candStatPercent(stats.title_coverage_long))}
+                    ${candStatLine("Coverage (short)", candStatPercent(stats.title_coverage_short))}
+                    ${candStatLine("Token Set Ratio", candStatPercent(stats.title_token_set_ratio))}
+                </div>
             </div>
-            <div class="cand-stats-block">
-                <div class="cand-stats-block-title">Match Scores</div>
-                ${candStatLine("Overall", candStatScore(candidate.overall_score))}
-                ${candStatLine("Title Score", candStatScore(candidate.title_score))}
-                ${candStatLine("Movie Score", candStatScore(candidate.movie_score))}
-                ${candStatLine("Artist Score", candStatScore(candidate.artist_score))}
-                ${candStatLine("Confidence", escapeHtml(candidate.confidence || "—"))}
-                ${candStatLine("Gate", gateHtml)}
+
+            <div class="cand-stats-compare">
+                <div class="cand-stats-block-title">Token Comparison &mdash; This File vs. Matched File</div>
+                <table class="cand-stats-compare-table">
+                    <thead><tr><th>Field</th><th>This File</th><th>Matched File</th></tr></thead>
+                    <tbody>
+                        ${compareRows.map(([label, a, b]) => `<tr><td class="cand-compare-label">${escapeHtml(label)}</td><td>${a}</td><td>${b}</td></tr>`).join("")}
+                    </tbody>
+                </table>
+                <div class="cand-stats-legend"><span class="cand-stat-chip cand-stat-chip-diff">token</span> = present on only one side</div>
             </div>
-            <div class="cand-stats-block">
-                <div class="cand-stats-block-title">Similarity Detail</div>
-                ${candStatLine("Title Similarity", candStatPercent(stats.title_similarity))}
-                ${candStatLine("Artist Similarity", candStatPercent(stats.artist_similarity))}
-                ${candStatLine("Movie Similarity", candStatPercent(stats.movie_similarity))}
-                ${candStatLine("Coverage (long)", candStatPercent(stats.title_coverage_long))}
-                ${candStatLine("Coverage (short)", candStatPercent(stats.title_coverage_short))}
-                ${candStatLine("Token Set Ratio", candStatPercent(stats.title_token_set_ratio))}
-            </div>
-            <div class="cand-stats-block cand-stats-block-wide">
-                <div class="cand-stats-block-title">Token Breakdown</div>
-                ${candStatLine("Title Tokens (this file)", candStatTokenList(stats.title_tokens_a))}
-                ${candStatLine("Title Tokens (matched)", candStatTokenList(stats.title_tokens_b))}
-                ${candStatLine("Artist Tokens (this file)", candStatTokenList(stats.artist_tokens_a))}
-                ${candStatLine("Artist Tokens (matched)", candStatTokenList(stats.artist_tokens_b))}
-                ${hasMovieTokens ? candStatLine("Movie Tokens (this file)", candStatTokenList(stats.movie_tokens_a)) : ""}
-                ${hasMovieTokens ? candStatLine("Movie Tokens (matched)", candStatTokenList(stats.movie_tokens_b)) : ""}
-            </div>
-            ${matchedIds.length ? `<div class="cand-stats-block cand-stats-block-wide">
-                <div class="cand-stats-block-title">Matched File IDs</div>
-                <div class="cand-stats-value cand-stats-mono">${matchedIds.map(id => escapeHtml(id)).join(", ")}</div>
+
+            ${matchedIds.length ? `<div class="cand-stats-footer">
+                <span class="cand-stats-footer-label">Matched File IDs</span>
+                <span class="cand-stats-mono">${matchedIds.map(id => escapeHtml(id)).join(", ")}</span>
             </div>` : ""}
         </div>`;
     }
