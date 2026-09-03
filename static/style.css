@@ -2010,6 +2010,98 @@ body {
     font-style: italic;
 }
 
+/* ==========================================
+   Duplicate candidate "match stats" expand panel
+   ========================================== */
+.cand-stats-toggle svg {
+    transition: transform 0.15s ease;
+}
+
+.cand-stats-toggle.expanded svg {
+    transform: rotate(180deg);
+}
+
+.candidate-stats-row td {
+    padding: 0 !important;
+    border-top: none !important;
+    background: transparent;
+}
+
+.candidate-stats-content {
+    background: #1a1a20;
+    border-left: 3px solid #5a5ad0;
+    border-right: 1px solid #2a2a32;
+    border-bottom: 1px solid #2a2a32;
+    border-radius: 0 0 6px 6px;
+    padding: 12px 16px 14px;
+    margin: 0 0 6px;
+}
+
+.cand-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px 22px;
+}
+
+.cand-stats-block-wide {
+    grid-column: 1 / -1;
+}
+
+.cand-stats-block-title {
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: #b0b0c0;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #2a2a32;
+}
+
+.cand-stats-row-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 3px 0;
+    font-size: 0.8rem;
+}
+
+.cand-stats-label {
+    flex: 0 0 140px;
+    color: #888896;
+}
+
+.cand-stats-value {
+    flex: 1;
+    color: #e0e0e6;
+    word-break: break-word;
+}
+
+.cand-stats-value em {
+    color: #666;
+    font-style: italic;
+}
+
+.cand-stats-mono {
+    font-family: monospace;
+    font-size: 0.72rem;
+    color: #9aa0c0;
+    word-break: break-all;
+}
+
+.cand-stat-chip {
+    display: inline-block;
+    background: #23232c;
+    border: 1px solid #34344a;
+    color: #c9c9e0;
+    border-radius: 4px;
+    padding: 1px 7px;
+    margin: 1px 3px 1px 0;
+    font-size: 0.72rem;
+    line-height: 1.6;
+    white-space: nowrap;
+}
+
 .btn-icon-llm-save {
     color: #23d160;
     border-color: #23d160;

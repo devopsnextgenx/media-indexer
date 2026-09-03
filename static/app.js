@@ -2622,6 +2622,87 @@ document.addEventListener("DOMContentLoaded", () => {
     const DUP_ICON_PLAY = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.693-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>`;
     const DUP_ICON_RENAME = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.204 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/></svg>`;
     const DUP_ICON_DELETE = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/><path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/></svg>`;
+    const DUP_ICON_STATS = `<svg fill="currentColor" viewBox="0 0 16 16" width="10" height="10"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>`;
+
+    function candStatChip(label) {
+        return `<span class="cand-stat-chip">${escapeHtml(String(label))}</span>`;
+    }
+
+    function candStatPercent(value) {
+        if (value === null || value === undefined || value === "") return "—";
+        const n = Number(value);
+        if (Number.isNaN(n)) return "—";
+        return `${Math.round(n * 100)}%`;
+    }
+
+    function candStatScore(value) {
+        return (value === null || value === undefined || value === "") ? "—" : `${value}%`;
+    }
+
+    function candStatLine(label, valueHtml) {
+        return `<div class="cand-stats-row-line"><span class="cand-stats-label">${escapeHtml(label)}</span><span class="cand-stats-value">${valueHtml}</span></div>`;
+    }
+
+    function candStatTokenList(tokens) {
+        if (!tokens || !tokens.length) return "—";
+        return tokens.map(candStatChip).join(" ");
+    }
+
+    // Builds the expandable "match stats" panel for a single duplicate candidate,
+    // surfacing song_title / movie_or_album / artists and the underlying scoring
+    // details from stats_json (similarities, token breakdowns, gate result, etc).
+    function candidateStatsHtml(candidate) {
+        const stats = candidate.stats_json || {};
+        const artists = candidate.artists || candidate.artists_json || stats.artists || [];
+        const movieOrAlbum = candidate.movie_or_album || stats.movie_or_album || null;
+        const songTitle = candidate.song_title || stats.song_title || "—";
+        const matchedIds = stats.matched_file_ids || [];
+        const hasMovieTokens = (stats.movie_tokens_a && stats.movie_tokens_a.length) || (stats.movie_tokens_b && stats.movie_tokens_b.length);
+
+        let gateHtml = "—";
+        if (stats.gate_passed === true) gateHtml = `<span class="status-badge completed">PASSED</span>`;
+        else if (stats.gate_passed === false) gateHtml = `<span class="status-badge failed">FAILED</span>`;
+
+        return `<div class="cand-stats-grid">
+            <div class="cand-stats-block">
+                <div class="cand-stats-block-title">Identified As</div>
+                ${candStatLine("Song Title", escapeHtml(songTitle))}
+                ${candStatLine("Movie / Album", movieOrAlbum ? escapeHtml(movieOrAlbum) : "<em>—</em>")}
+                ${candStatLine("Artists", candStatTokenList(artists))}
+            </div>
+            <div class="cand-stats-block">
+                <div class="cand-stats-block-title">Match Scores</div>
+                ${candStatLine("Overall", candStatScore(candidate.overall_score))}
+                ${candStatLine("Title Score", candStatScore(candidate.title_score))}
+                ${candStatLine("Movie Score", candStatScore(candidate.movie_score))}
+                ${candStatLine("Artist Score", candStatScore(candidate.artist_score))}
+                ${candStatLine("Confidence", escapeHtml(candidate.confidence || "—"))}
+                ${candStatLine("Gate", gateHtml)}
+            </div>
+            <div class="cand-stats-block">
+                <div class="cand-stats-block-title">Similarity Detail</div>
+                ${candStatLine("Title Similarity", candStatPercent(stats.title_similarity))}
+                ${candStatLine("Artist Similarity", candStatPercent(stats.artist_similarity))}
+                ${candStatLine("Movie Similarity", candStatPercent(stats.movie_similarity))}
+                ${candStatLine("Coverage (long)", candStatPercent(stats.title_coverage_long))}
+                ${candStatLine("Coverage (short)", candStatPercent(stats.title_coverage_short))}
+                ${candStatLine("Token Set Ratio", candStatPercent(stats.title_token_set_ratio))}
+            </div>
+            <div class="cand-stats-block cand-stats-block-wide">
+                <div class="cand-stats-block-title">Token Breakdown</div>
+                ${candStatLine("Title Tokens (this file)", candStatTokenList(stats.title_tokens_a))}
+                ${candStatLine("Title Tokens (matched)", candStatTokenList(stats.title_tokens_b))}
+                ${candStatLine("Artist Tokens (this file)", candStatTokenList(stats.artist_tokens_a))}
+                ${candStatLine("Artist Tokens (matched)", candStatTokenList(stats.artist_tokens_b))}
+                ${hasMovieTokens ? candStatLine("Movie Tokens (this file)", candStatTokenList(stats.movie_tokens_a)) : ""}
+                ${hasMovieTokens ? candStatLine("Movie Tokens (matched)", candStatTokenList(stats.movie_tokens_b)) : ""}
+            </div>
+            ${matchedIds.length ? `<div class="cand-stats-block cand-stats-block-wide">
+                <div class="cand-stats-block-title">Matched File IDs</div>
+                <div class="cand-stats-value cand-stats-mono">${matchedIds.map(id => escapeHtml(id)).join(", ")}</div>
+            </div>` : ""}
+        </div>`;
+    }
 
     function duplicateMetadataHtml(group, idx) {
         const candidates = group?.candidates || [];
@@ -2632,8 +2713,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 <span>${candidates.length} file${candidates.length === 1 ? "" : "s"}</span>
                 <button class="btn btn-danger btn-small" data-duplicate-action="delete-group" data-group-id="${escapeHtml(groupId)}" data-idx="${idx}" title="These files are not duplicates — remove this group">Not duplicates &mdash; delete group</button>
             </div>` +
-            `<table class="vscode-table duplicate-candidates-table"><thead><tr><th>#</th><th></th><th>File</th><th>Size</th><th>Resolution</th><th>Duration</th><th>Quality</th><th>Score</th><th>Status</th><th>Actions</th></tr></thead><tbody>` +
-            candidates.map((candidate) => {
+            `<table class="vscode-table duplicate-candidates-table"><thead><tr><th>#</th><th></th><th>File</th><th>Size</th><th>Resolution</th><th>Duration</th><th>Quality</th><th>Score</th><th>Status</th><th></th><th>Actions</th></tr></thead><tbody>` +
+            candidates.map((candidate, cIdx) => {
                 const filePath = candidate.full_path || candidate.file_path || "";
                 const status = candidate.status || "PENDING";
                 const rank = candidate.rank_in_group || "";
@@ -2642,6 +2723,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const resolution = candidate.media_resolution || candidate.quality || "—";
                 const duration = candidate.duration_formatted || "—";
                 const score = candidate.overall_score != null ? `${candidate.overall_score}%` : "—";
+                const statsRowId = `cand-stats-${idx}-${cIdx}`;
                 return `<tr>
                     <td style="padding: 5px !important;">${escapeHtml(rank)}</td>
                     <td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(candidate)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" /></td>
@@ -2652,11 +2734,15 @@ document.addEventListener("DOMContentLoaded", () => {
                     <td>${escapeHtml(quality)}</td>
                     <td title="${escapeHtml(candidate.confidence || "")}">${escapeHtml(score)}</td>
                     <td><span class="status-badge ${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span></td>
+                    <td><button class="icon-button cand-stats-toggle" data-cand-stats-toggle="${statsRowId}" title="View match stats" aria-label="View match stats">${DUP_ICON_STATS}</button></td>
                     <td><div class="row-actions">
                         <button class="icon-button" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" title="Play" aria-label="Play">${DUP_ICON_PLAY}</button>
                         <button class="icon-button" data-duplicate-action="rename" data-file-path="${escapeHtml(filePath)}" title="Rename" aria-label="Rename">${DUP_ICON_RENAME}</button>
                         <button class="icon-button icon-button-danger" data-duplicate-action="delete-file" data-file-path="${escapeHtml(filePath)}" data-idx="${idx}" title="Delete file from disk and index" aria-label="Delete file from disk and index">${DUP_ICON_DELETE}</button>
                     </div></td>
+                </tr>
+                <tr class="candidate-stats-row hidden" id="${statsRowId}">
+                    <td colspan="11"><div class="candidate-stats-content">${candidateStatsHtml(candidate)}</div></td>
                 </tr>`;
             }).join("") + `</tbody></table>`;
     }
@@ -2708,6 +2794,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     resultsBody.addEventListener("click", async (event) => {
+        const statsToggle = event.target.closest("[data-cand-stats-toggle]");
+        if (statsToggle) {
+            const row = document.getElementById(statsToggle.dataset.candStatsToggle);
+            if (row) row.classList.toggle("hidden");
+            statsToggle.classList.toggle("expanded");
+            return;
+        }
+
         const trigger = event.target.closest("[data-duplicate-action]");
         if (!trigger) return;
         const action = trigger.dataset.duplicateAction;
