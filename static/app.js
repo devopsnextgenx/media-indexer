@@ -94,6 +94,18 @@ document.addEventListener("DOMContentLoaded", () => {
     let cardSize = (SAVED_CARD_SIZE && CARD_SIZE_PX.hasOwnProperty(SAVED_CARD_SIZE)) ? SAVED_CARD_SIZE : "m";
     let libraryRequestToken = 0;    // guards against out-of-order responses when navigating fast
 
+    // Duplicate groups state
+    let duplicateGroups = [];
+    let duplicateOffset = 0;
+    const DUPLICATE_PAGE_SIZE = 20;
+    let duplicateHasMore = false;
+    let duplicateLoading = false;
+    let duplicateFilters = {
+        reviewed: "UNRESOLVED",   // default: only unresolved groups
+        status: null,             // candidate status filter: 'PENDING', 'NOT_DUPLICATE', etc.
+    };
+    let duplicateSort = { sort_by: "count", sort_dir: "desc" };
+
     function saveLibraryState() {
         localStorage.setItem("library_mount", libraryMount);
         localStorage.setItem("library_path", libraryPath);
@@ -1792,7 +1804,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     loading="lazy" 
                     onerror="this.src='${THUMB_PLACEHOLDER}'" 
                     onclick="playMedia(${idx})"
-                    style="cursor: pointer; display: inline-block; position: relative; z-index: 10;"
+                    style="cursor: pointer; display: inline-block; position: relative;"
                     />
                 </td>
                 <td class="col-details">
@@ -1800,7 +1812,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         class="file-title" 
                         title="${escapeHtml(item.normalized_title)}" 
                         onclick="playMedia(${idx})"
-                        style="cursor: pointer; position: relative; z-index: 10;"
+                        style="cursor: pointer; position: relative;"
                         >
                         ${escapeHtml(item.normalized_title)}
                     </div>
@@ -2185,6 +2197,8 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             if (renameSource === "library") {
                 loadLibrary({ reset: true });
+            } else if (renameSource === "duplicates") {
+                loadDuplicateGroups();
             } else {
                 performSearch();
             }
@@ -2298,12 +2312,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const tabBtnSearch = document.getElementById("tab-btn-search");
     const tabBtnLibrary = document.getElementById("tab-btn-library");
     const tabBtnDownloads = document.getElementById("tab-btn-downloads");
+    const tabBtnDuplicates = document.getElementById("tab-btn-duplicates");
     const tabPanelSearch = document.getElementById("tab-panel-search");
     const tabPanelLibrary = document.getElementById("tab-panel-library");
     const tabPanelDownloads = document.getElementById("tab-panel-downloads");
+    const tabPanelDuplicates = document.getElementById("tab-panel-duplicates");
 
-    const allTabBtns = [tabBtnSearch, tabBtnLibrary, tabBtnDownloads];
-    const allTabPanels = [tabPanelSearch, tabPanelLibrary, tabPanelDownloads];
+    const allTabBtns = [tabBtnSearch, tabBtnLibrary, tabBtnDownloads, tabBtnDuplicates];
+    const allTabPanels = [tabPanelSearch, tabPanelLibrary, tabPanelDownloads, tabPanelDuplicates];
 
     let downloadsPollInterval = null;
 
@@ -2324,7 +2340,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const ACTIVE_TAB_KEY = "active_tab";
-    const TAB_IDS = { search: [tabBtnSearch, tabPanelSearch], library: [tabBtnLibrary, tabPanelLibrary], downloads: [tabBtnDownloads, tabPanelDownloads] };
+    const TAB_IDS = {
+        search: [tabBtnSearch, tabPanelSearch],
+        library: [tabBtnLibrary, tabPanelLibrary],
+        downloads: [tabBtnDownloads, tabPanelDownloads],
+        duplicates: [tabBtnDuplicates, tabPanelDuplicates],
+    };
 
     function activateTab(btn, panel, persist = true) {
         allTabBtns.forEach((b) => b?.classList.toggle("active", b === btn));
@@ -2366,6 +2387,40 @@ document.addEventListener("DOMContentLoaded", () => {
         fetchDownloads();
     });
 
+    tabBtnDuplicates?.addEventListener("click", () => {
+        activateTab(tabBtnDuplicates, tabPanelDuplicates);
+        if (!duplicateGroups.length) {
+            loadDuplicateGroups(true);
+            // start observing sentinel after first load
+            setTimeout(() => {
+                const sentinel = document.getElementById("duplicates-sentinel");
+                if (sentinel) duplicateObserver.observe(sentinel);
+            }, 300);
+        }
+    });
+
+    // Duplicate filters
+    document.getElementById("dup-reviewed-filter")?.addEventListener("change", (e) => {
+        duplicateFilters.reviewed = e.target.value;
+        loadDuplicateGroups(true);
+    });
+    document.getElementById("dup-candidate-filter")?.addEventListener("change", (e) => {
+        duplicateFilters.status = e.target.value;
+        loadDuplicateGroups(true);
+    });
+    document.getElementById("duplicates-sort")?.addEventListener("change", (e) => {
+        duplicateSort.sort_by = e.target.value;
+        loadDuplicateGroups(true);
+    });
+    document.getElementById("duplicates-sort-dir")?.addEventListener("click", (e) => {
+        duplicateSort.sort_dir = duplicateSort.sort_dir === "asc" ? "desc" : "asc";
+        e.target.innerHTML = duplicateSort.sort_dir === "asc" ? "↑ Asc" : "↓ Desc";
+        loadDuplicateGroups(true);
+    });
+    document.getElementById("btn-duplicates-refresh")?.addEventListener("click", () => {
+        loadDuplicateGroups(true);
+    });
+
     // Restore whichever tab was active before the last refresh. Library is the
     // default active tab in the markup, so if nothing was saved (or the saved
     // value is invalid) we fall through to that default.
@@ -2379,7 +2434,217 @@ document.addEventListener("DOMContentLoaded", () => {
         ensureLibraryLoaded();
     } else if (tabPanelDownloads?.classList.contains("active")) {
         fetchDownloads();
+    } else if (tabPanelDuplicates?.classList.contains("active")) {
+        loadDuplicateGroups();
     }
+
+    async function loadDuplicateGroups(reset = true) {
+        if (duplicateLoading) return;
+        if (reset) {
+            duplicateOffset = 0;
+            duplicateGroups = [];
+            document.getElementById("duplicates-groups-container").innerHTML = "";
+        }
+
+        duplicateLoading = true;
+        const container = document.getElementById("duplicates-groups-container");
+
+        try {
+            const params = new URLSearchParams({
+                limit: DUPLICATE_PAGE_SIZE,
+                offset: duplicateOffset,
+                sort_by: duplicateSort.sort_by,
+                sort_dir: duplicateSort.sort_dir,
+            });
+            if (duplicateFilters.reviewed && duplicateFilters.reviewed !== "all") {
+                params.append("reviewed", duplicateFilters.reviewed);
+            }
+            if (duplicateFilters.status && duplicateFilters.status !== "all") {
+                params.append("status", duplicateFilters.status);
+            }
+            // mount and folder filters could be added later if needed
+
+            const res = await fetch(`/api/admin/duplicates/groups?${params.toString()}`);
+            if (!res.ok) throw new Error("Failed to load duplicate groups");
+            const data = await res.json();
+
+            // data: { items: groups[], total: number, unresolved_total: number }
+            const newGroups = data.items || [];
+            if (reset) {
+                duplicateGroups = newGroups;
+            } else {
+                duplicateGroups = duplicateGroups.concat(newGroups);
+            }
+            duplicateHasMore = duplicateGroups.length < data.total;
+            duplicateOffset = duplicateGroups.length;
+
+            renderDuplicateGroups(data.total, data.unresolved_total);
+
+            // update sentinel visibility: if hasMore, show sentinel; else hide
+            const sentinel = document.getElementById("duplicates-sentinel");
+            if (sentinel) {
+                sentinel.style.display = duplicateHasMore ? "block" : "none";
+            }
+        } catch (err) {
+            showToast(`Failed to load duplicate groups: ${err.message}`, "error");
+            container.innerHTML = `<div class="duplicates-empty">${escapeHtml(err.message)}</div>`;
+        } finally {
+            duplicateLoading = false;
+        }
+    }
+
+    function renderDuplicateGroups(total, unresolvedTotal) {
+        const container = document.getElementById("duplicates-groups-container");
+        if (!container) return;
+
+        if (duplicateGroups.length === 0) {
+            container.innerHTML = `<div class="duplicates-empty">No duplicate groups found matching the filters.</div>`;
+            return;
+        }
+
+        // Update counts
+        document.getElementById("duplicates-count").textContent = `${duplicateGroups.length} / ${total} groups`;
+        const unresolvedEl = document.getElementById("duplicates-unresolved-total");
+        if (unresolvedEl) {
+            unresolvedEl.textContent = `Unresolved: ${unresolvedTotal}`;
+        }
+
+        let html = "";
+        duplicateGroups.forEach((group, gIdx) => {
+            const candidates = group.candidates || [];
+            const reviewed = group.reviewed_status || "UNRESOLVED";
+            const badgeClass = reviewed === "RESOLVED" ? "completed" : "pending";
+            const activeCount = candidates.filter(c => c.status !== "NOT_DUPLICATE" && c.status !== "REJECTED").length;
+
+            html += `<div class="duplicate-group" data-group-id="${escapeHtml(group.group_id)}">`;
+            html += `<div class="duplicate-group-header">`;
+            html += `<span><strong>${escapeHtml(group.title_key || "Untitled")}</strong> &mdash; ${escapeHtml(group.mount || "?")} ${escapeHtml(group.folder_path || "")}</span>`;
+            html += `<span class="duplicate-group-meta">${candidates.length} candidates (${activeCount} active) &middot; <span class="status-badge ${badgeClass}">${escapeHtml(reviewed)}</span></span>`;
+            html += `<button class="btn btn-secondary btn-small" data-duplicate-group-action="delete-group" data-group-id="${escapeHtml(group.group_id)}">Delete group</button>`;
+            html += `</div>`;
+
+            // Candidate table
+            html += `<table class="vscode-table duplicate-candidates-table">`;
+            html += `<thead><tr><th>#</th><th></th><th>File</th><th>Size</th><th>Resolution</th><th>Duration</th><th>Score</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+            candidates.forEach((cand, cIdx) => {
+                const filePath = cand.full_path || cand.file_path || "";
+                const rank = cand.rank_in_group || "";
+                const status = cand.status || "PENDING";
+                const score = cand.overall_score != null ? `${cand.overall_score}%` : "—";
+                const sizeMb = cand.size_mb != null ? `${cand.size_mb} MB` : (cand.file_size ? `${(cand.file_size / 1024 / 1024).toFixed(2)} MB` : "—");
+                const resolution = cand.media_resolution || cand.quality || "—";
+                const duration = cand.duration_formatted || "—";
+
+                html += `<tr data-file-path="${escapeHtml(filePath)}" data-file-id="${escapeHtml(cand.file_id)}">`;
+                html += `<td>${escapeHtml(rank)}</td>`;
+                html += `<td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(cand)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" /></td>`;
+                html += `<td title="${escapeHtml(filePath)}">${escapeHtml(getRelativePath(filePath, cand.mount))}</td>`;
+                html += `<td>${escapeHtml(sizeMb)}</td>`;
+                html += `<td>${escapeHtml(resolution)}</td>`;
+                html += `<td>${escapeHtml(duration)}</td>`;
+                html += `<td>${escapeHtml(score)}</td>`;
+                html += `<td><span class="status-badge ${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span></td>`;
+                // Action buttons – reuse the existing helper, but we need to pass the correct context
+                // We'll generate them inline with data attributes.
+                html += `<td>${candidateActionButtonsHtml(cand, gIdx)}</td>`;
+                html += `</tr>`;
+            });
+            html += `</tbody></table>`;
+            html += `</div>`;
+        });
+
+        container.innerHTML = html;
+    }
+
+
+    document.getElementById("duplicates-groups-container")?.addEventListener("click", async (e) => {
+        const target = e.target.closest("[data-duplicate-action]");
+        if (!target) {
+            // check for group delete button
+            const groupDeleteBtn = e.target.closest("[data-duplicate-group-action='delete-group']");
+            if (groupDeleteBtn) {
+                const groupId = groupDeleteBtn.dataset.groupId;
+                const ok = await askConfirm({
+                    title: "Delete duplicate group",
+                    message: `Remove the entire group record? Files on disk will NOT be deleted.`,
+                    okLabel: "Delete group"
+                });
+                if (!ok) return;
+                try {
+                    const res = await fetch(`/api/admin/duplicates/group?group_id=${encodeURIComponent(groupId)}`, { method: "DELETE" });
+                    if (!res.ok) throw new Error("Failed to delete group");
+                    showToast("Group deleted.", "success");
+                    loadDuplicateGroups(true);
+                } catch (err) {
+                    showToast(`Delete failed: ${err.message}`, "error");
+                }
+            }
+            return;
+        }
+
+        const action = target.dataset.duplicateAction;
+        const filePath = target.dataset.filePath || "";
+        const fileName = filePath.split(/[\\/]/).pop() || "file";
+
+        if (action === "play") {
+            openPlayer({ file_path: filePath, file_name: fileName });
+            return;
+        }
+        if (action === "rename") {
+            openRenameModal({ file_path: filePath, file_name: fileName }, "duplicates");
+            return;
+        }
+
+        if (action === "delete-file") {
+            const ok = await askConfirm({
+                title: "Delete duplicate file",
+                message: `Permanently delete "${fileName}" from disk and remove its index, AI metadata and duplicate records?`,
+                okLabel: "Delete"
+            });
+            if (!ok) return;
+            try {
+                const res = await fetch(`/api/admin/duplicates/candidate?file_path=${encodeURIComponent(filePath)}&delete_from_disk=true`, { method: "DELETE" });
+                if (!res.ok) throw new Error("Delete failed");
+                showToast(`Deleted ${fileName}.`, "success");
+                loadDuplicateGroups(true);
+            } catch (err) {
+                showToast(`Delete failed: ${err.message}`, "error");
+            }
+            return;
+        }
+
+        if (action === "mark-not-duplicate") {
+            try {
+                const res = await fetch("/api/admin/duplicates/candidate/not-duplicate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ file_path: filePath })
+                });
+                if (!res.ok) throw new Error("Failed to mark as not duplicate");
+                showToast("Marked as not a duplicate.", "success");
+                loadDuplicateGroups(true);
+            } catch (err) {
+                showToast(`Action failed: ${err.message}`, "error");
+            }
+            return;
+        }
+
+        if (action === "undo-not-duplicate") {
+            try {
+                const res = await fetch("/api/admin/duplicates/candidate/undo-not-duplicate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ file_path: filePath })
+                });
+                if (!res.ok) throw new Error("Failed to undo");
+                showToast("Re‑added to review.", "success");
+                loadDuplicateGroups(true);
+            } catch (err) {
+                showToast(`Action failed: ${err.message}`, "error");
+            }
+            return;
+        }
+    });
 
     // Download API Handlers
     async function fetchDownloads() {
@@ -2623,6 +2888,34 @@ document.addEventListener("DOMContentLoaded", () => {
     const DUP_ICON_RENAME = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.204 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/></svg>`;
     const DUP_ICON_DELETE = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/><path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/></svg>`;
     const DUP_ICON_STATS = `<svg fill="currentColor" viewBox="0 0 16 16" width="10" height="10"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>`;
+    const DUP_ICON_NOT_DUP = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path d="M11.5 4.5a.5.5 0 0 1 0 .707l-6.293 6.293a.5.5 0 1 1-.707-.707L10.793 4.5a.5.5 0 0 1 .707 0"/></svg>`;
+    const DUP_ICON_UNDO = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path fill-rule="evenodd" d="M8 3a5 5 0 1 1-4.546 2.914.5.5 0 0 0-.908-.417A6 6 0 1 0 8 2z"/><path d="M8 4.466V.534a.25.25 0 0 0-.41-.192L5.23 2.308a.25.25 0 0 0 0 .384l2.36 1.966A.25.25 0 0 0 8 4.466"/></svg>`;
+
+    // Candidate is considered "resolved away" once marked NOT_DUPLICATE, or
+    // via the legacy REJECTED status from before this status was added.
+    function isCandidateMarkedNotDuplicate(candidate) {
+        const status = (candidate && candidate.status) || "PENDING";
+        return status === "NOT_DUPLICATE" || status === "REJECTED";
+    }
+
+    // Shared row-actions markup used both by the Media Explorer's inline
+    // duplicate expand panel and the dedicated Duplicate Review tab, so the
+    // "mark as not a duplicate" action lives in one place. This replaces the
+    // old group-level "delete group" button — marking every-but-one
+    // candidate in a group as not-duplicate is what resolves the group now.
+    function candidateActionButtonsHtml(candidate, idx) {
+        const filePath = candidate.full_path || candidate.file_path || "";
+        const idxAttr = idx !== undefined ? ` data-idx="${escapeHtml(String(idx))}"` : "";
+        const notDupBtn = isCandidateMarkedNotDuplicate(candidate)
+            ? `<button class="icon-button icon-button-success" data-duplicate-action="undo-not-duplicate" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Undo — treat as a duplicate candidate again" aria-label="Undo not-duplicate mark">${DUP_ICON_UNDO}</button>`
+            : `<button class="icon-button icon-button-warning" data-duplicate-action="mark-not-duplicate" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Mark as not a duplicate — keeps the record but stops it being reported again" aria-label="Mark not duplicate">${DUP_ICON_NOT_DUP}</button>`;
+        return `<div class="row-actions">
+            <button class="icon-button" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Play" aria-label="Play">${DUP_ICON_PLAY}</button>
+            <button class="icon-button" data-duplicate-action="rename" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Rename" aria-label="Rename">${DUP_ICON_RENAME}</button>
+            ${notDupBtn}
+            <button class="icon-button icon-button-danger" data-duplicate-action="delete-file" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Delete file from disk and index" aria-label="Delete file from disk and index">${DUP_ICON_DELETE}</button>
+        </div>`;
+    }
 
     function candStatChip(label) {
         return `<span class="cand-stat-chip">${escapeHtml(String(label))}</span>`;
@@ -2733,17 +3026,20 @@ document.addEventListener("DOMContentLoaded", () => {
         const candidates = group?.candidates || [];
         if (!candidates.length) return `<div class="duplicates-empty">No duplicate candidates are available.</div>`;
         const groupId = group.group_id || "";
+        const activeCount = candidates.filter(c => !isCandidateMarkedNotDuplicate(c)).length;
+        const reviewed = group.reviewed_status || (activeCount <= 1 ? "RESOLVED" : "UNRESOLVED");
+        const reviewedBadgeClass = reviewed === "RESOLVED" ? "status-badge completed" : "status-badge pending";
         return `<div class="duplicate-meta-header">
                 <strong>Duplicate Candidates</strong>
-                <span>${candidates.length} file${candidates.length === 1 ? "" : "s"}</span>
-                <button class="btn btn-danger btn-small" data-duplicate-action="delete-group" data-group-id="${escapeHtml(groupId)}" data-idx="${idx}" title="These files are not duplicates — remove this group">Not duplicates &mdash; delete group</button>
+                <span>${candidates.length} file${candidates.length === 1 ? "" : "s"} &middot; ${activeCount} active</span>
+                <span class="${reviewedBadgeClass}">${escapeHtml(reviewed)}</span>
+                <button class="btn btn-secondary btn-small" data-duplicate-action="delete-group" data-group-id="${escapeHtml(groupId)}" data-idx="${idx}" title="Remove this group record entirely (files on disk untouched). Use the per-file &quot;not duplicate&quot; action instead if only some files here aren't real duplicates.">Remove group record</button>
             </div>` +
             `<table class="vscode-table duplicate-candidates-table"><thead><tr><th>#</th><th></th><th>File</th><th>Size</th><th>Resolution</th><th>Duration</th><th>Quality</th><th>Score</th><th>Status</th><th></th><th>Actions</th></tr></thead><tbody>` +
             candidates.map((candidate, cIdx) => {
                 const filePath = candidate.full_path || candidate.file_path || "";
                 const status = candidate.status || "PENDING";
                 const rank = candidate.rank_in_group || "";
-                const keeper = candidate.is_primary ? ` <span class="badge-original">keep</span>` : "";
                 const quality = (candidate.resolution || "").toUpperCase() || "—";
                 const resolution = candidate.media_resolution || candidate.quality || "—";
                 const duration = candidate.duration_formatted || "—";
@@ -2760,11 +3056,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     <td title="${escapeHtml(candidate.confidence || "")}">${escapeHtml(score)}</td>
                     <td><span class="status-badge ${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span></td>
                     <td><button class="icon-button cand-stats-toggle" data-cand-stats-toggle="${statsRowId}" title="View match stats" aria-label="View match stats">${DUP_ICON_STATS}</button></td>
-                    <td><div class="row-actions">
-                        <button class="icon-button" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" title="Play" aria-label="Play">${DUP_ICON_PLAY}</button>
-                        <button class="icon-button" data-duplicate-action="rename" data-file-path="${escapeHtml(filePath)}" title="Rename" aria-label="Rename">${DUP_ICON_RENAME}</button>
-                        <button class="icon-button icon-button-danger" data-duplicate-action="delete-file" data-file-path="${escapeHtml(filePath)}" data-idx="${idx}" title="Delete file from disk and index" aria-label="Delete file from disk and index">${DUP_ICON_DELETE}</button>
-                    </div></td>
+                    <td>${candidateActionButtonsHtml(candidate, idx)}</td>
                 </tr>
                 <tr class="candidate-stats-row hidden" id="${statsRowId}">
                     <td colspan="11"><div class="candidate-stats-content">${candidateStatsHtml(candidate)}</div></td>

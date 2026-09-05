@@ -179,6 +179,7 @@ class MySQLDatabase:
         self.enabled = getattr(self.cfg, "enabled", False) if self.cfg else False
         if self.enabled:
             self._ensure_tables()
+            self._ensure_duplicate_schema_upgrades()
             self._ensure_download_tracker_table()
             self._ensure_indexing_jobs_table()
 
@@ -213,11 +214,14 @@ class MySQLDatabase:
                     member_count INT DEFAULT 0,
                     mount VARCHAR(255),
                     folder_path VARCHAR(1024),
+                    reviewed_status ENUM('UNRESOLVED','RESOLVED') DEFAULT 'UNRESOLVED',
+                    resolved_at DATETIME NULL,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     INDEX idx_mount (mount),
                     INDEX idx_scope (scope_key(255)),
-                    INDEX idx_folder (folder_path(255))
+                    INDEX idx_folder (folder_path(255)),
+                    INDEX idx_reviewed_status (reviewed_status)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """,
             "duplicate_group_candidates": """
@@ -239,7 +243,8 @@ class MySQLDatabase:
                     artist_score DECIMAL(5,1),
                     overall_score DECIMAL(5,1),
                     confidence ENUM('HIGH','MEDIUM','LOW') DEFAULT 'LOW',
-                    status ENUM('PENDING','DUPLICATE','REJECTED') DEFAULT 'PENDING',
+                    status ENUM('PENDING','DUPLICATE','REJECTED','NOT_DUPLICATE') DEFAULT 'PENDING',
+                    marked_not_duplicate_at DATETIME NULL,
                     stats_json JSON,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -248,6 +253,7 @@ class MySQLDatabase:
                     INDEX idx_mount (mount),
                     INDEX idx_file_name (file_name(255)),
                     INDEX idx_full_path (full_path(255)),
+                    INDEX idx_status (status),
                     CONSTRAINT fk_candidate_group FOREIGN KEY (group_id)
                         REFERENCES duplicate_groups(group_id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -300,6 +306,41 @@ class MySQLDatabase:
             logger.info("MySQL tables initialized safely without dropping existing tables.")
         except Exception as e:
             logger.error(f"Failed to create MySQL tables: {e}")
+
+    def _ensure_duplicate_schema_upgrades(self):
+        """Idempotent ALTERs for the duplicate-review feature (group-level
+        reviewed_status/resolved_at, candidate-level NOT_DUPLICATE status +
+        marked_not_duplicate_at). Safe to run on every startup: databases
+        created fresh already have these columns from the DDL above, so each
+        statement below simply no-ops (duplicate column/key errors are
+        swallowed) on those installs, and only actually migrates older ones.
+        """
+        conn = self._get_connection()
+        if not conn:
+            return
+        statements = [
+            "ALTER TABLE duplicate_groups ADD COLUMN reviewed_status "
+            "ENUM('UNRESOLVED','RESOLVED') DEFAULT 'UNRESOLVED'",
+            "ALTER TABLE duplicate_groups ADD COLUMN resolved_at DATETIME NULL",
+            "ALTER TABLE duplicate_groups ADD INDEX idx_reviewed_status (reviewed_status)",
+            "ALTER TABLE duplicate_group_candidates MODIFY COLUMN status "
+            "ENUM('PENDING','DUPLICATE','REJECTED','NOT_DUPLICATE') DEFAULT 'PENDING'",
+            "ALTER TABLE duplicate_group_candidates ADD COLUMN marked_not_duplicate_at DATETIME NULL",
+            "ALTER TABLE duplicate_group_candidates ADD INDEX idx_status (status)",
+        ]
+        try:
+            with conn.cursor() as cursor:
+                for stmt in statements:
+                    try:
+                        cursor.execute(stmt)
+                    except Exception as e:
+                        msg = str(e).lower()
+                        if "duplicate column" in msg or "duplicate key name" in msg:
+                            continue
+                        logger.debug(f"Duplicate-review schema upgrade skipped ({stmt[:70]}...): {e}")
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to run duplicate-review schema upgrades: {e}")
 
     def _get_connection(self):
         if not self.enabled:
@@ -523,54 +564,96 @@ class MySQLDatabase:
         """, (group_id,))
         return [self._decode_candidate(row) for row in cursor.fetchall()]
 
+    _GROUP_SORT_COLUMNS = {
+        "count": "g.member_count",
+        "member_count": "g.member_count",
+        "candidate_count": "g.member_count",
+        "updated_at": "g.updated_at",
+        "created_at": "g.created_at",
+        "title": "g.title_key",
+    }
+
     def get_duplicate_groups(self, mount: str = None, folder: str = None,
-                             status: str = None, limit: int = 100, offset: int = 0) -> list:
+                             status: str = None, reviewed: str = None,
+                             sort_by: str = "updated_at", sort_dir: str = "desc",
+                             limit: int = 100, offset: int = 0) -> dict:
         """
-        Fetch groups with optional mount/folder/status filter.
-        Returns a list of group dicts, each containing a 'candidates' list.
+        Fetch groups with optional mount/folder/candidate-status/reviewed
+        filters, sorted by `sort_by` (count/updated_at/created_at/title).
+
+        Returns {"items": [...], "total": N, "unresolved_total": M} where
+        `unresolved_total` ignores the `reviewed` filter (but still honours
+        mount/folder/status) so the UI can always show how many groups still
+        need review, independent of whatever filter is currently applied.
         """
+        empty = {"items": [], "total": 0, "unresolved_total": 0}
         if not self.enabled:
-            return []
+            return empty
         conn = self._get_connection()
         if not conn:
-            return []
+            return empty
         try:
-            group_filters = []
-            params = []
+            base_filters = []
+            base_params = []
             if mount:
-                group_filters.append("g.mount = %s")
-                params.append(mount)
+                base_filters.append("g.mount = %s")
+                base_params.append(mount)
             folder_condition = ""
             if folder:
-                folder = folder.rstrip('/') + '/%'
-                folder_condition = " AND EXISTS (SELECT 1 FROM duplicate_group_candidates c WHERE c.group_id = g.group_id AND c.full_path LIKE %s)"
-                params.append(folder)
+                folder_like = folder.rstrip('/') + '/%'
+                folder_condition = (
+                    " AND EXISTS (SELECT 1 FROM duplicate_group_candidates c "
+                    "WHERE c.group_id = g.group_id AND c.full_path LIKE %s)"
+                )
+                base_params.append(folder_like)
+            status_condition = ""
+            if status:
+                status_condition = (
+                    " AND EXISTS (SELECT 1 FROM duplicate_group_candidates c "
+                    "WHERE c.group_id = g.group_id AND c.status = %s)"
+                )
+                base_params.append(status)
 
-            query = """
-                SELECT g.*
-                FROM duplicate_groups g
-                WHERE 1=1
-            """
-            if group_filters:
-                query += " AND " + " AND ".join(group_filters)
-            if folder_condition:
-                query += folder_condition
-            query += " ORDER BY g.updated_at DESC LIMIT %s OFFSET %s"
-            params.extend([limit, offset])
+            base_where = " WHERE 1=1"
+            if base_filters:
+                base_where += " AND " + " AND ".join(base_filters)
+            base_where += folder_condition + status_condition
+
+            reviewed_condition = ""
+            reviewed_params = []
+            if reviewed in ("RESOLVED", "UNRESOLVED"):
+                reviewed_condition = " AND g.reviewed_status = %s"
+                reviewed_params.append(reviewed)
+
+            sort_column = self._GROUP_SORT_COLUMNS.get((sort_by or "").lower(), "g.updated_at")
+            sort_direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+
+            list_query = (
+                f"SELECT g.* FROM duplicate_groups g{base_where}{reviewed_condition} "
+                f"ORDER BY {sort_column} {sort_direction}, g.updated_at DESC LIMIT %s OFFSET %s"
+            )
+            count_query = f"SELECT COUNT(*) AS cnt FROM duplicate_groups g{base_where}{reviewed_condition}"
+            unresolved_query = (
+                f"SELECT COUNT(*) AS cnt FROM duplicate_groups g{base_where} "
+                "AND g.reviewed_status = 'UNRESOLVED'"
+            )
 
             with conn.cursor() as cursor:
-                cursor.execute(query, params)
+                cursor.execute(list_query, (*base_params, *reviewed_params, limit, offset))
                 groups = cursor.fetchall()
-
-                result = []
                 for grp in groups:
                     grp["candidates"] = self._fetch_candidates(cursor, grp["group_id"])
-                    result.append(grp)
+
+                cursor.execute(count_query, (*base_params, *reviewed_params))
+                total = (cursor.fetchone() or {}).get("cnt", 0)
+
+                cursor.execute(unresolved_query, tuple(base_params))
+                unresolved_total = (cursor.fetchone() or {}).get("cnt", 0)
             conn.close()
-            return result
+            return {"items": groups, "total": total, "unresolved_total": unresolved_total}
         except Exception as e:
             logger.error(f"Failed to fetch duplicate groups: {e}")
-            return []
+            return empty
 
     def get_duplicate_group_by_id(self, group_id: str) -> dict:
         """Return a single group with its candidates."""
@@ -675,6 +758,165 @@ class MySQLDatabase:
         except Exception as e:
             logger.error(f"Failed to update candidate status for {file_path}: {e}")
             return False
+
+    def _recompute_group_reviewed_status(self, cursor, group_id: str) -> str:
+        """A group is RESOLVED once at most one of its candidates is still
+        'active' (anything other than NOT_DUPLICATE/REJECTED) — a group of
+        one file can no longer be a duplicate of anything, so once a
+        reviewer has marked away every other candidate the group is done."""
+        cursor.execute(
+            "SELECT status FROM duplicate_group_candidates WHERE group_id = %s",
+            (group_id,),
+        )
+        rows = cursor.fetchall()
+        active = [r for r in rows if r["status"] not in ("NOT_DUPLICATE", "REJECTED")]
+        new_status = "RESOLVED" if len(active) <= 1 else "UNRESOLVED"
+        cursor.execute(
+            """UPDATE duplicate_groups
+               SET reviewed_status = %s,
+                   resolved_at = CASE WHEN %s = 'RESOLVED' THEN CURRENT_TIMESTAMP ELSE NULL END,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE group_id = %s""",
+            (new_status, new_status, group_id),
+        )
+        return new_status
+
+    def mark_candidate_not_duplicate(self, file_path: str) -> dict:
+        """Marks one candidate as NOT_DUPLICATE instead of deleting its row,
+        so the group/candidate record is kept for the review UI but the file
+        is excluded from being re-reported by future detection runs (see
+        `get_ignored_candidate_paths`). Recomputes the parent group's
+        reviewed_status afterwards."""
+        if not self.enabled:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        try:
+            normalized = self._normalize_path(file_path)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT group_id FROM duplicate_group_candidates WHERE full_path = %s",
+                    (normalized,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {}
+                group_id = row["group_id"]
+                cursor.execute(
+                    """UPDATE duplicate_group_candidates
+                       SET status = 'NOT_DUPLICATE', marked_not_duplicate_at = CURRENT_TIMESTAMP,
+                           updated_at = CURRENT_TIMESTAMP
+                       WHERE full_path = %s""",
+                    (normalized,),
+                )
+                updated = cursor.rowcount > 0
+                group_status = self._recompute_group_reviewed_status(cursor, group_id)
+            conn.close()
+            return {"updated": updated, "group_id": group_id, "group_reviewed_status": group_status}
+        except Exception as e:
+            logger.error(f"Failed to mark candidate not-duplicate for {file_path}: {e}")
+            return {}
+
+    def unmark_candidate_not_duplicate(self, file_path: str) -> dict:
+        """Undo: reverts a NOT_DUPLICATE (or legacy REJECTED) candidate back
+        to PENDING so it re-enters review and future detection runs."""
+        if not self.enabled:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        try:
+            normalized = self._normalize_path(file_path)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT group_id FROM duplicate_group_candidates WHERE full_path = %s",
+                    (normalized,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {}
+                group_id = row["group_id"]
+                cursor.execute(
+                    """UPDATE duplicate_group_candidates
+                       SET status = 'PENDING', marked_not_duplicate_at = NULL,
+                           updated_at = CURRENT_TIMESTAMP
+                       WHERE full_path = %s""",
+                    (normalized,),
+                )
+                updated = cursor.rowcount > 0
+                group_status = self._recompute_group_reviewed_status(cursor, group_id)
+            conn.close()
+            return {"updated": updated, "group_id": group_id, "group_reviewed_status": group_status}
+        except Exception as e:
+            logger.error(f"Failed to unmark candidate not-duplicate for {file_path}: {e}")
+            return {}
+
+    def get_ignored_candidate_paths(self, mount: str) -> set:
+        """Full paths (normalized, forward-slash) of files a reviewer has
+        marked NOT_DUPLICATE (or the legacy REJECTED) for this mount — these
+        are permanently excluded from future automatic duplicate detection
+        so a resolved decision doesn't get re-reported on the next run."""
+        if not self.enabled:
+            return set()
+        conn = self._get_connection()
+        if not conn:
+            return set()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT full_path FROM duplicate_group_candidates "
+                    "WHERE mount = %s AND status IN ('NOT_DUPLICATE','REJECTED')",
+                    (mount,),
+                )
+                paths = {row["full_path"] for row in cursor.fetchall()}
+            conn.close()
+            return paths
+        except Exception as e:
+            logger.error(f"Failed to fetch ignored candidate paths for mount {mount}: {e}")
+            return set()
+
+    def reset_active_duplicate_groups_for_mount(self, mount: str) -> int:
+        """Ahead of a fresh detection pass: clears PENDING/DUPLICATE candidate
+        rows (and any group left with none) for this mount, while preserving
+        NOT_DUPLICATE/REJECTED rows and their parent group so reviewer
+        decisions survive across runs instead of being wiped and re-reported.
+        Returns the number of candidate rows cleared."""
+        if not self.enabled:
+            return 0
+        conn = self._get_connection()
+        if not conn:
+            return 0
+        try:
+            cleared = 0
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT group_id FROM duplicate_groups WHERE mount = %s", (mount,))
+                group_ids = [row["group_id"] for row in cursor.fetchall()]
+                for group_id in group_ids:
+                    cursor.execute(
+                        "DELETE FROM duplicate_group_candidates "
+                        "WHERE group_id = %s AND status IN ('PENDING','DUPLICATE')",
+                        (group_id,),
+                    )
+                    cleared += cursor.rowcount
+                    cursor.execute(
+                        "SELECT COUNT(*) AS cnt FROM duplicate_group_candidates WHERE group_id = %s",
+                        (group_id,),
+                    )
+                    remaining = (cursor.fetchone() or {}).get("cnt", 0)
+                    if remaining == 0:
+                        cursor.execute("DELETE FROM duplicate_groups WHERE group_id = %s", (group_id,))
+                    else:
+                        cursor.execute(
+                            "UPDATE duplicate_groups SET member_count = %s, updated_at = CURRENT_TIMESTAMP "
+                            "WHERE group_id = %s",
+                            (remaining, group_id),
+                        )
+            conn.close()
+            return cleared
+        except Exception as e:
+            logger.error(f"Failed to reset active duplicate groups for mount {mount}: {e}")
+            return 0
 
     def get_file_details_by_paths(self, file_paths: list[str]) -> dict:
         """Return {normalized_path: media_files row (metadata decoded)} so

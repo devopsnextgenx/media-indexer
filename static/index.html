@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Semantic Media Explorer</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/player.css">
 </head>
 <body>
     <header class="vscode-header">
@@ -37,6 +38,7 @@
         <div class="nav-tabs">
             <button id="tab-btn-library" class="tab-btn active">Library</button>
             <button id="tab-btn-search" class="tab-btn">Media Explorer</button>
+            <button id="tab-btn-duplicates" class="tab-btn">Duplicate Review</button>
             <button id="tab-btn-downloads" class="tab-btn">Downloads Manager</button>
         </div>
 
@@ -162,6 +164,49 @@
             </section>
         </div>
 
+        <!-- Tab: Duplicate Review View -->
+        <div id="tab-panel-duplicates" class="tab-panel">
+            <div class="results-toolbar">
+                <div class="duplicates-filter-group">
+                    <label class="results-sort-label" for="dup-reviewed-filter">Status:</label>
+                    <select id="dup-reviewed-filter" class="results-sort-select">
+                        <option value="all">All Groups</option>
+                        <option value="UNRESOLVED" selected>Unresolved</option>
+                        <option value="RESOLVED">Resolved</option>
+                    </select>
+
+                    <label class="results-sort-label" for="dup-candidate-filter">Candidates:</label>
+                    <select id="dup-candidate-filter" class="results-sort-select">
+                        <option value="all">All</option>
+                        <option value="PENDING">Pending</option>
+                        <option value="NOT_DUPLICATE">Marked Not Duplicate</option>
+                        <option value="DUPLICATE">Confirmed Duplicate</option>
+                    </select>
+
+                    <button id="btn-duplicates-refresh" class="btn-icon-action" title="Refresh duplicate groups">&#8635;</button>
+                </div>
+
+                <div class="sort-controls">
+                    <span id="duplicates-count" class="results-count"></span>
+                    <span id="duplicates-unresolved-total" class="badge-unresolved"></span>
+                    <label class="results-sort-label" for="duplicates-sort">Sort by:</label>
+                    <select id="duplicates-sort" class="results-sort-select">
+                        <option value="count">Candidate Count</option>
+                        <option value="updated_at">Last Updated</option>
+                        <option value="title">Title</option>
+                    </select>
+                    <button id="duplicates-sort-dir" class="btn btn-secondary" data-dir="desc">&#8595; Desc</button>
+                </div>
+            </div>
+
+            <section class="results-container">
+                <div id="duplicates-groups-container" class="duplicate-groups-container">
+                    <div class="empty-state">Open this tab to load duplicate groups.</div>
+                </div>
+                <div id="duplicates-sentinel" class="library-sentinel" style="display: block;"></div>
+            </section>
+        </div>
+
         <!-- Tab: Downloads View -->
         <div id="tab-panel-downloads" class="tab-panel">
             <div class="results-toolbar">
@@ -261,7 +306,7 @@
 
             <label class="modal-label">Or edit the name yourself</label>
             <div class="input-row">
-                <button id="rename-apply" class="btn btn-accent" title="Rename using the name you typed">Rename</button>
+                <button id="rename-apply" class="btn btn-primary" title="Rename using the name you typed">Rename</button>
                 <input type="text" id="rename-input" placeholder="new-file-name.mkv" />
             </div>
 
@@ -311,7 +356,7 @@
                 <span id="player-duration" class="player-time">00:00</span>
 
                 <button id="player-mute" class="player-btn" title="Mute / Unmute">&#128266;</button>
-                <input type="range" id="player-volume" class="player-range player-volume" value="1" min="0" max="1" step="0.01" />
+                <input type="range" id="player-volume" class="player-range player-volume" value="0.15" min="0" max="1" step="0.01" />
 
                 <button id="player-fullscreen" class="player-btn" title="Fullscreen">&#9974;</button>
             </div>

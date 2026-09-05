@@ -301,6 +301,11 @@ class DuplicateDetector:
         if not files_map:
             return []
 
+        # Files a reviewer has already marked "not a duplicate" are excluded
+        # entirely so a resolved decision doesn't get re-clustered and
+        # re-reported on the next detection run.
+        ignored_paths = mysql_db_instance.get_ignored_candidate_paths(mount_name)
+
         names_by_rel = {
             rel_path: os.path.basename(rel_path)
             for rel_path, rec in files_map.items()
@@ -310,7 +315,12 @@ class DuplicateDetector:
 
         entries: List[TrackEntry] = []
         skipped = 0
+        ignored = 0
         for rel_path, file_name in names_by_rel.items():
+            full_path = os.path.join(mount_path, rel_path).replace("\\", "/")
+            if full_path in ignored_paths:
+                ignored += 1
+                continue
             meta = metadata.get(mysql_db_instance._normalize_file_key(file_name))
             if not meta or not (meta.get("song_title") or "").strip():
                 skipped += 1
@@ -318,7 +328,7 @@ class DuplicateDetector:
             rec = files_map[rel_path]
             entry = build_entry(
                 file_id=rec.get("id") or rec.get("vector_id"),
-                full_path=os.path.join(mount_path, rel_path).replace("\\", "/"),
+                full_path=full_path,
                 relative_path=rel_path,
                 file_size=rec.get("file_size") or 0,
                 llm_meta=meta,
@@ -330,6 +340,11 @@ class DuplicateDetector:
 
         if skipped:
             logger.info(f"Mount {mount_name}: skipped {skipped} files without usable LLM metadata")
+        if ignored:
+            logger.info(
+                f"Mount {mount_name}: skipped {ignored} files previously marked "
+                "'not a duplicate' by a reviewer"
+            )
         return entries
 
     def detect_for_mount(self, mount_name: str, mount_path: str):
@@ -342,9 +357,13 @@ class DuplicateDetector:
             logger.info(f"Mount {mount_name}: fewer than 2 LLM-parsed files, nothing to compare")
             return
 
-        deleted = mysql_db_instance.delete_duplicate_groups_for_mount(mount_name)
-        if deleted:
-            logger.info(f"Deleted {deleted} existing duplicate groups for mount {mount_name}")
+        # Clear only the still-active (PENDING/DUPLICATE) candidate rows ahead
+        # of recomputation; groups/candidates a reviewer already marked
+        # NOT_DUPLICATE (or the legacy REJECTED) are left untouched so that
+        # decision — and the group it belongs to — survives across runs.
+        cleared = mysql_db_instance.reset_active_duplicate_groups_for_mount(mount_name)
+        if cleared:
+            logger.info(f"Cleared {cleared} pending/duplicate candidate rows for mount {mount_name}")
 
         scopes: Dict[str, List[TrackEntry]] = defaultdict(list)
         for entry in entries:

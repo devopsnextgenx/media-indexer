@@ -1,0 +1,463 @@
+/* =====================================================================
+   LIQUID GLASS THEME — SINGLE SOURCE OF TRUTH
+   =====================================================================
+   Every glass surface (shell, topbar, controls, buttons, badges) reads
+   its color/blur/radius from the tokens below. Do NOT hardcode a new
+   background/backdrop-filter/border-radius on a glass element elsewhere
+   in the stylesheet — edit the token instead, or a future rule with
+   higher specificity (or one that loads later) will silently override
+   this theme and the "no glass effect" bug will come back.
+
+   RADIUS: kept intentionally small (2-4px). This is a deliberate
+   choice for this player — do not "round it up" to the bigger
+   12-20px pill radii sometimes associated with Liquid Glass; that is
+   not this component's style.
+
+   NESTED BACKDROP-FILTER WARNING:
+   .player-overlay (fixed, full-screen) already applies its own
+   backdrop-filter/blur to whatever is behind the player, and
+   .player-shell applies a second one on top of that. Keep bar alphas
+   low so this doesn't compound into a dark plate.
+
+   WHY THE BARS SHOWED NO VIDEO THROUGH THEM (root cause, fixed below):
+   .player-shell used flex-direction: column, so topbar / video /
+   controls were laid out as three separate, non-overlapping rows —
+   the video was never physically behind the topbar or controls.
+   backdrop-filter can only blur what is actually behind an element's
+   box; with nothing but the shell's own background behind the bars,
+   no amount of lowering opacity will ever reveal video through them.
+   The fix: #player-video is now absolutely positioned to fill the
+   ENTIRE shell (inset: 0), and .player-topbar / .player-controls are
+   absolutely positioned on top of it (top:0 / bottom:0) so they
+   genuinely overlap the video and backdrop-filter has real frames to
+   sample. Do NOT put .player-shell back to a plain flex column with
+   video/bars as separate stacked rows — that regresses this bug. */
+
+
+:root {
+    /* ---------- Liquid Glass tokens ---------- */
+    --glass-radius-lg: 4px;   /* shell / large panels — DO NOT increase */
+    --glass-radius: 3px;      /* bars, badges — DO NOT increase */
+    --glass-radius-sm: 2px;   /* small chips, buttons — DO NOT increase */
+
+    --glass-blur: 2px;
+    --glass-blur-sm: 2px;
+    --glass-saturate: 120%;
+
+    --apple-ease: cubic-bezier(0.28, 0.85, 0.35, 1);
+
+    /* Neutral glass surfaces (adapt via opacity, not hue).
+       Keep these alphas LOW — see NESTED BACKDROP-FILTER WARNING above.
+       Raising them is the #1 way this theme silently turns "dark/opaque". */
+    --glass-fill: rgba(255, 255, 255, 0.12);
+    --glass-fill-strong: rgba(255, 255, 255, 0.22);
+    --glass-fill-weak: rgba(255, 255, 255, 0.07);
+    --glass-stroke: rgba(255, 255, 255, 0.30);
+    --glass-stroke-soft: rgba(255, 255, 255, 0.16);
+    --glass-highlight: rgba(255, 255, 255, 0.6);
+    --glass-shadow: rgba(0, 0, 0, 0.35);
+
+    /* Bars: this is the "how frosted" dial. 10-20% white as requested. */
+    --shell-bg: rgba(255, 255, 255, 0.06);
+    --bar-bg: rgba(255, 255, 255, 0.08);
+
+    --accent: #0a84ff; /* macOS system blue, used sparingly for active state */
+    --text-primary: #f5f5f7;
+    --text-secondary: rgba(245, 245, 247, 0.62);
+}
+
+/* ---------- Fullscreen ----------
+   Same absolute-overlay layout as windowed mode (see shell rule above) —
+   just full-viewport sizing. Do not reintroduce flex/height rules on
+   #player-video here; it must stay inset:0 so the bars keep overlapping
+   real video pixels. */
+.player-shell:fullscreen,
+.player-shell:-webkit-full-screen {
+    width: 100vw;
+    height: 100vh;
+    max-width: none;
+    border: none;
+    border-radius: 0;
+    background: #000;
+    position: relative;
+}
+
+.player-shell.chrome-hidden #player-video {
+    cursor: none;
+}
+
+/* Auto-hide chrome in fullscreen (JS toggles .chrome-hidden on .player-shell
+   after 3s idle — see app.js showChrome()). This is the rule that actually
+   hides the bars; without it the JS class was added/removed with no visible
+   effect beyond the cursor. pointer-events:none so a "hidden" bar can't
+   still intercept hover/click while invisible. */
+.player-topbar,
+.player-controls {
+    opacity: 1;
+    transition: opacity 0.4s var(--apple-ease);
+}
+
+.player-shell.chrome-hidden .player-topbar,
+.player-shell.chrome-hidden .player-controls {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* ---------- Overlay: frosted glass scrim ---------- */
+.player-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.15);
+    -webkit-backdrop-filter: blur(1px) saturate(120%);
+    backdrop-filter: blur(1px) saturate(120%);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.player-overlay.hidden {
+    display: none;
+}
+
+/* ---------- Shell: the liquid glass panel ----------
+   position: relative is REQUIRED here — #player-video and the bars
+   below are position: absolute against this element. Do not switch
+   this back to display:flex column layout for video/topbar/controls;
+   see the WHY THE BARS SHOWED NO VIDEO note at the top of this file. */
+.player-shell {
+    position: relative;
+    width: min(1100px, 75vw);
+    height: 75vh;
+    background: var(--shell-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    border: 1px solid var(--glass-stroke-soft);
+    border-radius: var(--glass-radius-lg);
+    overflow: hidden;
+    isolation: isolate;
+    box-shadow:
+        0 24px 60px var(--glass-shadow),
+        0 1px 0 var(--glass-highlight) inset,
+        0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+}
+
+/* Subtle top specular sheen typical of liquid-glass surfaces */
+.player-shell::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.10) 0%, rgba(255, 255, 255, 0) 22%);
+    mix-blend-mode: overlay;
+}
+
+/* ---------- Seek badge ---------- */
+.player-seek-badge {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--glass-fill);
+    -webkit-backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    color: var(--text-primary);
+    font-size: 1.25rem;
+    font-weight: 600;
+    padding: 10px 20px;
+    border-radius: var(--glass-radius-sm);
+    border: 1px solid var(--glass-stroke);
+    box-shadow: 0 8px 24px var(--glass-shadow), 0 1px 0 var(--glass-highlight) inset;
+    pointer-events: none;
+    z-index: 1005;
+    transition: opacity 0.15s ease-in-out;
+}
+
+.player-seek-badge.left {
+    left: 8%;
+}
+
+.player-seek-badge.right {
+    right: 8%;
+}
+
+.player-seek-badge.hidden {
+    opacity: 0;
+    display: none;
+}
+
+/* ---------- Titlebar: liquid glass, neutral ----------
+   Uses --bar-bg (low alpha, near-white) + --glass-blur/--glass-saturate
+   from :root. There is only ONE .player-topbar rule in this file — do
+   not add a second one lower in the cascade (a duplicate rule further
+   down the file is exactly what silently killed the glass effect
+   before). If this needs to look different, edit the tokens above,
+   not this block. */
+.player-topbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 2;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--bar-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    border-bottom: 1px solid var(--glass-stroke-soft);
+    box-shadow: 0 1px 0 var(--glass-highlight) inset;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+#player-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.2px;
+}
+
+.player-meta {
+    margin-left: auto;
+    white-space: nowrap;
+    color: var(--text-secondary);
+    background: var(--glass-fill-weak);
+    -webkit-backdrop-filter: blur(var(--glass-blur-sm));
+    backdrop-filter: blur(var(--glass-blur-sm));
+    border: 1px solid var(--glass-stroke-soft);
+    padding: 2px 10px;
+    border-radius: var(--glass-radius-sm);
+    font-size: 11px;
+    font-weight: 500;
+    flex: 0 0 auto;
+    box-shadow: 0 1px 0 var(--glass-highlight) inset;
+}
+
+#player-close {
+    background: var(--glass-fill);
+    -webkit-backdrop-filter: blur(var(--glass-blur-sm));
+    backdrop-filter: blur(var(--glass-blur-sm));
+    color: var(--text-primary);
+    border: 1px solid var(--glass-stroke-soft);
+    border-radius: var(--glass-radius-sm);
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 1px 0 var(--glass-highlight) inset, 0 1px 2px var(--glass-shadow);
+    transition: background 0.18s var(--apple-ease), border-color 0.18s var(--apple-ease),
+        transform 0.15s var(--apple-ease), box-shadow 0.18s var(--apple-ease);
+}
+
+#player-close:hover {
+    background: rgba(255, 69, 58, 0.85);
+    color: #ffffff;
+    border-color: rgba(255, 69, 58, 0.9);
+    box-shadow: 0 0 14px rgba(255, 69, 58, 0.45), 0 1px 0 var(--glass-highlight) inset;
+    transform: scale(1.06);
+}
+
+#player-close:active {
+    transform: scale(0.92);
+    transition-duration: 0.08s;
+}
+
+/* #player-video fills the ENTIRE shell — this is what makes the bars'
+   backdrop-filter actually show video through them (see file header). */
+#player-video {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+    z-index: 0;
+}
+
+/* ---------- Control bar: liquid glass, neutral ----------
+   Same --bar-bg token as .player-topbar so both bars stay visually
+   consistent. Keep the alpha on --bar-bg low: this element sits on
+   top of .player-shell's backdrop-filter, which itself sits on top
+   of .player-overlay's backdrop-filter — three stacked blurs. Adding
+   any extra dark/opaque background here (instead of adjusting the
+   token) will look disproportionately darker than expected because
+   of that stacking, not because the color value itself is wrong. */
+.player-controls {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bar-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    border-top: 1px solid var(--glass-stroke-soft);
+    box-shadow: 0 1px 0 var(--glass-highlight) inset;
+}
+
+/* ---------- Liquid Glass buttons (pill, neutral, specular) ---------- */
+.player-btn {
+    background: var(--glass-fill);
+    -webkit-backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    color: var(--text-primary);
+    border: 1px solid var(--glass-stroke-soft);
+    border-radius: var(--glass-radius-sm);
+    padding: 7px 14px;
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 1px 2px var(--glass-shadow), 0 1px 0 var(--glass-highlight) inset;
+    transition: background 0.18s var(--apple-ease), border-color 0.18s var(--apple-ease),
+        color 0.18s var(--apple-ease), transform 0.15s var(--apple-ease),
+        box-shadow 0.18s var(--apple-ease);
+}
+
+.player-btn:hover {
+    background: var(--glass-fill-strong);
+    border-color: var(--glass-stroke);
+    color: #ffffff;
+    transform: translateY(-1px) scale(1.03);
+    box-shadow: 0 6px 16px var(--glass-shadow), 0 1px 0 var(--glass-highlight) inset;
+}
+
+.player-btn:active {
+    transform: scale(0.94);
+    transition-duration: 0.08s;
+    box-shadow: 0 1px 2px var(--glass-shadow) inset;
+}
+
+/* Active/toggled state — single system-accent tint, consistent across all toggle buttons */
+.player-btn.active {
+    background: rgba(10, 132, 255, 0.28);
+    color: #cfe6ff;
+    border-color: rgba(10, 132, 255, 0.55);
+    box-shadow: 0 0 14px rgba(10, 132, 255, 0.35), 0 1px 0 var(--glass-highlight) inset;
+}
+
+/* Primary action (play/pause) — same glass language, slightly stronger fill */
+#player-play {
+    background: var(--glass-fill-strong);
+    -webkit-backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    color: #ffffff;
+    border: 1px solid var(--glass-stroke);
+    font-size: 16px;
+    padding: 8px 20px;
+    border-radius: var(--glass-radius-sm);
+    font-weight: 600;
+    box-shadow: 0 1px 2px var(--glass-shadow), 0 1px 0 var(--glass-highlight) inset;
+}
+
+#player-play:hover {
+    background: rgba(255, 255, 255, 0.26);
+    box-shadow: 0 8px 20px var(--glass-shadow), 0 1px 0 var(--glass-highlight) inset;
+    transform: translateY(-1px) scale(1.05);
+}
+
+#player-play:active {
+    transform: scale(0.94);
+    transition-duration: 0.08s;
+}
+
+/* All secondary controls share the same neutral hover — no per-button hue */
+#player-shuffle:hover,
+#player-loop:hover,
+#player-prev:hover,
+#player-next:hover,
+#player-mute:hover,
+#player-fullscreen:hover {
+    color: #ffffff;
+    border-color: var(--glass-stroke);
+    background: var(--glass-fill-strong);
+}
+
+#player-shuffle.active,
+#player-loop.active {
+    background: rgba(10, 132, 255, 0.28);
+    color: #cfe6ff;
+    border-color: rgba(10, 132, 255, 0.55);
+    box-shadow: 0 0 14px rgba(10, 132, 255, 0.35), 0 1px 0 var(--glass-highlight) inset;
+}
+
+.player-time {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    min-width: 52px;
+    text-align: center;
+}
+
+/* ---------- Scrubber: macOS-style glass track ---------- */
+.player-range {
+    flex: 1;
+    appearance: none;
+    -webkit-appearance: none;
+    height: 5px;
+    border-radius: var(--glass-radius-sm);
+    background: var(--glass-fill);
+    cursor: pointer;
+    outline: none;
+    transition: background 0.2s ease;
+}
+
+.player-range:hover {
+    background: var(--glass-fill-strong);
+}
+
+.player-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: none;
+    box-shadow: 0 1px 4px var(--glass-shadow), 0 0 0 1px rgba(0, 0, 0, 0.05);
+    cursor: pointer;
+    transition: transform 0.15s var(--apple-ease), box-shadow 0.15s var(--apple-ease);
+}
+
+.player-range::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+    box-shadow: 0 2px 6px var(--glass-shadow);
+}
+
+.player-range::-webkit-slider-thumb:active {
+    transform: scale(0.95);
+}
+
+.player-range::-moz-range-thumb {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: none;
+    box-shadow: 0 1px 4px var(--glass-shadow);
+    cursor: pointer;
+    transition: transform 0.15s var(--apple-ease), box-shadow 0.15s var(--apple-ease);
+}
+
+.player-volume {
+    flex: 0 0 110px;
+}

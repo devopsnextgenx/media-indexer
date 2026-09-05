@@ -919,17 +919,20 @@ def _enrich_candidates(candidates: list) -> list:
 def list_duplicate_groups(
     mount: str = Query(None),
     folder: str = Query(None, description="Filter by folder path prefix (e.g. /media/storage/songs/Artist)"),
-    status: str = Query(None, regex="^(PENDING|DUPLICATE|REJECTED)$"),  # candidate status
+    status: str = Query(None, regex="^(PENDING|DUPLICATE|REJECTED|NOT_DUPLICATE)$"),  # candidate status
+    reviewed: str = Query(None, regex="^(RESOLVED|UNRESOLVED)$", description="Filter by group reviewed status"),
+    sort_by: str = Query("updated_at", regex="^(count|member_count|candidate_count|updated_at|created_at|title)$"),
+    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
-    groups = mysql_db_instance.get_duplicate_groups(
-        mount=mount, folder=folder, status=status, limit=limit, offset=offset
+    result = mysql_db_instance.get_duplicate_groups(
+        mount=mount, folder=folder, status=status, reviewed=reviewed,
+        sort_by=sort_by, sort_dir=sort_dir, limit=limit, offset=offset
     )
-    for group in groups:
+    for group in result.get("items") or []:
         _enrich_candidates(group.get("candidates") or [])
-    # Optionally compute total count without limit/offset for pagination metadata
-    return {"items": groups, "total": len(groups)}
+    return result
 
 
 @app.get("/api/admin/duplicates/group", tags=["Admin"])
@@ -983,7 +986,10 @@ def delete_duplicate_candidate(
 def get_duplicates_for_folder(
     mount: str = Query(...),
     path: str = Query(""),
-    status: str = Query(None, regex="^(PENDING|DUPLICATE|REJECTED)$"),
+    status: str = Query(None, regex="^(PENDING|DUPLICATE|REJECTED|NOT_DUPLICATE)$"),
+    reviewed: str = Query(None, regex="^(RESOLVED|UNRESOLVED)$"),
+    sort_by: str = Query("updated_at", regex="^(count|member_count|candidate_count|updated_at|created_at|title)$"),
+    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
@@ -991,12 +997,13 @@ def get_duplicates_for_folder(
     if not mnt:
         raise HTTPException(status_code=404, detail="Mount not found")
     folder_path = os.path.join(mnt.path, path).replace("\\", "/")
-    groups = mysql_db_instance.get_duplicate_groups(
-        mount=mount, folder=folder_path, status=status, limit=limit, offset=offset
+    result = mysql_db_instance.get_duplicate_groups(
+        mount=mount, folder=folder_path, status=status, reviewed=reviewed,
+        sort_by=sort_by, sort_dir=sort_dir, limit=limit, offset=offset
     )
-    for group in groups:
+    for group in result.get("items") or []:
         _enrich_candidates(group.get("candidates") or [])
-    return {"items": groups, "total": len(groups)}
+    return result
 
 @app.get("/api/admin/duplicates/file", tags=["Admin"])
 def get_duplicates_for_file(
@@ -1022,6 +1029,43 @@ def update_duplicate_action(body: dict):
     if not success:
         raise HTTPException(status_code=404, detail="Candidate not found or update failed")
     return {"status": "updated", "file_path": file_path, "new_status": action}
+
+@app.post("/api/admin/duplicates/candidate/not-duplicate", tags=["Admin"])
+def mark_duplicate_candidate_not_duplicate(body: dict):
+    """Marks a single candidate as NOT_DUPLICATE instead of deleting its row:
+    the group/candidate record is kept for the review UI, but the file is
+    excluded from all future duplicate-detection runs so it stops being
+    reported once a reviewer has decided it isn't actually a duplicate.
+    If this was the last active candidate in the group, the group is
+    flagged RESOLVED."""
+    file_path = body.get("file_path")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="Missing file_path")
+    resolved_path = get_mount_path(file_path)
+    result = mysql_db_instance.mark_candidate_not_duplicate(resolved_path)
+    if not result:
+        result = mysql_db_instance.mark_candidate_not_duplicate(file_path)
+    if not result:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    return {"status": "updated", "file_path": file_path, "new_status": "NOT_DUPLICATE", **result}
+
+
+@app.post("/api/admin/duplicates/candidate/undo-not-duplicate", tags=["Admin"])
+def undo_duplicate_candidate_not_duplicate(body: dict):
+    """Reverts a NOT_DUPLICATE (or legacy REJECTED) candidate back to
+    PENDING, so it re-enters review and will be picked up again by future
+    duplicate-detection runs."""
+    file_path = body.get("file_path")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="Missing file_path")
+    resolved_path = get_mount_path(file_path)
+    result = mysql_db_instance.unmark_candidate_not_duplicate(resolved_path)
+    if not result:
+        result = mysql_db_instance.unmark_candidate_not_duplicate(file_path)
+    if not result:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    return {"status": "updated", "file_path": file_path, "new_status": "PENDING", **result}
+
 
 @app.post("/api/admin/duplicates/detect", tags=["Admin"])
 def trigger_duplicate_detection(mount: str = Query(None)):

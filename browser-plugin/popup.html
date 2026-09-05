@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <title>Media Indexer Companion</title>
     <link rel="stylesheet" href="popup.css">
 </head>
+
 <body>
     <header class="vscode-header">
         <div class="logo"><span>VS</span> Media Indexer</div>
@@ -34,12 +36,10 @@
         <button id="settings-save" class="btn btn-primary">Save</button>
     </section>
 
-    <!-- ------------ Download ------------ -->
+    <!-- Download panel -->
     <section class="panel panel-download">
         <div class="panel-title">Download</div>
-
         <div class="page-url" id="page-url">Reading current tab...</div>
-
         <div class="field-row">
             <div class="field">
                 <label class="field-label" for="media-type">Type</label>
@@ -81,7 +81,8 @@
 
         <div class="field">
             <label class="field-label">Download Entry</label>
-            <div id="download-entry-preview" class="suggestion-text entry-text clickable-entry" title="Click to copy download entry">
+            <div id="download-entry-preview" class="suggestion-text entry-text clickable-entry"
+                title="Click to copy download entry">
                 Select resolution / metadata
             </div>
         </div>
@@ -98,7 +99,7 @@
         <div id="job-status" class="job-status hidden"></div>
     </section>
 
-    <!-- ------------ Library search ------------ -->
+    <!-- Search panel -->
     <section class="panel panel-search">
         <div class="panel-title">Search library</div>
         <div class="search-box">
@@ -110,8 +111,50 @@
         </div>
     </section>
 
+    <!-- Toast container -->
     <div id="toast-container" class="toast-container"></div>
+
+    <!-- ========== Overlay Player (copied from app.js) ========== -->
+    <div id="player-overlay" class="player-overlay hidden">
+        <div class="player-shell">
+            <!-- seek badge for arrow keys -->
+            <div id="player-seek-badge" class="player-seek-badge hidden"></div>
+
+            <!-- top bar -->
+            <div class="player-topbar">
+                <span id="player-title">Now Playing</span>
+                <span id="player-meta" class="player-meta"></span>
+                <button id="player-close" class="player-close-btn" title="Close">&times;</button>
+            </div>
+
+            <!-- video element -->
+            <video id="player-video" class="player-video" controlslist="nodownload noremoteplayback"
+                playsinline></video>
+
+            <!-- controls -->
+            <div class="player-controls">
+                <button id="player-shuffle" class="player-btn" title="Shuffle" aria-label="Shuffle">&#8646;</button>
+                <button id="player-prev" class="player-btn" title="Previous" aria-label="Previous">&#9194;</button>
+                <button id="player-play" class="player-btn player-play-btn" title="Play / Pause"
+                    aria-label="Play">&#9654;</button>
+                <button id="player-next" class="player-btn" title="Next" aria-label="Next">&#9195;</button>
+                <button id="player-loop" class="player-btn" title="Loop" aria-label="Loop">&#128257;</button>
+
+                <span id="player-current" class="player-time">00:00</span>
+                <input type="range" id="player-progress" class="player-range" min="0" max="0" value="0" step="0.1" />
+                <span id="player-duration" class="player-time">00:00</span>
+
+                <button id="player-mute" class="player-btn" title="Mute" aria-label="Mute">&#128266;</button>
+                <input type="range" id="player-volume" class="player-range player-volume" min="0" max="1" step="0.05"
+                    value="0.4" />
+
+                <button id="player-fullscreen" class="player-btn" title="Fullscreen"
+                    aria-label="Fullscreen">&#9711;</button>
+            </div>
+        </div>
+    </div>
 
     <script src="popup.js"></script>
 </body>
+
 </html>
