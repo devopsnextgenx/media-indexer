@@ -117,6 +117,7 @@ class MediaActions:
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)
+                logger.info(f"Deleted file from disk: {file_path}")
             except FileNotFoundError as e:
                 logger.warning(f"File already missing during delete (race or prior removal): {file_path}")
             except Exception as e:
