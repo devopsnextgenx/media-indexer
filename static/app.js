@@ -1673,6 +1673,13 @@ document.addEventListener("DOMContentLoaded", () => {
             togglePlay();
         }
         if (e.key === "f" || e.key === "F") toggleFullscreen();
+        if (e.key === "n" || e.key === "N" || e.key === "p" || e.key === "P") {
+            const isInputTarget = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target?.tagName);
+            if (!isInputTarget) {
+                e.preventDefault();
+                if (e.key === "n" || e.key === "N") nextTrack(); else prevTrack();
+            }
+        }
         if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
             const isInputTarget = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target?.tagName);
             if (!isInputTarget) {
@@ -2555,7 +2562,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 html += `<tr data-file-path="${escapeHtml(filePath)}" data-file-id="${escapeHtml(cand.file_id)}">`;
                 html += `<td>${escapeHtml(rank)}</td>`;
-                html += `<td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(cand)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" data-resolution="${escapeHtml(resolution === "—" ? "" : resolution)}" data-size="${escapeHtml(sizeMb === "—" ? "" : sizeMb)}" /></td>`;
+                html += `<td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(cand)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" data-idx="${gIdx}" data-resolution="${escapeHtml(resolution === "—" ? "" : resolution)}" data-size="${escapeHtml(sizeMb === "—" ? "" : sizeMb)}" /></td>`;
                 html += `<td title="${escapeHtml(filePath)}">${escapeHtml(getRelativePath(filePath, cand.mount))}</td>`;
                 html += `<td>${escapeHtml(sizeMb)}<br/>${escapeHtml(dateTimeFormat(mtime))}</td>`;
                 html += `<td>${escapeHtml(resolution)}</td>`;
@@ -2603,14 +2610,20 @@ document.addEventListener("DOMContentLoaded", () => {
         const action = target.dataset.duplicateAction;
         const filePath = target.dataset.filePath || "";
         const fileName = filePath.split(/[\\/]/).pop() || "file";
+        const idx = target.dataset.idx;
 
         if (action === "play") {
-            openPlayer({
-                file_path: filePath,
-                file_name: fileName,
-                resolution: target.dataset.resolution || "",
-                size_human: target.dataset.size || "",
-            });
+            const group = idx !== undefined ? duplicateGroups[Number(idx)] : null;
+            if (group && group.candidates && group.candidates.length > 1) {
+                playDuplicateGroup(group.candidates, filePath);
+            } else {
+                openPlayer({
+                    file_path: filePath,
+                    file_name: fileName,
+                    resolution: target.dataset.resolution || "",
+                    size_human: target.dataset.size || "",
+                });
+            }
             return;
         }
         if (action === "rename") {
@@ -2907,6 +2920,36 @@ document.addEventListener("DOMContentLoaded", () => {
         return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
     }
 
+    // Build a player-ready playlist from every candidate in a duplicate group, so
+    // Next/Prev buttons (and n/p keys) can step through all copies of that file.
+    function buildDuplicatePlaylist(candidates, filePath) {
+        const playlist = (candidates || [])
+            .map((cand) => {
+                const path = cand.full_path || cand.file_path || "";
+                if (!path) return null;
+                const resolution = cand.media_resolution || cand.quality || "";
+                const sizeHuman = candidateSizeMb(cand);
+                return {
+                    file_path: path,
+                    file_name: path.split(/[\\/]+/).pop() || "file",
+                    resolution,
+                    size_human: sizeHuman === "—" ? "" : sizeHuman,
+                };
+            })
+            .filter(Boolean);
+        let index = playlist.findIndex((it) => it.file_path === filePath);
+        if (index < 0) index = 0;
+        return { playlist, index };
+    }
+
+    // Opens the player queued with every file in the duplicate group, starting on
+    // whichever candidate was clicked, instead of just the single file.
+    function playDuplicateGroup(candidates, filePath) {
+        const { playlist, index } = buildDuplicatePlaylist(candidates, filePath);
+        if (!playlist.length) return;
+        openPlayer(playlist[index], playlist, index);
+    }
+
     const DUP_ICON_PLAY = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.693-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>`;
     const DUP_ICON_RENAME = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.204 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/></svg>`;
     const DUP_ICON_DELETE = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/><path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/></svg>`;
@@ -3074,7 +3117,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const statsRowId = `cand-stats-${idx}-${cIdx}`;
                 return `<tr>
                     <td style="padding: 5px !important;">${escapeHtml(rank)}</td>
-                    <td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(candidate)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" data-resolution="${escapeHtml(resolution === "—" ? "" : resolution)}" data-size="${escapeHtml(candidateSizeMb(candidate) === "—" ? "" : candidateSizeMb(candidate))}" /></td>
+                    <td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(candidate)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" data-idx="${idx}" data-resolution="${escapeHtml(resolution === "—" ? "" : resolution)}" data-size="${escapeHtml(candidateSizeMb(candidate) === "—" ? "" : candidateSizeMb(candidate))}" /></td>
                     <td title="${escapeHtml(filePath)}">${escapeHtml(getRelativePath(filePath, candidate.mount))}</td>
                     <td>${escapeHtml(candidateSizeMb(candidate))}</td>
                     <td>${escapeHtml(resolution)}</td>
@@ -3091,6 +3134,11 @@ document.addEventListener("DOMContentLoaded", () => {
             }).join("") + `</tbody></table>`;
     }
 
+    // Cache of the duplicate-group object currently shown in each search-result row's
+    // expand panel, keyed by row index — lets that row's "Play" buttons queue up the
+    // whole group as a playlist instead of just the one clicked file.
+    let duplicateContentGroups = {};
+
     async function renderDuplicateContent(idx) {
         const content = document.getElementById(`duplicate-content-${idx}`);
         const item = currentResults[idx];
@@ -3099,8 +3147,10 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             // duplicate matching is keyed on the resolved on-disk path, not the raw index path
             const group = await fetchDuplicateGroupByFile(item.mounted_file_path || item.file_path);
+            duplicateContentGroups[idx] = group;
             content.innerHTML = duplicateMetadataHtml(group, idx);
         } catch (err) {
+            delete duplicateContentGroups[idx];
             content.innerHTML = `<div class="duplicates-empty">Failed to load duplicate candidates: ${escapeHtml(err.message)}</div>`;
         }
     }
@@ -3153,7 +3203,14 @@ document.addEventListener("DOMContentLoaded", () => {
         const fileName = filePath.split(/[\\/]/).pop() || "file";
         const idx = trigger.dataset.idx;
 
-        if (action === "play") openPlayer({ file_path: filePath, file_name: fileName });
+        if (action === "play") {
+            const group = idx !== undefined ? duplicateContentGroups[idx] : null;
+            if (group && group.candidates && group.candidates.length > 1) {
+                playDuplicateGroup(group.candidates, filePath);
+            } else {
+                openPlayer({ file_path: filePath, file_name: fileName });
+            }
+        }
         if (action === "rename") openRenameModal({ file_path: filePath, file_name: fileName }, "search");
 
         if (action === "delete-file") {
