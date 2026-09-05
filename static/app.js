@@ -2537,7 +2537,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 html += `<tr data-file-path="${escapeHtml(filePath)}" data-file-id="${escapeHtml(cand.file_id)}">`;
                 html += `<td>${escapeHtml(rank)}</td>`;
-                html += `<td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(cand)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" /></td>`;
+                html += `<td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(cand)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" data-resolution="${escapeHtml(resolution === "—" ? "" : resolution)}" data-size="${escapeHtml(sizeMb === "—" ? "" : sizeMb)}" /></td>`;
                 html += `<td title="${escapeHtml(filePath)}">${escapeHtml(getRelativePath(filePath, cand.mount))}</td>`;
                 html += `<td>${escapeHtml(sizeMb)}</td>`;
                 html += `<td>${escapeHtml(resolution)}</td>`;
@@ -2587,7 +2587,12 @@ document.addEventListener("DOMContentLoaded", () => {
         const fileName = filePath.split(/[\\/]/).pop() || "file";
 
         if (action === "play") {
-            openPlayer({ file_path: filePath, file_name: fileName });
+            openPlayer({
+                file_path: filePath,
+                file_name: fileName,
+                resolution: target.dataset.resolution || "",
+                size_human: target.dataset.size || "",
+            });
             return;
         }
         if (action === "rename") {
@@ -2906,11 +2911,15 @@ document.addEventListener("DOMContentLoaded", () => {
     function candidateActionButtonsHtml(candidate, idx) {
         const filePath = candidate.full_path || candidate.file_path || "";
         const idxAttr = idx !== undefined ? ` data-idx="${escapeHtml(String(idx))}"` : "";
+        const candResolution = candidate.media_resolution || candidate.quality || "";
+        const candSizeRaw = candidateSizeMb(candidate);
+        const candSize = candSizeRaw === "—" ? "" : candSizeRaw;
+        const metaAttrs = ` data-resolution="${escapeHtml(candResolution)}" data-size="${escapeHtml(candSize)}"`;
         const notDupBtn = isCandidateMarkedNotDuplicate(candidate)
             ? `<button class="icon-button icon-button-success" data-duplicate-action="undo-not-duplicate" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Undo — treat as a duplicate candidate again" aria-label="Undo not-duplicate mark">${DUP_ICON_UNDO}</button>`
             : `<button class="icon-button icon-button-warning" data-duplicate-action="mark-not-duplicate" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Mark as not a duplicate — keeps the record but stops it being reported again" aria-label="Mark not duplicate">${DUP_ICON_NOT_DUP}</button>`;
         return `<div class="row-actions">
-            <button class="icon-button" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Play" aria-label="Play">${DUP_ICON_PLAY}</button>
+            <button class="icon-button" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}"${idxAttr}${metaAttrs} title="Play" aria-label="Play">${DUP_ICON_PLAY}</button>
             <button class="icon-button" data-duplicate-action="rename" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Rename" aria-label="Rename">${DUP_ICON_RENAME}</button>
             ${notDupBtn}
             <button class="icon-button icon-button-danger" data-duplicate-action="delete-file" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Delete file from disk and index" aria-label="Delete file from disk and index">${DUP_ICON_DELETE}</button>
@@ -3047,7 +3056,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const statsRowId = `cand-stats-${idx}-${cIdx}`;
                 return `<tr>
                     <td style="padding: 5px !important;">${escapeHtml(rank)}</td>
-                    <td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(candidate)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" /></td>
+                    <td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(candidate)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" data-resolution="${escapeHtml(resolution === "—" ? "" : resolution)}" data-size="${escapeHtml(candidateSizeMb(candidate) === "—" ? "" : candidateSizeMb(candidate))}" /></td>
                     <td title="${escapeHtml(filePath)}">${escapeHtml(getRelativePath(filePath, candidate.mount))}</td>
                     <td>${escapeHtml(candidateSizeMb(candidate))}</td>
                     <td>${escapeHtml(resolution)}</td>
