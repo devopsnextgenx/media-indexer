@@ -980,7 +980,7 @@ class MySQLDatabase:
                     return {}
 
                 cursor.execute(
-                    "SELECT id, file_path, file_name, file_size, jellyfin_id, metadata_json "
+                    "SELECT id, file_path, file_name, file_size, jellyfin_id, metadata_json, mtime "
                     f"FROM media_files WHERE {' OR '.join(conditions)}",
                     tuple(params),
                 )
@@ -990,6 +990,8 @@ class MySQLDatabase:
                         row["metadata"] = json.loads(raw) if isinstance(raw, str) else (raw or {})
                     except Exception:
                         row["metadata"] = {}
+                    # add mtime to the metadata dict so the UI can show it without needing to merge with the row
+                    row["metadata"]["mtime"] = row["mtime"]
                     result[row["id"]] = row
                     result[self._normalize_path(row["file_path"])] = row
             conn.close()

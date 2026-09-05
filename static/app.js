@@ -651,6 +651,23 @@ document.addEventListener("DOMContentLoaded", () => {
         }[c]));
     }
 
+    function dateTimeFormat(timestamp) {
+        if (!timestamp) return "";
+        
+        // Auto-detect seconds (10-digit) vs milliseconds (13-digit)
+        const ms = timestamp < 1e11 ? timestamp * 1000 : timestamp;
+        const date = new Date(ms);
+        
+        return date.toLocaleString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit"
+        });
+    }
+
     const FOLDER_TAG_COLORS = ["#e67e22", "#2ecc71", "#3b82f6", "#e74c3c", "#9b59b6", "#f1c40f", "#1abc9c", "#34495e"];
 
     function folderTagsHtml(item) {
@@ -2527,6 +2544,7 @@ document.addEventListener("DOMContentLoaded", () => {
             html += `<table class="vscode-table duplicate-candidates-table">`;
             html += `<thead><tr><th>#</th><th></th><th>File</th><th>Size</th><th>Resolution</th><th>Duration</th><th>Score</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
             candidates.forEach((cand, cIdx) => {
+                const mtime = cand.mtime || "";
                 const filePath = cand.full_path || cand.file_path || "";
                 const rank = cand.rank_in_group || "";
                 const status = cand.status || "PENDING";
@@ -2539,7 +2557,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 html += `<td>${escapeHtml(rank)}</td>`;
                 html += `<td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(cand)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" data-resolution="${escapeHtml(resolution === "—" ? "" : resolution)}" data-size="${escapeHtml(sizeMb === "—" ? "" : sizeMb)}" /></td>`;
                 html += `<td title="${escapeHtml(filePath)}">${escapeHtml(getRelativePath(filePath, cand.mount))}</td>`;
-                html += `<td>${escapeHtml(sizeMb)}</td>`;
+                html += `<td>${escapeHtml(sizeMb)}<br/>${escapeHtml(dateTimeFormat(mtime))}</td>`;
                 html += `<td>${escapeHtml(resolution)}</td>`;
                 html += `<td>${escapeHtml(duration)}</td>`;
                 html += `<td>${escapeHtml(score)}</td>`;

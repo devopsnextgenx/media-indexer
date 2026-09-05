@@ -903,6 +903,8 @@ def _enrich_candidates(candidates: list) -> list:
         row = details.get(candidate.get("file_id")) or details.get(candidate_path) or {}
         meta = row.get("metadata") or {}
         size_bytes = meta.get("file_size") or meta.get("size") or row.get("file_size") or 0
+        mtime = meta.get("mtime") or row.get("mtime") or 0
+        candidate["mtime"] = mtime
         candidate["file_size"] = size_bytes
         candidate["size_human"] = _human_size(size_bytes)
         candidate["size_mb"] = round(size_bytes / (1024 * 1024), 2) if size_bytes else None
