@@ -118,7 +118,7 @@ class MediaActions:
             try:
                 os.remove(file_path)
             except FileNotFoundError as e:
-                logger.error(f"Failed to delete file {file_path}: {e}")
+                logger.warning(f"File already missing during delete (race or prior removal): {file_path}")
             except Exception as e:
                 logger.error(f"Unexpected error while deleting file {file_path}: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to delete file: {e}")
