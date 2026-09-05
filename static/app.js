@@ -1394,6 +1394,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const playerLlmCloseBtn = document.getElementById("player-llm-close");
     const playerLlmSaveBtn = document.getElementById("player-llm-save");
     const playerLlmReparseBtn = document.getElementById("player-llm-reparse");
+    const playerPlaylistBtn = document.getElementById("player-playlist-btn");
+    const playerPlaylistPanel = document.getElementById("player-playlist-panel");
+    const playerPlaylistBody = document.getElementById("player-playlist-body");
+    const playerPlaylistCount = document.getElementById("player-playlist-count");
+    const playerPlaylistCloseBtn = document.getElementById("player-playlist-close");
+    const playerDeleteBtn = document.getElementById("player-delete-btn");
 
     let playerLlmItem = null;
     let playerLlmData = null;
@@ -1528,9 +1534,12 @@ document.addEventListener("DOMContentLoaded", () => {
         playerVideo.volume = Number(playerVolume.value);
         playerVideo.play().catch(() => { });
         updateQueueInfo();
-        // Keep player-attached AI panel in sync when the track changes
+        // Keep player-attached panels in sync when the track changes
         if (isPlayerLlmPanelOpen()) {
             loadPlayerLlmPanel(item);
+        }
+        if (isPlayerPlaylistOpen()) {
+            renderPlayerPlaylist();
         }
     }
 
@@ -1730,6 +1739,162 @@ document.addEventListener("DOMContentLoaded", () => {
         reparsePlayerLlmPanel();
     });
 
+    // ---- Player-attached Playlist panel (left) ----
+    function isPlayerPlaylistOpen() {
+        return !!(playerStage && playerStage.classList.contains("playlist-open"));
+    }
+
+    function formatPlaylistDuration(item) {
+        const formatted = item.duration_formatted || item.metadata?.duration_formatted;
+        if (formatted) return String(formatted);
+        const secs = typeof getItemDurationSeconds === "function" ? getItemDurationSeconds(item) : 0;
+        if (!secs) return "—";
+        return formatClock(secs);
+    }
+
+    function formatPlaylistSize(item) {
+        return item.size_human || item.metadata?.file_size_human || item.size || "—";
+    }
+
+    function renderPlayerPlaylist() {
+        if (!playerPlaylistBody) return;
+        if (!currentPlaylist.length) {
+            playerPlaylistBody.innerHTML = `<div class="player-playlist-empty">No items in the queue.</div>`;
+            if (playerPlaylistCount) playerPlaylistCount.textContent = "";
+            return;
+        }
+        if (playerPlaylistCount) {
+            playerPlaylistCount.textContent = `${currentPlaylist.length} track${currentPlaylist.length === 1 ? "" : "s"}`;
+        }
+        const currentItem = currentPlaylist[playOrder[orderPos]];
+        // Show queue in playback order so the list matches Next/Prev
+        const rows = playOrder.map((playlistIdx, displayIdx) => {
+            const item = currentPlaylist[playlistIdx];
+            if (!item) return "";
+            const title = item.normalized_title || item.file_name || item.name || "Untitled";
+            const duration = formatPlaylistDuration(item);
+            const size = formatPlaylistSize(item);
+            const isActive = item === currentItem;
+            return `<div class="player-playlist-row${isActive ? " active" : ""}" data-order-pos="${displayIdx}" title="${escapeHtml(title)}">
+                <span class="player-playlist-indicator" aria-hidden="true"></span>
+                <div class="player-playlist-row-main">
+                    <div class="player-playlist-row-title">${escapeHtml(title)}</div>
+                    <div class="player-playlist-row-meta">${escapeHtml(duration)} · ${escapeHtml(String(size))}</div>
+                </div>
+                <span class="player-playlist-row-index">${displayIdx + 1}</span>
+            </div>`;
+        }).join("");
+        playerPlaylistBody.innerHTML = rows || `<div class="player-playlist-empty">No items in the queue.</div>`;
+
+        // Scroll active row into view
+        const activeRow = playerPlaylistBody.querySelector(".player-playlist-row.active");
+        if (activeRow) {
+            activeRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }
+    }
+
+    function openPlayerPlaylist() {
+        if (!playerStage) return;
+        playerStage.classList.add("playlist-open");
+        if (playerPlaylistPanel) playerPlaylistPanel.setAttribute("aria-hidden", "false");
+        if (playerPlaylistBtn) playerPlaylistBtn.classList.add("active");
+        renderPlayerPlaylist();
+    }
+
+    function closePlayerPlaylist() {
+        if (!isPlayerPlaylistOpen()) return;
+        if (playerStage) playerStage.classList.remove("playlist-open");
+        if (playerPlaylistPanel) playerPlaylistPanel.setAttribute("aria-hidden", "true");
+        if (playerPlaylistBtn) playerPlaylistBtn.classList.remove("active");
+    }
+
+    function togglePlayerPlaylist() {
+        if (isPlayerPlaylistOpen()) closePlayerPlaylist();
+        else openPlayerPlaylist();
+    }
+
+    if (playerPlaylistBtn) playerPlaylistBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        togglePlayerPlaylist();
+    });
+    if (playerPlaylistCloseBtn) playerPlaylistCloseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closePlayerPlaylist();
+    });
+    if (playerPlaylistBody) {
+        playerPlaylistBody.addEventListener("click", (e) => {
+            const row = e.target.closest(".player-playlist-row");
+            if (!row) return;
+            const pos = Number(row.dataset.orderPos);
+            if (!Number.isFinite(pos) || pos < 0 || pos >= playOrder.length) return;
+            orderPos = pos;
+            playCurrentTrack();
+        });
+    }
+
+    // ---- Delete currently playing file ----
+    async function deleteCurrentPlayerFile() {
+        const item = currentPlaylist[playOrder[orderPos]];
+        if (!item) return;
+        const filePath = item.file_path || item.path || item.mounted_file_path || "";
+        const fileName = item.file_name || item.name || filePath.split(/[\\/]/).pop() || "file";
+        if (!filePath) {
+            showToast("No file path available for this item.", "error");
+            return;
+        }
+        const ok = await askConfirm({
+            title: "Delete file from disk",
+            message: `This permanently deletes the file from disk and cannot be undone.<br/><br/>
+                      <strong>${escapeHtml(fileName)}</strong><br/>
+                      <span style="color:#888">${escapeHtml(filePath)}</span>`,
+            okLabel: "Delete from disk"
+        });
+        if (!ok) return;
+
+        try {
+            const res = await fetch(`/api/actions/file?path=${encodeURIComponent(filePath)}`, { method: "DELETE" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast(`Delete failed: ${data.detail || res.statusText}`, "error", 8000);
+                return;
+            }
+            showToast(
+                data.index_removed
+                    ? `Deleted ${fileName} from disk and removed it from the index.`
+                    : `Deleted ${fileName} from disk, but no index entry was found to remove.`,
+                data.index_removed ? "success" : "warn",
+                data.index_removed ? 5000 : 8000
+            );
+
+            // Remove from playlist and advance (or close if empty)
+            const removedPlaylistIdx = playOrder[orderPos];
+            currentPlaylist = currentPlaylist.filter((_, i) => i !== removedPlaylistIdx);
+            if (!currentPlaylist.length) {
+                closePlayer();
+                return;
+            }
+            // Rebuild play order from the track that would have been next
+            const nextPlaylistIdx = playOrder[(orderPos + 1) % playOrder.length];
+            // Map old index -> new index after removal
+            const mapIdx = (oldIdx) => (oldIdx > removedPlaylistIdx ? oldIdx - 1 : oldIdx);
+            const preferredStart = mapIdx(nextPlaylistIdx === removedPlaylistIdx
+                ? playOrder[(orderPos + 1) % playOrder.length]
+                : nextPlaylistIdx);
+            const startIdx = Math.max(0, Math.min(preferredStart, currentPlaylist.length - 1));
+            playOrder = buildPlayOrder(currentPlaylist, startIdx, shuffleOn);
+            orderPos = 0;
+            playCurrentTrack();
+            if (isPlayerPlaylistOpen()) renderPlayerPlaylist();
+        } catch (err) {
+            showToast(`Delete failed: ${err.message}`, "error", 8000);
+        }
+    }
+
+    if (playerDeleteBtn) playerDeleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteCurrentPlayerFile();
+    });
+
     // Playback from a Library folder: builds the queue from every file currently
     // shown in that folder so Next/Prev/Shuffle/Loop can move between them.
     function openLibraryPlayer(playlist, index) {
@@ -1852,6 +2017,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function closePlayer() {
         if (document.fullscreenElement) document.exitFullscreen?.();
         closePlayerLlmPanel();
+        closePlayerPlaylist();
         playerVideo.pause();
         playerVideo.removeAttribute("src");
         playerVideo.load();
@@ -1873,9 +2039,15 @@ document.addEventListener("DOMContentLoaded", () => {
     document.addEventListener("keydown", (e) => {
         if (playerOverlay.classList.contains("hidden")) return;
         if (e.key === "Escape" && !document.fullscreenElement) {
+            // Close panels first (right, then left), then the player
             if (isPlayerLlmPanelOpen()) {
                 e.preventDefault();
                 closePlayerLlmPanel();
+                return;
+            }
+            if (isPlayerPlaylistOpen()) {
+                e.preventDefault();
+                closePlayerPlaylist();
                 return;
             }
             closePlayer();
@@ -2001,6 +2173,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     document.addEventListener("fullscreenchange", () => {
         playerFullscreen.title = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen";
+        if (playerStage) {
+            playerStage.classList.toggle("fs-active", !!document.fullscreenElement);
+        }
         if (document.fullscreenElement) {
             showChrome();
         } else {

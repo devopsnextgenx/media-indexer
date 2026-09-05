@@ -83,9 +83,17 @@
 }
 
 /* In fullscreen the stage is not used as the fullscreen target — shell is —
-   so hide the attached panel while fullscreen is active. */
+   so hide the attached panels while fullscreen is active. */
 .player-shell:fullscreen ~ .player-llm-panel,
-.player-shell:-webkit-full-screen ~ .player-llm-panel {
+.player-shell:-webkit-full-screen ~ .player-llm-panel,
+.player-playlist-panel:has(+ .player-shell:fullscreen),
+.player-playlist-panel:has(+ .player-shell:-webkit-full-screen) {
+    display: none !important;
+}
+
+/* Fallback for browsers without :has — JS also closes panels on fullscreen */
+.player-stage.fs-active .player-llm-panel,
+.player-stage.fs-active .player-playlist-panel {
     display: none !important;
 }
 
@@ -127,12 +135,12 @@
     display: none;
 }
 
-/* Stage: holds the shell + optional right-edge LLM panel as one unit */
+/* Stage: holds optional left playlist + shell + optional right LLM panel */
 .player-stage {
     display: flex;
     flex-direction: row;
     align-items: stretch;
-    max-width: min(1480px, 96vw);
+    max-width: min(1680px, 98vw);
     height: 75vh;
     gap: 0;
 }
@@ -162,12 +170,18 @@
     transition: border-radius 0.28s var(--apple-ease);
 }
 
-/* When the LLM panel is open, square the shared edge so the two glass
-   surfaces read as one continuous unit. */
+/* When side panels are open, square the shared edge(s) so glass surfaces
+   read as one continuous unit. */
 .player-stage.llm-open .player-shell {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
     border-right-color: transparent;
+}
+
+.player-stage.playlist-open .player-shell {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left-color: transparent;
 }
 
 /* Subtle top specular sheen typical of liquid-glass surfaces */
@@ -682,14 +696,191 @@
     color: #ffffff;
 }
 
-#player-llm-btn.active {
+#player-llm-btn.active,
+#player-playlist-btn.active {
     background: rgba(10, 132, 255, 0.28);
     color: #cfe6ff;
     border-color: rgba(10, 132, 255, 0.55);
     box-shadow: 0 0 14px rgba(10, 132, 255, 0.35), 0 1px 0 var(--glass-highlight) inset;
 }
 
-/* Narrow viewports: panel stacks under shell at reduced height */
+/* Danger action (delete) — same glass language, red accent on hover */
+.player-btn-danger:hover {
+    background: rgba(255, 69, 58, 0.85);
+    color: #ffffff;
+    border-color: rgba(255, 69, 58, 0.9);
+    box-shadow: 0 0 14px rgba(255, 69, 58, 0.45), 0 1px 0 var(--glass-highlight) inset;
+}
+
+/* =====================================================================
+   Player-attached Playlist side panel (liquid glass, left edge)
+   ===================================================================== */
+
+.player-playlist-panel {
+    flex: 0 0 0;
+    width: 0;
+    min-width: 0;
+    max-width: 0;
+    height: 100%;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    background: var(--shell-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    border: 1px solid var(--glass-stroke-soft);
+    border-right: none;
+    border-radius: var(--glass-radius-lg) 0 0 var(--glass-radius-lg);
+    box-shadow:
+        0 24px 60px var(--glass-shadow),
+        0 1px 0 var(--glass-highlight) inset,
+        0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+    color: var(--text-primary);
+    transition:
+        flex-basis 0.28s var(--apple-ease),
+        width 0.28s var(--apple-ease),
+        max-width 0.28s var(--apple-ease),
+        opacity 0.22s var(--apple-ease),
+        min-width 0.28s var(--apple-ease);
+}
+
+.player-stage.playlist-open .player-playlist-panel {
+    flex: 0 0 320px;
+    width: 320px;
+    min-width: 260px;
+    max-width: min(360px, 34vw);
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.player-playlist-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 14px;
+    flex-shrink: 0;
+    background: var(--bar-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    border-bottom: 1px solid var(--glass-stroke-soft);
+    box-shadow: 0 1px 0 var(--glass-highlight) inset;
+}
+
+.player-playlist-title {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.player-playlist-title strong {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.player-playlist-count {
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.player-playlist-body {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+    padding: 6px 0;
+}
+
+.player-playlist-empty {
+    padding: 20px 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-style: italic;
+}
+
+.player-playlist-row {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: background 0.15s var(--apple-ease), border-color 0.15s var(--apple-ease);
+}
+
+.player-playlist-row:hover {
+    background: var(--glass-fill-weak);
+}
+
+.player-playlist-row.active {
+    background: rgba(10, 132, 255, 0.16);
+    border-left-color: var(--accent);
+}
+
+.player-playlist-indicator {
+    width: 10px;
+    height: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.player-playlist-row.active .player-playlist-indicator::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px rgba(10, 132, 255, 0.7);
+}
+
+.player-playlist-row-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.player-playlist-row-title {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.player-playlist-row.active .player-playlist-row-title {
+    color: #cfe6ff;
+}
+
+.player-playlist-row-meta {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.player-playlist-row-index {
+    font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+    min-width: 1.6em;
+    text-align: right;
+}
+
+/* Narrow viewports: panels stack with shell */
 @media (max-width: 900px) {
     .player-stage {
         flex-direction: column;
@@ -704,10 +895,24 @@
         border-radius: var(--glass-radius-lg);
     }
 
-    .player-stage.llm-open .player-shell {
-        border-radius: var(--glass-radius-lg) var(--glass-radius-lg) 0 0;
+    .player-stage.playlist-open .player-shell,
+    .player-stage.llm-open .player-shell,
+    .player-stage.playlist-open.llm-open .player-shell {
+        border-radius: var(--glass-radius-lg);
+        border-left-color: var(--glass-stroke-soft);
         border-right-color: var(--glass-stroke-soft);
-        border-bottom-color: transparent;
+    }
+
+    .player-stage.playlist-open .player-playlist-panel {
+        flex: 0 0 auto;
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+        height: min(32vh, 240px);
+        order: 2;
+        border-right: 1px solid var(--glass-stroke-soft);
+        border-top: none;
+        border-radius: 0 0 var(--glass-radius-lg) var(--glass-radius-lg);
     }
 
     .player-stage.llm-open .player-llm-panel {
@@ -716,8 +921,13 @@
         min-width: 0;
         max-width: none;
         height: min(36vh, 280px);
+        order: 3;
         border-left: 1px solid var(--glass-stroke-soft);
         border-top: none;
         border-radius: 0 0 var(--glass-radius-lg) var(--glass-radius-lg);
+    }
+
+    .player-stage.playlist-open.llm-open .player-playlist-panel {
+        border-radius: 0;
     }
 }

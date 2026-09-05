@@ -361,11 +361,31 @@
     <!-- Overlay Video Player -->
     <div id="player-overlay" class="player-overlay hidden">
         <div class="player-stage">
+            <!-- Playlist panel — attached to the left edge of the player shell -->
+            <aside id="player-playlist-panel" class="player-playlist-panel" aria-hidden="true">
+                <div class="player-playlist-header">
+                    <div class="player-playlist-title">
+                        <strong>Playlist</strong>
+                        <span id="player-playlist-count" class="player-playlist-count"></span>
+                    </div>
+                    <button id="player-playlist-close" class="player-btn player-llm-action" title="Close playlist" aria-label="Close playlist">&times;</button>
+                </div>
+                <div id="player-playlist-body" class="player-playlist-body">
+                    <!-- populated dynamically -->
+                </div>
+            </aside>
+
             <div class="player-shell">
                 <div class="player-topbar">
+                    <button id="player-playlist-btn" class="player-btn" title="Playlist" aria-label="Playlist">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                    </button>
                     <span id="player-title">Now Playing</span>
                     <span id="player-meta" class="player-meta"></span>
                     <span id="player-queue-info" class="player-meta"></span>
+                    <button id="player-delete-btn" class="player-btn player-btn-danger" title="Delete file from disk" aria-label="Delete file from disk">
+                        <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/><path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/></svg>
+                    </button>
                     <button id="player-llm-btn" class="player-btn" title="Edit AI Metadata" aria-label="Edit AI Metadata">
                         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                     </button>
