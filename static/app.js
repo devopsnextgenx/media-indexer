@@ -1373,6 +1373,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // ---- Overlay Video Player ----
     const playerOverlay = document.getElementById("player-overlay");
+    const playerStage = playerOverlay.querySelector(".player-stage");
     const playerShell = playerOverlay.querySelector(".player-shell");
     const playerVideo = document.getElementById("player-video");
     const playerTitle = document.getElementById("player-title");
@@ -1386,6 +1387,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const playerCurrent = document.getElementById("player-current");
     const playerDuration = document.getElementById("player-duration");
     const playerSeekBadge = document.getElementById("player-seek-badge");
+    const playerLlmBtn = document.getElementById("player-llm-btn");
+    const playerLlmPanel = document.getElementById("player-llm-panel");
+    const playerLlmBody = document.getElementById("player-llm-body");
+    const playerLlmFilename = document.getElementById("player-llm-filename");
+    const playerLlmCloseBtn = document.getElementById("player-llm-close");
+    const playerLlmSaveBtn = document.getElementById("player-llm-save");
+    const playerLlmReparseBtn = document.getElementById("player-llm-reparse");
+
+    let playerLlmItem = null;
+    let playerLlmData = null;
 
     let seeking = false;
     let arrowSeekSteps = [3, 5, 7, 10];
@@ -1517,6 +1528,10 @@ document.addEventListener("DOMContentLoaded", () => {
         playerVideo.volume = Number(playerVolume.value);
         playerVideo.play().catch(() => { });
         updateQueueInfo();
+        // Keep player-attached AI panel in sync when the track changes
+        if (isPlayerLlmPanelOpen()) {
+            loadPlayerLlmPanel(item);
+        }
     }
 
     function playCurrentTrack() {
@@ -1532,6 +1547,188 @@ document.addEventListener("DOMContentLoaded", () => {
         orderPos = 0;
         playCurrentTrack();
     }
+
+    // ---- Player-attached AI Metadata panel ----
+    function isPlayerLlmPanelOpen() {
+        return !!(playerStage && playerStage.classList.contains("llm-open"));
+    }
+
+    function playerLlmFieldsHtml(data) {
+        const found = !!(data && data.found);
+        const songTitle = found ? (data.song_title || "") : "";
+        const movieOrAlbum = found ? (data.movie_or_album || "") : "";
+        const artists = found && Array.isArray(data.artists) ? data.artists.join(", ") : "";
+        const source = found ? (data.source_endpoint || "") : "";
+        const emptyNote = found ? "" : `<div class="llm-empty-note">No AI-extracted metadata cached for this file yet.</div>`;
+        const sourceHtml = source ? `<div class="llm-panel-source">Source: ${escapeHtml(source)}</div>` : "";
+
+        return `
+            ${sourceHtml}
+            ${emptyNote}
+            <div class="llm-meta-fields">
+                <div class="llm-song-row">
+                    <input type="text" class="llm-song-input" id="player-llm-song" title="Song Title" placeholder="Song Title" value="${escapeHtml(songTitle)}" />
+                </div>
+                <div class="llm-meta-row">
+                    <div class="llm-movie-col">
+                        <input type="text" id="player-llm-movie" title="Movie / Album" placeholder="Movie / Album" value="${escapeHtml(movieOrAlbum)}" />
+                    </div>
+                    <div class="llm-artists-col">
+                        <input type="text" id="player-llm-artists" title="Artists (comma-separated)" placeholder="Artists (comma-separated)" value="${escapeHtml(artists)}" />
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function loadPlayerLlmPanel(item) {
+        if (!item || !playerLlmPanel) return;
+        playerLlmItem = item;
+        playerLlmData = null;
+        const name = item.normalized_title || item.file_name || item.name || "";
+        if (playerLlmFilename) playerLlmFilename.textContent = name;
+        if (playerLlmBody) {
+            playerLlmBody.innerHTML = typeof llmMetadataLoadingHtml === "function"
+                ? llmMetadataLoadingHtml()
+                : `<div class="llm-loading">Loading…</div>`;
+        }
+        const filePath = item.file_path || item.path || item.mounted_file_path || "";
+        if (!filePath) {
+            if (playerLlmBody) {
+                playerLlmBody.innerHTML = `<div class="llm-empty-note">No file path available for this item.</div>`;
+            }
+            return;
+        }
+        fetchLlmMetadata(filePath)
+            .then((data) => {
+                if (playerLlmItem !== item) return;
+                playerLlmData = data;
+                if (playerLlmBody) playerLlmBody.innerHTML = playerLlmFieldsHtml(data);
+            })
+            .catch((err) => {
+                if (playerLlmItem !== item) return;
+                if (playerLlmBody) {
+                    playerLlmBody.innerHTML = `<div class="llm-empty-note">Failed to load AI metadata: ${escapeHtml(err.message)}</div>`;
+                }
+            });
+    }
+
+    function openPlayerLlmPanel() {
+        const item = currentPlaylist[playOrder[orderPos]];
+        if (!item || !playerStage) return;
+        playerStage.classList.add("llm-open");
+        if (playerLlmPanel) playerLlmPanel.setAttribute("aria-hidden", "false");
+        if (playerLlmBtn) playerLlmBtn.classList.add("active");
+        loadPlayerLlmPanel(item);
+    }
+
+    function closePlayerLlmPanel() {
+        if (!isPlayerLlmPanelOpen()) return;
+        if (playerStage) playerStage.classList.remove("llm-open");
+        if (playerLlmPanel) playerLlmPanel.setAttribute("aria-hidden", "true");
+        if (playerLlmBtn) playerLlmBtn.classList.remove("active");
+        playerLlmItem = null;
+        playerLlmData = null;
+        if (playerLlmBody) playerLlmBody.innerHTML = "";
+        if (playerLlmFilename) playerLlmFilename.textContent = "";
+    }
+
+    function togglePlayerLlmPanel() {
+        if (isPlayerLlmPanelOpen()) closePlayerLlmPanel();
+        else openPlayerLlmPanel();
+    }
+
+    async function savePlayerLlmPanel() {
+        if (!playerLlmItem) return;
+        const item = playerLlmItem;
+        const filePath = item.file_path || item.path || item.mounted_file_path || "";
+        if (!filePath) {
+            showToast("No file path available.", "error");
+            return;
+        }
+        const songTitle = document.getElementById("player-llm-song")?.value.trim() || null;
+        const movieOrAlbum = document.getElementById("player-llm-movie")?.value.trim() || null;
+        const artistsRaw = document.getElementById("player-llm-artists")?.value.trim() || "";
+        const artists = artistsRaw ? artistsRaw.split(",").map(a => a.trim()).filter(Boolean) : [];
+
+        try {
+            const res = await fetch("/api/media/llm-metadata", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    file_path: filePath,
+                    song_title: songTitle,
+                    movie_or_album: movieOrAlbum,
+                    artists
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast(`Save failed: ${data.detail || res.statusText}`, "error", 8000);
+                return;
+            }
+            playerLlmData = { found: true, ...data };
+            if (playerLlmItem === item && playerLlmBody) {
+                playerLlmBody.innerHTML = playerLlmFieldsHtml(playerLlmData);
+            }
+            showToast("AI metadata saved.", "success");
+        } catch (err) {
+            showToast(`Save failed: ${err.message}`, "error", 8000);
+        }
+    }
+
+    async function reparsePlayerLlmPanel() {
+        if (!playerLlmItem) return;
+        const item = playerLlmItem;
+        const filePath = item.file_path || item.path || item.mounted_file_path || "";
+        if (!filePath) {
+            showToast("No file path available.", "error");
+            return;
+        }
+        if (playerLlmBody) {
+            playerLlmBody.innerHTML = typeof llmMetadataLoadingHtml === "function"
+                ? llmMetadataLoadingHtml()
+                : `<div class="llm-loading">Loading…</div>`;
+        }
+        try {
+            const res = await fetch(
+                `/api/admin/llm-parse/single?file_path=${encodeURIComponent(filePath)}&force=true`,
+                { method: "POST" }
+            );
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast(`Re-parse failed: ${data.detail || res.statusText}`, "error", 8000);
+                if (playerLlmItem === item && playerLlmBody) {
+                    playerLlmBody.innerHTML = playerLlmFieldsHtml(playerLlmData);
+                }
+                return;
+            }
+            playerLlmData = { found: true, ...data };
+            if (playerLlmItem === item && playerLlmBody) {
+                playerLlmBody.innerHTML = playerLlmFieldsHtml(playerLlmData);
+            }
+            showToast("Re-parsed with AI.", "success");
+        } catch (err) {
+            showToast(`Re-parse failed: ${err.message}`, "error", 8000);
+        }
+    }
+
+    if (playerLlmBtn) playerLlmBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        togglePlayerLlmPanel();
+    });
+    if (playerLlmCloseBtn) playerLlmCloseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closePlayerLlmPanel();
+    });
+    if (playerLlmSaveBtn) playerLlmSaveBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        savePlayerLlmPanel();
+    });
+    if (playerLlmReparseBtn) playerLlmReparseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        reparsePlayerLlmPanel();
+    });
 
     // Playback from a Library folder: builds the queue from every file currently
     // shown in that folder so Next/Prev/Shuffle/Loop can move between them.
@@ -1654,6 +1851,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function closePlayer() {
         if (document.fullscreenElement) document.exitFullscreen?.();
+        closePlayerLlmPanel();
         playerVideo.pause();
         playerVideo.removeAttribute("src");
         playerVideo.load();
@@ -1674,7 +1872,19 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     document.addEventListener("keydown", (e) => {
         if (playerOverlay.classList.contains("hidden")) return;
-        if (e.key === "Escape" && !document.fullscreenElement) closePlayer();
+        if (e.key === "Escape" && !document.fullscreenElement) {
+            if (isPlayerLlmPanelOpen()) {
+                e.preventDefault();
+                closePlayerLlmPanel();
+                return;
+            }
+            closePlayer();
+        }
+        if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S") && isPlayerLlmPanelOpen()) {
+            e.preventDefault();
+            savePlayerLlmPanel();
+            return;
+        }
         if (e.key === " " && e.target === document.body) {
             e.preventDefault();
             togglePlay();
@@ -2095,8 +2305,6 @@ document.addEventListener("DOMContentLoaded", () => {
                     <div class="llm-movie-col">
                         <input type="text" id="llm-panel-movie" title="Movie / Album" placeholder="Movie / Album" value="${escapeHtml(movieOrAlbum)}" />
                     </div>
-                </div>
-                <div class="llm-meta-row">
                     <div class="llm-artists-col">
                         <input type="text" id="llm-panel-artists" title="Artists (comma-separated)" placeholder="Artists (comma-separated)" value="${escapeHtml(artists)}" />
                     </div>
@@ -2708,7 +2916,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             // Candidate table
             html += `<table class="vscode-table duplicate-candidates-table">`;
-            html += `<thead><tr><th>#</th><th></th><th>File</th><th>Size</th><th>Resolution</th><th>Duration</th><th>Score</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+            html += `<thead><tr><th>#</th><th></th><th>File</th><th>Size</th><th>Resolution</th><th>Duration</th><th>Score</th><th>Status</th><th></th><th>Actions</th></tr></thead><tbody>`;
             candidates.forEach((cand, cIdx) => {
                 const mtime = cand.mtime || "";
                 const filePath = cand.full_path || cand.file_path || "";
@@ -2718,6 +2926,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const sizeMb = cand.size_mb != null ? `${cand.size_mb} MB` : (cand.file_size ? `${(cand.file_size / 1024 / 1024).toFixed(2)} MB` : "—");
                 const resolution = cand.media_resolution || cand.quality || "—";
                 const duration = cand.duration_formatted || "—";
+                const statsRowId = `dupreview-cand-stats-${gIdx}-${cIdx}`;
 
                 html += `<tr data-file-path="${escapeHtml(filePath)}" data-file-id="${escapeHtml(cand.file_id)}">`;
                 html += `<td>${escapeHtml(rank)}</td>`;
@@ -2728,9 +2937,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 html += `<td>${escapeHtml(duration)}</td>`;
                 html += `<td>${escapeHtml(score)}</td>`;
                 html += `<td><span class="status-badge ${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span></td>`;
+                html += `<td><button class="icon-button cand-stats-toggle" data-cand-stats-toggle="${statsRowId}" title="View AI metadata & match stats" aria-label="View AI metadata & match stats">${DUP_ICON_STATS}</button></td>`;
                 // Action buttons – reuse the existing helper, but we need to pass the correct context
                 // We'll generate them inline with data attributes.
                 html += `<td>${candidateActionButtonsHtml(cand, gIdx)}</td>`;
+                html += `</tr>`;
+                html += `<tr class="candidate-stats-row hidden" id="${statsRowId}">`;
+                html += `<td colspan="10"><div class="candidate-stats-content">${candidateStatsHtml(cand)}</div></td>`;
                 html += `</tr>`;
             });
             html += `</tbody></table>`;
@@ -2742,6 +2955,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
     document.getElementById("duplicates-groups-container")?.addEventListener("click", async (e) => {
+        const statsToggle = e.target.closest("[data-cand-stats-toggle]");
+        if (statsToggle) {
+            const row = document.getElementById(statsToggle.dataset.candStatsToggle);
+            if (row) row.classList.toggle("hidden");
+            statsToggle.classList.toggle("expanded");
+            return;
+        }
+
         const target = e.target.closest("[data-duplicate-action]");
         if (!target) {
             // check for group delete button

@@ -360,33 +360,60 @@
 
     <!-- Overlay Video Player -->
     <div id="player-overlay" class="player-overlay hidden">
-        <div class="player-shell">
-            <div class="player-topbar">
-                <span id="player-title">Now Playing</span>
-                <span id="player-meta" class="player-meta"></span>
-                <span id="player-queue-info" class="player-meta"></span>
-                <button id="player-close" class="player-btn" title="Close (Esc)">&times;</button>
+        <div class="player-stage">
+            <div class="player-shell">
+                <div class="player-topbar">
+                    <span id="player-title">Now Playing</span>
+                    <span id="player-meta" class="player-meta"></span>
+                    <span id="player-queue-info" class="player-meta"></span>
+                    <button id="player-llm-btn" class="player-btn" title="Edit AI Metadata" aria-label="Edit AI Metadata">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </button>
+                    <button id="player-close" class="player-btn" title="Close (Esc)">&times;</button>
+                </div>
+
+                <video id="player-video" playsinline preload="metadata"></video>
+                <div id="player-seek-badge" class="player-seek-badge hidden"></div>
+
+                <div class="player-controls">
+                    <button id="player-shuffle" class="player-btn" title="Shuffle">&#128256;</button>
+                    <button id="player-prev" class="player-btn" title="Previous">&#9198;</button>
+                    <button id="player-play" class="player-btn" title="Play / Pause">&#9654;</button>
+                    <button id="player-next" class="player-btn" title="Next">&#9197;</button>
+                    <button id="player-loop" class="player-btn" data-mode="off" title="Loop: off">&#128257;</button>
+
+                    <span id="player-current" class="player-time">00:00</span>
+                    <input type="range" id="player-progress" class="player-range" value="0" min="0" max="100" step="0.1" />
+                    <span id="player-duration" class="player-time">00:00</span>
+
+                    <button id="player-mute" class="player-btn" title="Mute / Unmute">&#128266;</button>
+                    <input type="range" id="player-volume" class="player-range player-volume" value="0.15" min="0" max="1" step="0.01" />
+
+                    <button id="player-fullscreen" class="player-btn" title="Fullscreen">&#9974;</button>
+                </div>
             </div>
 
-            <video id="player-video" playsinline preload="metadata"></video>
-            <div id="player-seek-badge" class="player-seek-badge hidden"></div>
-
-            <div class="player-controls">
-                <button id="player-shuffle" class="player-btn" title="Shuffle">&#128256;</button>
-                <button id="player-prev" class="player-btn" title="Previous">&#9198;</button>
-                <button id="player-play" class="player-btn" title="Play / Pause">&#9654;</button>
-                <button id="player-next" class="player-btn" title="Next">&#9197;</button>
-                <button id="player-loop" class="player-btn" data-mode="off" title="Loop: off">&#128257;</button>
-
-                <span id="player-current" class="player-time">00:00</span>
-                <input type="range" id="player-progress" class="player-range" value="0" min="0" max="100" step="0.1" />
-                <span id="player-duration" class="player-time">00:00</span>
-
-                <button id="player-mute" class="player-btn" title="Mute / Unmute">&#128266;</button>
-                <input type="range" id="player-volume" class="player-range player-volume" value="0.15" min="0" max="1" step="0.01" />
-
-                <button id="player-fullscreen" class="player-btn" title="Fullscreen">&#9974;</button>
-            </div>
+            <!-- AI Metadata panel — attached to the right edge of the player shell -->
+            <aside id="player-llm-panel" class="player-llm-panel" aria-hidden="true">
+                <div class="player-llm-header">
+                    <div class="player-llm-title">
+                        <strong>AI Metadata</strong>
+                        <span id="player-llm-filename" class="player-llm-filename"></span>
+                    </div>
+                    <div class="player-llm-header-actions">
+                        <button id="player-llm-reparse" class="player-btn player-llm-action" title="Re-parse with AI" aria-label="Re-parse with AI">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                        </button>
+                        <button id="player-llm-close" class="player-btn player-llm-action" title="Close panel" aria-label="Close panel">&times;</button>
+                    </div>
+                </div>
+                <div id="player-llm-body" class="player-llm-body">
+                    <!-- populated dynamically -->
+                </div>
+                <div class="player-llm-footer">
+                    <button id="player-llm-save" class="player-btn player-llm-save" title="Save (Ctrl+S)">Save</button>
+                </div>
+            </aside>
         </div>
     </div>
 

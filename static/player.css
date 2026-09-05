@@ -82,6 +82,13 @@
     position: relative;
 }
 
+/* In fullscreen the stage is not used as the fullscreen target — shell is —
+   so hide the attached panel while fullscreen is active. */
+.player-shell:fullscreen ~ .player-llm-panel,
+.player-shell:-webkit-full-screen ~ .player-llm-panel {
+    display: none !important;
+}
+
 .player-shell.chrome-hidden #player-video {
     cursor: none;
 }
@@ -120,6 +127,16 @@
     display: none;
 }
 
+/* Stage: holds the shell + optional right-edge LLM panel as one unit */
+.player-stage {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    max-width: min(1480px, 96vw);
+    height: 75vh;
+    gap: 0;
+}
+
 /* ---------- Shell: the liquid glass panel ----------
    position: relative is REQUIRED here — #player-video and the bars
    below are position: absolute against this element. Do not switch
@@ -127,8 +144,10 @@
    see the WHY THE BARS SHOWED NO VIDEO note at the top of this file. */
 .player-shell {
     position: relative;
+    flex: 1 1 auto;
     width: min(1100px, 75vw);
-    height: 75vh;
+    min-width: 0;
+    height: 100%;
     background: var(--shell-bg);
     -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
     backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -140,6 +159,15 @@
         0 24px 60px var(--glass-shadow),
         0 1px 0 var(--glass-highlight) inset,
         0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+    transition: border-radius 0.28s var(--apple-ease);
+}
+
+/* When the LLM panel is open, square the shared edge so the two glass
+   surfaces read as one continuous unit. */
+.player-stage.llm-open .player-shell {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    border-right-color: transparent;
 }
 
 /* Subtle top specular sheen typical of liquid-glass surfaces */
@@ -460,4 +488,236 @@
 
 .player-volume {
     flex: 0 0 110px;
+}
+/* =====================================================================
+   Player-attached AI Metadata side panel (liquid glass)
+   Attached to the right edge of .player-shell. Uses the same glass
+   tokens as the shell / bars so it reads as one continuous surface.
+   ===================================================================== */
+
+.player-llm-panel {
+    flex: 0 0 0;
+    width: 0;
+    min-width: 0;
+    max-width: 0;
+    height: 100%;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    background: var(--shell-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    border: 1px solid var(--glass-stroke-soft);
+    border-left: none;
+    border-radius: 0 var(--glass-radius-lg) var(--glass-radius-lg) 0;
+    box-shadow:
+        0 24px 60px var(--glass-shadow),
+        0 1px 0 var(--glass-highlight) inset,
+        0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+    color: var(--text-primary);
+    transition:
+        flex-basis 0.28s var(--apple-ease),
+        width 0.28s var(--apple-ease),
+        max-width 0.28s var(--apple-ease),
+        opacity 0.22s var(--apple-ease),
+        min-width 0.28s var(--apple-ease);
+}
+
+.player-stage.llm-open .player-llm-panel {
+    flex: 0 0 340px;
+    width: 340px;
+    min-width: 280px;
+    max-width: min(360px, 36vw);
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.player-llm-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 14px;
+    flex-shrink: 0;
+    background: var(--bar-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    border-bottom: 1px solid var(--glass-stroke-soft);
+    box-shadow: 0 1px 0 var(--glass-highlight) inset;
+}
+
+.player-llm-title {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.player-llm-title strong {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.player-llm-filename {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 220px;
+}
+
+.player-llm-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.player-llm-action {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    font-size: 14px;
+}
+
+.player-llm-action svg {
+    display: block;
+}
+
+.player-llm-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 14px 8px;
+    min-height: 0;
+}
+
+.player-llm-body .llm-empty-note,
+.player-llm-body .llm-loading,
+.player-llm-body .llm-panel-source {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-bottom: 10px;
+}
+
+.player-llm-body .llm-meta-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.player-llm-body .llm-song-row,
+.player-llm-body .llm-meta-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+.player-llm-body .llm-movie-col,
+.player-llm-body .llm-artists-col {
+    width: 100%;
+}
+
+.player-llm-body input[type="text"] {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--glass-fill-weak);
+    -webkit-backdrop-filter: blur(var(--glass-blur-sm));
+    backdrop-filter: blur(var(--glass-blur-sm));
+    border: 1px solid var(--glass-stroke-soft);
+    border-radius: var(--glass-radius-sm);
+    color: var(--text-primary);
+    padding: 9px 12px;
+    font-size: 0.85rem;
+    font-family: inherit;
+    outline: none;
+    box-shadow: 0 1px 0 var(--glass-highlight) inset;
+    transition: border-color 0.18s var(--apple-ease), background 0.18s var(--apple-ease),
+        box-shadow 0.18s var(--apple-ease);
+}
+
+.player-llm-body input[type="text"]::placeholder {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.player-llm-body input[type="text"]:focus {
+    border-color: rgba(10, 132, 255, 0.55);
+    background: var(--glass-fill);
+    box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.22), 0 1px 0 var(--glass-highlight) inset;
+}
+
+.player-llm-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 14px;
+    flex-shrink: 0;
+    background: var(--bar-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur-sm)) saturate(var(--glass-saturate));
+    border-top: 1px solid var(--glass-stroke-soft);
+    box-shadow: 0 1px 0 var(--glass-highlight) inset;
+}
+
+.player-llm-save {
+    background: rgba(10, 132, 255, 0.28);
+    color: #cfe6ff;
+    border-color: rgba(10, 132, 255, 0.55);
+    font-weight: 600;
+    padding: 7px 18px;
+    box-shadow: 0 0 14px rgba(10, 132, 255, 0.25), 0 1px 0 var(--glass-highlight) inset;
+}
+
+.player-llm-save:hover {
+    background: rgba(10, 132, 255, 0.42);
+    border-color: rgba(10, 132, 255, 0.75);
+    color: #ffffff;
+}
+
+#player-llm-btn.active {
+    background: rgba(10, 132, 255, 0.28);
+    color: #cfe6ff;
+    border-color: rgba(10, 132, 255, 0.55);
+    box-shadow: 0 0 14px rgba(10, 132, 255, 0.35), 0 1px 0 var(--glass-highlight) inset;
+}
+
+/* Narrow viewports: panel stacks under shell at reduced height */
+@media (max-width: 900px) {
+    .player-stage {
+        flex-direction: column;
+        height: auto;
+        max-height: 92vh;
+        width: min(96vw, 1100px);
+    }
+
+    .player-shell {
+        width: 100%;
+        height: min(56vh, 420px);
+        border-radius: var(--glass-radius-lg);
+    }
+
+    .player-stage.llm-open .player-shell {
+        border-radius: var(--glass-radius-lg) var(--glass-radius-lg) 0 0;
+        border-right-color: var(--glass-stroke-soft);
+        border-bottom-color: transparent;
+    }
+
+    .player-stage.llm-open .player-llm-panel {
+        flex: 0 0 auto;
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+        height: min(36vh, 280px);
+        border-left: 1px solid var(--glass-stroke-soft);
+        border-top: none;
+        border-radius: 0 0 var(--glass-radius-lg) var(--glass-radius-lg);
+    }
 }
