@@ -1,5 +1,30 @@
 const REFRESH_MS = 5000;
 
+const SVG_ICONS = {
+    indexing: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><circle cx="11" cy="13" r="3"/><path d="m14 16 2.5 2.5"/></svg>`,
+    llm_parse: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3z"/><path d="M5 3v4M3 5h4M19 17v4M17 19h4"/></svg>`,
+    duplicate_detect: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
+    spinner: `<svg class="spin-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
+    pause: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>`,
+    resume: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`,
+    cancel: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>`,
+    folder: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
+};
+
+function getIcon(name) {
+    return SVG_ICONS[name] || "";
+}
+
+function hashString(str) {
+    let hash = 0;
+    if (!str) return 0;
+    for (let i = 0; i < str.length; i++) {
+        hash = (hash << 5) - hash + str.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash);
+}
+
 function dotClass(healthy) {
     if (healthy === true) return "ok";
     if (healthy === false) return "bad";
@@ -26,6 +51,7 @@ function ollamaCard(entry) {
 async function populateMountSelects(mounts) {
     for (const id of ["llm-mount-select", "dup-mount-select"]) {
         const sel = document.getElementById(id);
+        if (!sel) continue;
         const current = sel.value;
         sel.querySelectorAll("option:not(:first-child)").forEach(o => o.remove());
         for (const m of mounts) {
@@ -40,6 +66,10 @@ async function populateMountSelects(mounts) {
 function renderJobsTable(jobs) {
     const tbody = document.getElementById("jobs-tbody");
     tbody.innerHTML = "";
+    if (!jobs || !jobs.length) {
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">No background jobs active.</td></tr>`;
+        return;
+    }
     for (const job of jobs) {
         const tr = document.createElement("tr");
         const progress = job.total_items
@@ -50,18 +80,20 @@ function renderJobsTable(jobs) {
         const canCancel = job.status === "RUNNING" || job.status === "PENDING" || job.status === "PAUSED";
         const eta = job.eta_seconds != null ? formatDuration(job.eta_seconds) : "—";
         tr.innerHTML = `
-            <td>${job.job_id}</td>
-            <td>${job.job_type}</td>
-            <td>${job.mount_name || "all"}</td>
+            <td><code>${escapeHtml(job.job_id)}</code></td>
+            <td>${escapeHtml(job.job_type)}</td>
+            <td>${escapeHtml(job.mount_name || "all")}</td>
             <td><span class="job-status-pill ${job.status}">${job.status}</span></td>
             <td>${eta}</td>
             <td>${progress}</td>
             <td>${job.failed_items || 0}</td>
-            <td>${job.updated_at || ""}</td>
+            <td>${formatDate(job.updated_at)}</td>
             <td>
-                ${canPause ? `<button class="btn btn-secondary btn-sm" data-action="pause" data-job="${job.job_id}">Pause</button>` : ""}
-                ${canResume ? `<button class="btn btn-primary btn-sm" data-action="resume" data-job="${job.job_id}">Resume</button>` : ""}
-                ${canCancel ? `<button class="btn btn-danger btn-sm" data-action="cancel" data-job="${job.job_id}">Cancel</button>` : ""}
+                <div class="job-actions-cell">
+                    ${canPause ? `<button class="btn-job-action btn-job-pause" data-action="pause" data-job="${escapeHtml(job.job_id)}" title="Pause Job">${getIcon('pause')} <span>Pause</span></button>` : ""}
+                    ${canResume ? `<button class="btn-job-action btn-job-resume" data-action="resume" data-job="${escapeHtml(job.job_id)}" title="Resume Job">${getIcon('resume')} <span>Resume</span></button>` : ""}
+                    ${canCancel ? `<button class="btn-job-action btn-job-cancel" data-action="cancel" data-job="${escapeHtml(job.job_id)}" title="Cancel Job">${getIcon('cancel')} <span>Cancel</span></button>` : ""}
+                </div>
             </td>`;
         tbody.appendChild(tr);
     }
@@ -77,9 +109,21 @@ function renderJobsTable(jobs) {
 
 function renderBacklog(backlog) {
     const el = document.getElementById("llm-backlog-list");
-    el.innerHTML = Object.entries(backlog || {})
-        .map(([mount, count]) => `<div class="backlog-pill">${mount}: ${count} unparsed</div>`)
-        .join("") || `<span class="admin-hint">No backlog data (MySQL disabled?)</span>`;
+    const entries = Object.entries(backlog || {});
+    if (!entries.length) {
+        el.innerHTML = `<span class="admin-hint">No backlog data (MySQL disabled?)</span>`;
+        return;
+    }
+    el.innerHTML = entries
+        .map(([mount, count]) => {
+            const colorIdx = hashString(mount) % 8;
+            return `<div class="backlog-pill tag-color-${colorIdx}">
+                <span class="backlog-pill-icon">${getIcon('folder')}</span>
+                <span class="mount-name">${escapeHtml(mount)}</span>
+                <span class="count-badge">${count} unparsed</span>
+            </div>`;
+        })
+        .join("");
 }
 
 function formatDuration(seconds) {
@@ -121,7 +165,19 @@ function escapeHtml(str) {
 
 function formatDate(iso) {
     if (!iso) return "—";
-    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+    try { 
+        const date = new Date(iso);
+        if (isNaN(date.getTime())) return iso;
+        return date.toLocaleString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        }); 
+    } catch { 
+        return iso; 
+    }
 }
 
 function actionStatusBadge(status) {
@@ -144,38 +200,45 @@ function renderMountActionsTable(statuses) {
         const llmRunning = llm && ["RUNNING", "PENDING"].includes(llm.status?.toUpperCase());
         const dupRunning = dup && ["RUNNING", "PENDING"].includes(dup.status?.toUpperCase());
 
+        const colorIdx = hashString(mount) % 8;
+
         html += `<tr>
-            <td><strong>${escapeHtml(mount)}</strong></td>
-            <td>
-                <div class="action-cell">
+            <td class="col-mount">
+                <div class="mount-name-container">
+                    <span class="mount-icon-badge tag-color-${colorIdx}">${getIcon('folder')}</span>
+                    <span class="mount-name-text">${escapeHtml(mount)}</span>
+                </div>
+            </td>
+            <td class="col-action">
+                <div class="action-cell action-cell-indexing">
                     <div class="action-info">
                         ${actionStatusBadge(idx?.status)}
-                        <span class="action-date">${formatDate(idx?.updated_at)}</span>
+                        <span class="action-date" title="${escapeHtml(formatDate(idx?.updated_at))}">${formatDate(idx?.updated_at)}</span>
                     </div>
-                    <button class="btn-icon-action" data-mount="${escapeHtml(mount)}" data-action="indexing" title="Start indexing" ${idxRunning ? 'disabled' : ''}>
-                        ${idxRunning ? '⏳' : '▶'}
+                    <button class="btn-icon-action action-indexing ${idxRunning ? 'is-running' : ''}" data-mount="${escapeHtml(mount)}" data-action="indexing" title="${idxRunning ? 'Indexing in progress...' : 'Start indexing'}" ${idxRunning ? 'disabled' : ''}>
+                        ${idxRunning ? getIcon('spinner') : getIcon('indexing')}
                     </button>
                 </div>
             </td>
-            <td>
-                <div class="action-cell">
+            <td class="col-action">
+                <div class="action-cell action-cell-llm">
                     <div class="action-info">
                         ${actionStatusBadge(llm?.status)}
-                        <span class="action-date">${formatDate(llm?.updated_at)}</span>
+                        <span class="action-date" title="${escapeHtml(formatDate(llm?.updated_at))}">${formatDate(llm?.updated_at)}</span>
                     </div>
-                    <button class="btn-icon-action" data-mount="${escapeHtml(mount)}" data-action="llm_parse" title="Start LLM parse" ${llmRunning ? 'disabled' : ''}>
-                        ${llmRunning ? '⏳' : '🧠'}
+                    <button class="btn-icon-action action-llm ${llmRunning ? 'is-running' : ''}" data-mount="${escapeHtml(mount)}" data-action="llm_parse" title="${llmRunning ? 'LLM parse in progress...' : 'Start LLM parse'}" ${llmRunning ? 'disabled' : ''}>
+                        ${llmRunning ? getIcon('spinner') : getIcon('llm_parse')}
                     </button>
                 </div>
             </td>
-            <td>
-                <div class="action-cell">
+            <td class="col-action">
+                <div class="action-cell action-cell-dup">
                     <div class="action-info">
                         ${actionStatusBadge(dup?.status)}
-                        <span class="action-date">${formatDate(dup?.updated_at)}</span>
+                        <span class="action-date" title="${escapeHtml(formatDate(dup?.updated_at))}">${formatDate(dup?.updated_at)}</span>
                     </div>
-                    <button class="btn-icon-action" data-mount="${escapeHtml(mount)}" data-action="duplicate_detect" title="Start duplicate detection" ${dupRunning ? 'disabled' : ''}>
-                        ${dupRunning ? '⏳' : '⊞'}
+                    <button class="btn-icon-action action-dup ${dupRunning ? 'is-running' : ''}" data-mount="${escapeHtml(mount)}" data-action="duplicate_detect" title="${dupRunning ? 'Duplicate detection in progress...' : 'Start duplicate detection'}" ${dupRunning ? 'disabled' : ''}>
+                        ${dupRunning ? getIcon('spinner') : getIcon('duplicate_detect')}
                     </button>
                 </div>
             </td>
@@ -205,10 +268,8 @@ function formatEta(seconds) {
 }
 
 async function triggerMountAction(mount, action) {
-    // Close any existing stream/poll
     cleanupMountAction();
 
-    // Show console
     MOUNT_ACTION_CONSOLE.classList.remove("hidden");
     MOUNT_ACTION_LOG.innerHTML = "";
     MOUNT_ACTION_STATUS.textContent = `Starting ${action} for ${mount}...`;
@@ -238,7 +299,7 @@ async function triggerMountAction(mount, action) {
                 } else {
                     const pct = data.progress_percentage ?? 0;
                     const eta = data.eta_seconds ? formatEta(data.eta_seconds) : "--";
-                    MOUNT_ACTION_STATUS.textContent = `Indexing ${mount}: ${data.processed_files || 0}/${data.total_files || 0} (${pct}%) ETA ${eta}`;
+                    MOUNT_ACTION_STATUS.textContent = `Indexing ${mount}: ${data.media_files || 0}/${data.total_files || 0} (${pct}%) ETA ${eta}`;
                 }
             };
             mountActionStream.onerror = () => {
@@ -331,7 +392,6 @@ MOUNT_ACTION_HIDE.addEventListener("click", () => {
     cleanupMountAction();
 });
 
-// ---- Fetch mount statuses periodically ----
 async function refreshMountStatuses() {
     try {
         const res = await fetch("/api/admin/mounts/status");
@@ -344,7 +404,6 @@ async function refreshMountStatuses() {
 
 document.getElementById("btn-refresh-mounts").addEventListener("click", refreshMountStatuses);
 
-// ---- Main refresh function ----
 async function refresh() {
     try {
         const res = await fetch("/api/admin/status");
@@ -372,7 +431,6 @@ async function refresh() {
     await refreshMountStatuses();
 }
 
-// ---- Event listeners ----
 document.getElementById("btn-refresh").addEventListener("click", refresh);
 
 document.getElementById("btn-refresh-ollama").addEventListener("click", async () => {
@@ -394,6 +452,5 @@ document.getElementById("btn-start-dup-job").addEventListener("click", async () 
     refresh();
 });
 
-// ---- Initial load and periodic refresh ----
 refresh();
 setInterval(refresh, REFRESH_MS);

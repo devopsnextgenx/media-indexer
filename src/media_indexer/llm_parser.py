@@ -165,7 +165,7 @@ def parse_and_cache_title(
 
 # ---------------------------------------------------------------------------
 # Standalone CLI — can independently (re)load the database from a list of
-# titles, or from whatever `processed_files` reports as not-yet-parsed.
+# titles, or from whatever `media_files` reports as not-yet-parsed.
 # ---------------------------------------------------------------------------
 def _iter_titles_from_db(mount: Optional[str], limit: Optional[int]):
     batch_size = settings.jobs.llm_parsing.batch_size

@@ -85,9 +85,9 @@ function bindEvents() {
     });
 
     ["language", "quality", "actress", "industry", "movie-name"].forEach((id) => {
-        el(id).addEventListener("change", () => { 
-            persistPrefs(); 
-            updateTargetPreview(); 
+        el(id).addEventListener("change", () => {
+            persistPrefs();
+            updateTargetPreview();
             updateDownloadEntry();
         });
         el(id).addEventListener("input", () => {
@@ -270,7 +270,6 @@ function resultRow(item) {
     const row = document.createElement("div");
     row.className = "result-row";
 
-    // Set background image with overlay layer
     const bgUrl = thumbnailUrl(item);
     if (bgUrl && bgUrl !== THUMB_PLACEHOLDER) {
         row.style.backgroundImage = `url("${bgUrl}")`;
@@ -286,12 +285,9 @@ function resultRow(item) {
     const displayTitle = item.normalized_title || item.file_name || "Untitled";
     const titleEl = text("div", "result-title", displayTitle);
     titleEl.title = displayTitle;
+    titleEl.style.cursor = "pointer";
+    titleEl.addEventListener("click", () => openPlayer(item));
     body.appendChild(titleEl);
-
-    const fileName = item.file_name || "";
-    const fileNameEl = text("div", "result-meta", fileName);
-    fileNameEl.title = fileName;
-    body.appendChild(fileNameEl);
 
     body.appendChild(
         text(
@@ -316,7 +312,7 @@ function resultRow(item) {
         <span class="result-score">score ${item.score}</span>
         <span><code class="clickable-id" title="Click to copy Vector ID">${escapeHtml(vectorId)}</code></span>
     `;
-        // <span><code class="clickable-id" title="Click to copy MySQL ID">${escapeHtml(mysqlId)}</code></span>
+    // <span><code class="clickable-id" title="Click to copy MySQL ID">${escapeHtml(mysqlId)}</code></span>
 
     const codes = dbRow.querySelectorAll(".clickable-id");
     if (codes[0]) codes[0].addEventListener("click", () => copyToClipboard(vectorId, "Vector ID"));
@@ -859,3 +855,229 @@ async function cleanRecord(item, buttonEl) {
         buttonEl.disabled = false;
     }
 }
+
+
+// ------------------------------------------------------------------ Player state
+let currentPlayerItem = null;
+let playerSeekTimer = null;
+let arrowSeekIndex = 0;
+let arrowSeekSteps = [3, 5, 7, 10];
+
+// ------------------------------------------------------------------ Stream URL
+function streamUrl(item) {
+    const jellyfinId = item.jellyfin?.jellyfin_id || item.jellyfin?.jf_id || item.jellyfin_id;
+    if (jellyfinId) {
+        return `${state.serverUrl}/api/media/jellyfin/stream?jellyfin_id=${encodeURIComponent(jellyfinId)}`;
+    }
+    return `${state.serverUrl}/api/media/stream?path=${encodeURIComponent(item.file_path || item.path || '')}`;
+}
+
+// ------------------------------------------------------------------ Player DOM refs
+const playerOverlay = document.getElementById('player-overlay');
+const playerShell = document.querySelector('.player-shell');
+const playerVideo = document.getElementById('player-video');
+const playerTitle = document.getElementById('player-title');
+const playerMeta = document.getElementById('player-meta');
+const playerClose = document.getElementById('player-close');
+const playerPlay = document.getElementById('player-play');
+const playerMute = document.getElementById('player-mute');
+const playerFullscreen = document.getElementById('player-fullscreen');
+const playerProgress = document.getElementById('player-progress');
+const playerVolume = document.getElementById('player-volume');
+const playerCurrent = document.getElementById('player-current');
+const playerDuration = document.getElementById('player-duration');
+const playerSeekBadge = document.getElementById('player-seek-badge');
+
+// Shuffle/loop/prev/next are present but not used for single-file playback; we keep them for style consistency.
+// We'll wire them with no-ops or hide them optionally.
+const playerShuffle = document.getElementById('player-shuffle');
+const playerPrev = document.getElementById('player-prev');
+const playerNext = document.getElementById('player-next');
+const playerLoop = document.getElementById('player-loop');
+
+// ------------------------------------------------------------------ Player functions
+function openPlayer(item) {
+    if (!item) return;
+    currentPlayerItem = item;
+    const title = item.normalized_title || item.file_name || item.name || 'Untitled';
+    playerTitle.textContent = title;
+    const resolution = item.resolution || item.metadata?.resolution || '';
+    const sizeHuman = item.size_human || item.metadata?.file_size_human || '';
+    playerMeta.textContent = [resolution, sizeHuman].filter(Boolean).join(' \u2022 ');
+    playerVideo.src = streamUrl(item);
+    playerOverlay.classList.remove('hidden');
+    playerVideo.volume = parseFloat(playerVolume.value);
+    playerVideo.play().catch(() => { });
+}
+
+function closePlayer() {
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    playerVideo.pause();
+    playerVideo.removeAttribute('src');
+    playerVideo.load();
+    playerOverlay.classList.add('hidden');
+    currentPlayerItem = null;
+    clearTimeout(playerSeekTimer);
+    playerSeekTimer = null;
+    arrowSeekIndex = 0;
+    playerSeekBadge.classList.add('hidden');
+}
+
+function togglePlay() {
+    if (playerVideo.paused) playerVideo.play(); else playerVideo.pause();
+}
+
+function toggleFullscreen() {
+    if (document.fullscreenElement) {
+        document.exitFullscreen?.();
+    } else {
+        (playerShell.requestFullscreen || playerShell.webkitRequestFullscreen)?.call(playerShell);
+    }
+}
+
+function getSeekIncrement() {
+    const step = arrowSeekSteps[Math.min(arrowSeekIndex, arrowSeekSteps.length - 1)];
+    arrowSeekIndex++;
+    clearTimeout(playerSeekTimer);
+    playerSeekTimer = setTimeout(() => { arrowSeekIndex = 0; }, 2000);
+    return step;
+}
+
+function showSeekBadge(direction, step) {
+    if (!playerSeekBadge) return;
+    playerSeekBadge.classList.remove('hidden', 'left', 'right');
+    if (direction === 'left') {
+        playerSeekBadge.classList.add('left');
+        playerSeekBadge.innerHTML = `&#171; -${step}s`;
+    } else {
+        playerSeekBadge.classList.add('right');
+        playerSeekBadge.innerHTML = `+${step}s &#187;`;
+    }
+    clearTimeout(playerSeekTimer);
+    playerSeekTimer = setTimeout(() => {
+        playerSeekBadge.classList.add('hidden');
+    }, 800);
+}
+
+function formatClock(seconds) {
+    if (!isFinite(seconds)) return '00:00';
+    const total = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const mm = String(m).padStart(2, '0');
+    const ss = String(s).padStart(2, '0');
+    return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+// ------------------------------------------------------------------ Player event listeners
+playerClose.addEventListener('click', closePlayer);
+playerOverlay.addEventListener('click', (e) => {
+    if (e.target === playerOverlay) closePlayer();
+});
+playerPlay.addEventListener('click', togglePlay);
+playerVideo.addEventListener('play', () => { playerPlay.innerHTML = '&#10074;&#10074;'; });
+playerVideo.addEventListener('pause', () => { playerPlay.innerHTML = '&#9654;'; });
+
+playerVideo.addEventListener('loadedmetadata', () => {
+    const dur = isFinite(playerVideo.duration) ? playerVideo.duration : 0;
+    playerProgress.max = dur;
+    playerDuration.textContent = formatClock(dur);
+});
+
+playerVideo.addEventListener('timeupdate', () => {
+    if (playerProgress === document.activeElement) return;
+    playerProgress.value = playerVideo.currentTime;
+    playerCurrent.textContent = formatClock(playerVideo.currentTime);
+});
+
+playerProgress.addEventListener('input', () => {
+    playerCurrent.textContent = formatClock(parseFloat(playerProgress.value));
+});
+playerProgress.addEventListener('change', () => {
+    playerVideo.currentTime = parseFloat(playerProgress.value);
+});
+
+playerVolume.addEventListener('input', () => {
+    playerVideo.volume = parseFloat(playerVolume.value);
+    playerVideo.muted = playerVolume.value === 0;
+});
+playerMute.addEventListener('click', () => {
+    playerVideo.muted = !playerVideo.muted;
+});
+playerVideo.addEventListener('volumechange', () => {
+    playerMute.innerHTML = (playerVideo.muted || playerVideo.volume === 0) ? '&#128263;' : '&#128266;';
+    if (!playerVideo.muted) playerVolume.value = playerVideo.volume;
+});
+
+playerFullscreen.addEventListener('click', toggleFullscreen);
+document.addEventListener('fullscreenchange', () => {
+    playerFullscreen.title = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
+});
+
+// Keyboard shortcuts when player is open
+document.addEventListener('keydown', (e) => {
+    if (playerOverlay.classList.contains('hidden')) return;
+    if (e.key === 'Escape' && !document.fullscreenElement) closePlayer();
+    if (e.key === ' ' && e.target === document.body) {
+        e.preventDefault();
+        togglePlay();
+    }
+    if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        const isInputTarget = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName);
+        if (!isInputTarget) {
+            e.preventDefault();
+            const step = getSeekIncrement();
+            if (e.key === 'ArrowLeft') {
+                playerVideo.currentTime = Math.max(0, playerVideo.currentTime - step);
+                showSeekBadge('left', step);
+            } else {
+                const maxTime = isFinite(playerVideo.duration) ? playerVideo.duration : playerVideo.currentTime + step;
+                playerVideo.currentTime = Math.min(maxTime, playerVideo.currentTime + step);
+                showSeekBadge('right', step);
+            }
+        }
+    }
+});
+
+// Double-click video to fullscreen
+let playerClickTimer = null;
+playerVideo.addEventListener('click', () => {
+    if (playerClickTimer) return;
+    playerClickTimer = setTimeout(() => {
+        playerClickTimer = null;
+        togglePlay();
+    }, 220);
+});
+playerVideo.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    clearTimeout(playerClickTimer);
+    playerClickTimer = null;
+    toggleFullscreen();
+});
+
+// Autohide chrome when fullscreen (simple version)
+let chromeTimer = null;
+function showChrome() {
+    playerShell.classList.remove('chrome-hidden');
+    clearTimeout(chromeTimer);
+    if (document.fullscreenElement) {
+        chromeTimer = setTimeout(() => playerShell.classList.add('chrome-hidden'), 3000);
+    }
+}
+document.addEventListener('pointermove', () => {
+    if (playerOverlay.classList.contains('hidden')) return;
+    showChrome();
+}, true);
+playerShell.addEventListener('mouseenter', showChrome, true);
+
+// Shuffle/loop/prev/next are no-ops in single-file mode – keep them but disable
+playerShuffle.style.opacity = '0.4';
+playerLoop.style.opacity = '0.4';
+playerPrev.style.opacity = '0.4';
+playerNext.style.opacity = '0.4';
+playerShuffle.style.pointerEvents = 'none';
+playerLoop.style.pointerEvents = 'none';
+playerPrev.style.pointerEvents = 'none';
+playerNext.style.pointerEvents = 'none';

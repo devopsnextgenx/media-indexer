@@ -126,7 +126,7 @@ def tokens_match(a: str, b: str, code_a: str, code_b: str) -> bool:
 # ---------------------------------------------------------------------------
 @dataclass
 class SongFile:
-    file_id: str                     # point_id from processed_files
+    file_id: str                     # point_id from media_files
     full_path: str
     tokens: List[str] = field(default_factory=list)
     codes: List[str] = field(default_factory=list)

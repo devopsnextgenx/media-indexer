@@ -14,7 +14,7 @@ CREATE TABLE `indexing_jobs` (
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `total_files` int DEFAULT '0',
-  `processed_files` int DEFAULT '0',
+  `media_files` int DEFAULT '0',
   `added_files` int DEFAULT '0',
   `updated_files` int DEFAULT '0',
   `skipped_files` int DEFAULT '0',
@@ -29,17 +29,31 @@ CREATE TABLE `indexing_jobs` (
 CREATE TABLE `duplicate_groups` (
   `group_id` varchar(80) NOT NULL,
   `title_key` varchar(512) DEFAULT NULL,
+  `scope_key` varchar(512) DEFAULT NULL,
   `member_count` int DEFAULT NULL,
+  `mount` varchar(255) DEFAULT NULL,
+  `folder_path` varchar(1024) DEFAULT NULL,
   `created_at` datetime DEFAULT NULL,
   `updated_at` datetime DEFAULT NULL,
-  PRIMARY KEY (`group_id`)
+  PRIMARY KEY (`group_id`),
+  KEY `idx_mount` (`mount`),
+  KEY `idx_scope` (`scope_key`(255)),
+  KEY `idx_folder` (`folder_path`(255))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 
 CREATE TABLE `duplicate_group_candidates` (
   `id` int NOT NULL AUTO_INCREMENT,
   `group_id` varchar(80) NOT NULL,
-  `file_id` int NOT NULL,
-  `full_path` varchar(1024) DEFAULT NULL,
+  `file_id` varchar(255) NOT NULL,
+  `full_path` varchar(1024) NOT NULL,
+  `file_name` varchar(512) DEFAULT NULL,
+  `mount` varchar(255) DEFAULT NULL,
+  `resolution` varchar(16) DEFAULT NULL,
+  `rank_in_group` int DEFAULT '0',
+  `is_primary` tinyint(1) DEFAULT '0',
+  `song_title` varchar(512) DEFAULT NULL,
+  `movie_or_album` varchar(512) DEFAULT NULL,
+  `artists_json` text,
   `title_score` decimal(5,1) DEFAULT NULL,
   `movie_score` decimal(5,1) DEFAULT NULL,
   `artist_score` decimal(5,1) DEFAULT NULL,
@@ -51,11 +65,13 @@ CREATE TABLE `duplicate_group_candidates` (
   `updated_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_group_file` (`group_id`,`file_id`),
-  KEY `idx_status` (`status`),
+  KEY `idx_mount` (`mount`),
+  KEY `idx_file_name` (`file_name`(255)),
+  KEY `idx_full_path` (`full_path`(255)),
   CONSTRAINT `fk_dgc_group` FOREIGN KEY (`group_id`) REFERENCES `duplicate_groups` (`group_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 
-CREATE TABLE `processed_files` (
+CREATE TABLE `media_files` (
   `id` varchar(255) NOT NULL,
   `file_path` varchar(1024) NOT NULL,
   `file_name` varchar(255) NOT NULL,

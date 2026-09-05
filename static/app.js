@@ -14,7 +14,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnYt = document.getElementById("btn-yt");
 
     const mountSelect = document.getElementById("mount-select");
-    const nameTierMinDf = document.getElementById("name-tier-min-df");
     const scanModeToggle = document.getElementById("scan-mode-toggle");
     const scanModeLabel = document.getElementById("scan-mode-label");
     const scanConsole = document.getElementById("scan-console");
@@ -75,19 +74,44 @@ document.addEventListener("DOMContentLoaded", () => {
     let downloadSortDir = "desc";
 
     // Library tab state
-    let libraryMount = "all";
-    let libraryPath = "";
+    // Restore last-visited mount/folder/sort so a page refresh doesn't dump the
+    // user back at "All Mounts". Falls back to defaults if nothing was saved yet.
+    const SAVED_LIBRARY_MOUNT = localStorage.getItem("library_mount");
+    const SAVED_LIBRARY_PATH = localStorage.getItem("library_path");
+    const SAVED_LIBRARY_SORT = localStorage.getItem("library_sort");
+    const SAVED_LIBRARY_SORT_DIR = localStorage.getItem("library_sort_dir");
+    let libraryMount = SAVED_LIBRARY_MOUNT || "all";
+    let libraryPath = SAVED_LIBRARY_PATH || "";
     let libraryOffset = 0;
     const LIBRARY_PAGE_SIZE = 150;
     let libraryHasMore = false;
     let libraryLoading = false;
     let libraryItems = [];          // accumulated items for the current folder (across pages)
-    let librarySort = "name";
-    let librarySortDir = "asc";
+    let librarySort = ["name", "size", "resolution", "duration"].includes(SAVED_LIBRARY_SORT) ? SAVED_LIBRARY_SORT : "name";
+    let librarySortDir = (SAVED_LIBRARY_SORT_DIR === "asc" || SAVED_LIBRARY_SORT_DIR === "desc") ? SAVED_LIBRARY_SORT_DIR : "asc";
     const CARD_SIZE_PX = { xs: 96, s: 126, m: 150, l: 270, xl: 420 };
     const SAVED_CARD_SIZE = localStorage.getItem("library_card_size");
     let cardSize = (SAVED_CARD_SIZE && CARD_SIZE_PX.hasOwnProperty(SAVED_CARD_SIZE)) ? SAVED_CARD_SIZE : "m";
     let libraryRequestToken = 0;    // guards against out-of-order responses when navigating fast
+
+    // Duplicate groups state
+    let duplicateGroups = [];
+    let duplicateOffset = 0;
+    const DUPLICATE_PAGE_SIZE = 20;
+    let duplicateHasMore = false;
+    let duplicateLoading = false;
+    let duplicateFilters = {
+        reviewed: "UNRESOLVED",   // default: only unresolved groups
+        status: null,             // candidate status filter: 'PENDING', 'NOT_DUPLICATE', etc.
+    };
+    let duplicateSort = { sort_by: "count", sort_dir: "desc" };
+
+    function saveLibraryState() {
+        localStorage.setItem("library_mount", libraryMount);
+        localStorage.setItem("library_path", libraryPath);
+        localStorage.setItem("library_sort", librarySort);
+        localStorage.setItem("library_sort_dir", librarySortDir);
+    }
     // Short-lived client cache so breadcrumb "back" navigation doesn't re-hit the server
     const libraryPageCache = new Map(); // key: `${mount}::${path}::${sort}::${sortDir}` -> {items, hasMore, total}
     const LIBRARY_CLIENT_CACHE_TTL = 20000;
@@ -335,7 +359,7 @@ document.addEventListener("DOMContentLoaded", () => {
             resultsCount.textContent = "";
         }
     });
-    
+
     // Focus input when clicking inside wrapper (excluding the history button)
     const searchInputWrapper = document.querySelector(".search-input-wrapper");
     if (searchInputWrapper && searchInput) {
@@ -388,7 +412,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (typeof val === 'number') return val;
         if (!val) return 0;
         const str = String(val).trim().toLowerCase();
-        
+
         let total = 0;
         const matches = [...str.matchAll(/(\d+)\s*([hms])?/g)];
         if (matches.length > 0) {
@@ -432,7 +456,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function evaluateToken(item, token) {
         const kvMatch = token.match(/^([a-zA-Z0-9_-]+)(:|=|>=|<=|>|<)(.*)$/);
-        
+
         if (!kvMatch) {
             const needle = token.toLowerCase();
             const tagsStr = (item.folder_tags || []).join(" ").toLowerCase();
@@ -464,7 +488,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             const standardResolutions = [480, 576, 720, 1080, 1440, 2160];
-            const closestStandard = standardResolutions.reduce((prev, curr) => 
+            const closestStandard = standardResolutions.reduce((prev, curr) =>
                 Math.abs(curr - itemRes) < Math.abs(prev - itemRes) ? curr : prev
             );
 
@@ -477,12 +501,12 @@ document.addEventListener("DOMContentLoaded", () => {
             const activeOp = op === ':' ? '=' : op;
 
             switch (activeOp) {
-                case '>':  return itemDur > targetDur;
-                case '<':  return itemDur < targetDur;
+                case '>': return itemDur > targetDur;
+                case '<': return itemDur < targetDur;
                 case '>=': return itemDur >= targetDur;
                 case '<=': return itemDur <= targetDur;
                 case '=':
-                default:   return Math.abs(itemDur - targetDur) <= 5;
+                default: return Math.abs(itemDur - targetDur) <= 5;
             }
         }
 
@@ -492,12 +516,12 @@ document.addEventListener("DOMContentLoaded", () => {
             const activeOp = op === ':' ? '=' : op;
 
             switch (activeOp) {
-                case '>':  return itemSizeBytes > targetBytes;
-                case '<':  return itemSizeBytes < targetBytes;
+                case '>': return itemSizeBytes > targetBytes;
+                case '<': return itemSizeBytes < targetBytes;
                 case '>=': return itemSizeBytes >= targetBytes;
                 case '<=': return itemSizeBytes <= targetBytes;
-                case '=':  return Math.abs(itemSizeBytes - targetBytes) <= targetBytes * 0.05;
-                default:   return false;
+                case '=': return Math.abs(itemSizeBytes - targetBytes) <= targetBytes * 0.05;
+                default: return false;
             }
         }
 
@@ -603,7 +627,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Jellyfin poster aspect (2:3)
     const THUMB_WIDTH = 251;
     const THUMB_HEIGHT = 377;
-    const THUMB_PLACEHOLDER_SVG = `<svg xmlns='http://www.w3.org/2000/svg' width='${THUMB_WIDTH}' height='${THUMB_HEIGHT}'><rect width='100%' height='100%' fill='%23333'/></svg>`;
+    const THUMB_PLACEHOLDER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="${THUMB_WIDTH}" height="${THUMB_HEIGHT}"><rect width="100%" height="100%" fill="#333"/></svg>`;
     const THUMB_PLACEHOLDER = `data:image/svg+xml,${encodeURIComponent(THUMB_PLACEHOLDER_SVG)}`;
 
     function thumbnailUrl(item) {
@@ -627,11 +651,25 @@ document.addEventListener("DOMContentLoaded", () => {
         }[c]));
     }
 
+    function dateTimeFormat(timestamp) {
+        if (!timestamp) return "";
+        
+        // Auto-detect seconds (10-digit) vs milliseconds (13-digit)
+        const ms = timestamp < 1e11 ? timestamp * 1000 : timestamp;
+        const date = new Date(ms);
+        
+        return date.toLocaleString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit"
+        });
+    }
+
     const FOLDER_TAG_COLORS = ["#e67e22", "#2ecc71", "#3b82f6", "#e74c3c", "#9b59b6", "#f1c40f", "#1abc9c", "#34495e"];
 
-    // ==========================================
-    // DUPLICATE GROUP CHANGES: folderTagsHtml now shows dup-tag if group id present
-    // ==========================================
     function folderTagsHtml(item) {
         const tags = [];
         if (item.mount) {
@@ -642,17 +680,12 @@ document.addEventListener("DOMContentLoaded", () => {
             tags.push(...[...item.folder_tags].reverse());
         }
 
-        let dupHtml = '';
-        if (item.duplicate_group_id) {
-            dupHtml = `<span class="dup-tag" data-group-id="${escapeHtml(item.duplicate_group_id)}" data-file-path="${escapeHtml(item.file_path)}">Duplicates</span>`;
-        }
-
         const tagHtml = tags.map((tag, i) => {
             const color = FOLDER_TAG_COLORS[i % FOLDER_TAG_COLORS.length];
             return `<span class="folder-tag" style="border-color:${color};color:${color};">${escapeHtml(tag)}</span>`;
         }).join('');
 
-        return `<div class="folder-tags">${dupHtml}${tagHtml}</div>`;
+        return `<div class="folder-tags">${tagHtml}</div>`;
     }
 
     // ==========================================
@@ -706,12 +739,6 @@ document.addEventListener("DOMContentLoaded", () => {
             ? [`${entry.item_count}${entry.count_capped ? "+" : ""} item${entry.item_count === 1 ? "" : "s"}`]
             : [entry.duration, entry.resolution, entry.size_human].filter(Boolean);
 
-        // DUPLICATE GROUP: show dup tag for library files
-        let dupTag = '';
-        if (!isFolder && entry.duplicate_group_id) {
-            dupTag = `<span class="dup-tag" data-group-id="${escapeHtml(entry.duplicate_group_id)}" data-file-path="${escapeHtml(entry.file_path)}">Duplicates</span>`;
-        }
-
         const actionsHtml = isFolder ? "" : `
                     <div class="library-card-actions">
                         <button class="library-tile-icon-btn icon-rename" data-action="rename" title="Rename">
@@ -734,7 +761,6 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="library-card ${isFolder ? "is-folder" : "is-file"}" data-idx="${idx}" title="${escapeHtml(entry.name)}">
                 <div class="library-card-thumb">
                     ${thumbHtml}
-                    ${isFolder ? "" : dupTag}
                     ${isFolder ? `<span class="library-card-count-badge">${entry.item_count}${entry.count_capped ? "+" : ""}</span>` : ""}
                     ${actionsHtml}
                 </div>
@@ -810,6 +836,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function navigateLibrary(mount, path) {
         libraryMount = mount;
         libraryPath = path || "";
+        saveLibraryState();
         loadLibrary({ reset: true });
     }
 
@@ -829,13 +856,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 libraryHasMore = cached.hasMore;
                 renderBreadcrumb(cached.breadcrumb);
                 renderLibraryGrid(false);
-                if (libraryMount !== "all") {
-                    const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
-                    annotateLibraryItemsWithGroups(groups);
-                    renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
-                } else {
-                    document.getElementById("library-duplicates-section").style.display = "none";
-                }
                 updateLibraryCount(cached.total);
                 return;
             }
@@ -848,13 +868,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 libraryHasMore = idbCached.hasMore;
                 renderBreadcrumb(idbCached.breadcrumb);
                 renderLibraryGrid(false);
-                if (libraryMount !== "all") {
-                    const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
-                    annotateLibraryItemsWithGroups(groups);
-                    renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
-                } else {
-                    document.getElementById("library-duplicates-section").style.display = "none";
-                }
                 updateLibraryCount(idbCached.total);
                 libraryPageCache.set(cacheKey, { ...idbCached, cachedAt: Date.now() });
                 return;
@@ -886,14 +899,6 @@ document.addEventListener("DOMContentLoaded", () => {
             libraryHasMore = data.has_more;
 
             renderBreadcrumb(data.breadcrumb);
-            // Fetch duplicates for this folder (if not all mounts)
-            if (libraryMount !== "all") {
-                const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
-                annotateLibraryItemsWithGroups(groups);
-                renderDuplicatesGroups(groups, document.getElementById("library-duplicates-content"));
-            } else {
-                document.getElementById("library-duplicates-section").style.display = "none";
-            }
             renderLibraryGrid(!reset);
             updateLibraryCount(data.total);
 
@@ -915,26 +920,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // DUPLICATE GROUP: annotate library items with group id from fetched groups
-    function annotateLibraryItemsWithGroups(groups) {
-        if (!groups || !groups.length) return;
-        const groupMap = {};
-        groups.forEach(group => {
-            if (group.candidates) {
-                group.candidates.forEach(cand => {
-                    if (cand.full_path) {
-                        groupMap[cand.full_path] = group.group_id;
-                    }
-                });
-            }
-        });
-        libraryItems.forEach(item => {
-            if (item.type === 'file' && item.file_path && groupMap[item.file_path]) {
-                item.duplicate_group_id = groupMap[item.file_path];
-            }
-        });
-    }
-
     function updateLibraryCount(total) {
         libraryCountEl.textContent = total ? `${libraryItems.length} / ${total} items` : "";
     }
@@ -947,8 +932,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }, { rootMargin: "300px" });
     libraryObserver.observe(librarySentinel);
 
+    // Restore sort controls to reflect any persisted state before wiring listeners.
+    librarySortSelect.value = librarySort;
+    librarySortDirBtn.dataset.dir = librarySortDir;
+    librarySortDirBtn.innerHTML = librarySortDir === "asc" ? "&#8593; Asc" : "&#8595; Desc";
+
     librarySortSelect.addEventListener("change", () => {
         librarySort = librarySortSelect.value;
+        saveLibraryState();
         loadLibrary({ reset: true });
     });
 
@@ -956,6 +947,7 @@ document.addEventListener("DOMContentLoaded", () => {
         librarySortDir = librarySortDir === "asc" ? "desc" : "asc";
         librarySortDirBtn.dataset.dir = librarySortDir;
         librarySortDirBtn.innerHTML = librarySortDir === "asc" ? "&#8593; Asc" : "&#8595; Desc";
+        saveLibraryState();
         loadLibrary({ reset: true });
     });
 
@@ -1135,13 +1127,13 @@ document.addEventListener("DOMContentLoaded", () => {
     btnDetectDuplicates.addEventListener("click", async () => {
         const ok = await askConfirm({
             title: "Detect duplicate files",
-            message: "This will scan all mounted files and detect duplicates based on content hash. This may take a while.",
+            message: "This will group files that share an LLM-parsed song title within the same folder (across xhd/hd/sd). Files without AI metadata are skipped.",
             okLabel: "Start detection"
         });
         if (!ok) return;
 
         try {
-            const res = await fetch(`/api/admin/duplicates/detect?mount=${encodeURIComponent(mountSelect.value)}&nameTierMinDf=${encodeURIComponent(nameTierMinDf.value)}`, {
+            const res = await fetch(`/api/admin/duplicates/detect?mount=${encodeURIComponent(mountSelect.value)}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({})
@@ -1192,7 +1184,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const status = (data.status || "").toUpperCase();
             const total = data.total_files ?? data.total ?? 0;
-            const processed = data.current_index ?? data.processed_files ?? 0;
+            const processed = data.current_index ?? data.media_files ?? 0;
 
             if (status === "FAILED" && data.error) {
                 setMountStatus(mountName, `Scan aborted: ${data.error} (processed ${processed}/${total}, failed: ${data.failed_files || 0})`, processed, total);
@@ -1280,10 +1272,13 @@ document.addEventListener("DOMContentLoaded", () => {
         btnCleanIndex.innerText = "Cleaning...";
 
         try {
-            const res = await fetch("/api/admin/index/clean?mode=recreate&clear_manifests=true", { method: "POST" });
+            const res = await fetch("/api/admin/clean?mode=database", { method: "POST" });
             const data = await res.json();
 
             if (!res.ok) throw new Error(data.detail || "Clean failed");
+
+            showToast(`Cleaned database.`, "success");
+
 
             scanConsole.classList.remove("hidden");
             mountStatus.clear();
@@ -1317,20 +1312,12 @@ document.addEventListener("DOMContentLoaded", () => {
         btnCleanDuplicates.innerText = "Cleaning...";
 
         try {
-            const res = await fetch("/api/admin/duplicates/clean", { method: "delete" });
+            const res = await fetch("/api/admin/clean?mode=duplicates", { method: "POST" });
             const data = await res.json();
 
             if (!res.ok) throw new Error(data.detail || "Clean failed");
 
-            // {
-            //     "status": "success",
-            //     "results": {
-            //         "duplicate_group_candidates": 0,
-            //         "duplicate_groups": 24
-            //     }
-            // }
             showToast(`Duplicate groups cleaned. Removed ${JSON.stringify(data.results)} group(s).`, "success");
-            document.getElementById("library-duplicates-section").style.display = "none";
         } catch (err) {
             showToast(`Failed to clean duplicate groups: ${err.message}`, "error", 8000);
         } finally {
@@ -1391,8 +1378,39 @@ document.addEventListener("DOMContentLoaded", () => {
     const playerVolume = document.getElementById("player-volume");
     const playerCurrent = document.getElementById("player-current");
     const playerDuration = document.getElementById("player-duration");
+    const playerSeekBadge = document.getElementById("player-seek-badge");
 
     let seeking = false;
+    let arrowSeekSteps = [3, 5, 7, 10];
+    let arrowSeekIndex = 0;
+    let arrowSeekTimer = null;
+    let seekBadgeTimer = null;
+
+    function getSeekIncrement() {
+        const step = arrowSeekSteps[Math.min(arrowSeekIndex, arrowSeekSteps.length - 1)];
+        arrowSeekIndex++;
+        clearTimeout(arrowSeekTimer);
+        arrowSeekTimer = setTimeout(() => {
+            arrowSeekIndex = 0;
+        }, 2000);
+        return step;
+    }
+
+    function showSeekBadge(direction, step) {
+        if (!playerSeekBadge) return;
+        playerSeekBadge.classList.remove("hidden", "left", "right");
+        if (direction === "left") {
+            playerSeekBadge.classList.add("left");
+            playerSeekBadge.innerHTML = `&#171; -${step}s`;
+        } else {
+            playerSeekBadge.classList.add("right");
+            playerSeekBadge.innerHTML = `+${step}s &#187;`;
+        }
+        clearTimeout(seekBadgeTimer);
+        seekBadgeTimer = setTimeout(() => {
+            playerSeekBadge.classList.add("hidden");
+        }, 800);
+    }
 
     function formatClock(seconds) {
         if (!isFinite(seconds)) return "00:00";
@@ -1490,7 +1508,7 @@ document.addEventListener("DOMContentLoaded", () => {
         playerVideo.src = streamUrl(item);
         playerOverlay.classList.remove("hidden");
         playerVideo.volume = Number(playerVolume.value);
-        playerVideo.play().catch(() => {});
+        playerVideo.play().catch(() => { });
         updateQueueInfo();
     }
 
@@ -1621,7 +1639,7 @@ document.addEventListener("DOMContentLoaded", () => {
     playerVideo.addEventListener("ended", () => {
         if (loopMode === "one") {
             playerVideo.currentTime = 0;
-            playerVideo.play().catch(() => {});
+            playerVideo.play().catch(() => { });
             return;
         }
         nextTrack();
@@ -1636,6 +1654,11 @@ document.addEventListener("DOMContentLoaded", () => {
         currentPlaylist = [];
         playOrder = [];
         orderPos = -1;
+        clearTimeout(arrowSeekTimer);
+        arrowSeekTimer = null;
+        arrowSeekIndex = 0;
+        clearTimeout(seekBadgeTimer);
+        if (playerSeekBadge) playerSeekBadge.classList.add("hidden");
     }
 
     playerClose.addEventListener("click", closePlayer);
@@ -1650,6 +1673,28 @@ document.addEventListener("DOMContentLoaded", () => {
             togglePlay();
         }
         if (e.key === "f" || e.key === "F") toggleFullscreen();
+        if (e.key === "n" || e.key === "N" || e.key === "p" || e.key === "P") {
+            const isInputTarget = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target?.tagName);
+            if (!isInputTarget) {
+                e.preventDefault();
+                if (e.key === "n" || e.key === "N") nextTrack(); else prevTrack();
+            }
+        }
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            const isInputTarget = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target?.tagName);
+            if (!isInputTarget) {
+                e.preventDefault();
+                const step = getSeekIncrement();
+                if (e.key === "ArrowLeft") {
+                    playerVideo.currentTime = Math.max(0, playerVideo.currentTime - step);
+                    showSeekBadge("left", step);
+                } else {
+                    const maxTime = isFinite(playerVideo.duration) ? playerVideo.duration : playerVideo.currentTime + step;
+                    playerVideo.currentTime = Math.min(maxTime, playerVideo.currentTime + step);
+                    showSeekBadge("right", step);
+                }
+            }
+        }
     });
 
     function togglePlay() {
@@ -1769,6 +1814,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const vectorId = item.id || item.vector_id || "N/A";
             const mysqlId = item.mysql_id || item.db_id || item.file_id || "N/A";
 
+            const viewDuplicateBtn = item.duplicate_group_id ? `<button class="icon-button icon-button-warning" id="duplicate-toggle-${idx}" onclick="toggleDuplicateMetadata(${idx})" title="View duplicate candidates" aria-label="View duplicate candidates">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="4"></circle><circle cx="16" cy="16" r="4"></circle><path d="m11 11 2 2"></path></svg>
+                        </button>`: "";
+
             return `
             <tr>
                 <td class="col-thumb">
@@ -1779,7 +1828,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     loading="lazy" 
                     onerror="this.src='${THUMB_PLACEHOLDER}'" 
                     onclick="playMedia(${idx})"
-                    style="cursor: pointer; display: inline-block; position: relative; z-index: 10;"
+                    style="cursor: pointer; display: inline-block; position: relative;"
                     />
                 </td>
                 <td class="col-details">
@@ -1787,18 +1836,18 @@ document.addEventListener("DOMContentLoaded", () => {
                         class="file-title" 
                         title="${escapeHtml(item.normalized_title)}" 
                         onclick="playMedia(${idx})"
-                        style="cursor: pointer; position: relative; z-index: 10;"
+                        style="cursor: pointer; position: relative;"
                         >
                         ${escapeHtml(item.normalized_title)}
                     </div>
                     <small class="file-name" title="${escapeHtml(item.file_name)}">${escapeHtml(item.file_name)}</small>
                     ${folderTagsHtml(item)}
                     
-                    <!-- DB Identifiers with Inline Icon Button -->
-                    <div class="db-identifiers" style="margin-top: 6px; font-size: 11px; color: #888; display: flex; align-items: center; gap: 6px;">
+                    <div class="db-identifiers">
                         <span><strong>Vector ID:</strong> <code>${escapeHtml(vectorId)}</code></span> | 
                         <span><strong>MySQL ID:</strong> <code>${escapeHtml(mysqlId)}</code></span>
-                        <button class="btn-icon-clean" onclick="cleanRecord(${idx})" title="Clean index (Remove from DBs, keep disk file)">
+                        <div class="inline-action-group">
+                        <button class="icon-button icon-button-warning" onclick="cleanRecord(${idx})" title="Clean index records" aria-label="Clean index records">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <polyline points="3 6 5 6 21 6"></polyline>
                                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -1806,13 +1855,15 @@ document.addEventListener("DOMContentLoaded", () => {
                                 <line x1="14" y1="11" x2="14" y2="17"></line>
                             </svg>
                         </button>
-                        <button class="btn-icon-llm" id="llm-toggle-${idx}" style="margin-left:auto;" onclick="toggleLlmMetadata(${idx})" title="View/edit AI-extracted metadata">
+                        ${viewDuplicateBtn}
+                        <button class="icon-button" id="llm-toggle-${idx}" onclick="toggleLlmMetadata(${idx})" title="View or edit AI metadata" aria-label="View or edit AI metadata">
                             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M12 2a4 4 0 0 0-4 4v1.17A4 4 0 0 0 5 11v2a4 4 0 0 0 2 3.46V18a4 4 0 0 0 8 0v-1.54A4 4 0 0 0 19 13v-2a4 4 0 0 0-3-3.83V6a4 4 0 0 0-4-4z"></path>
                                 <line x1="9" y1="11" x2="9.01" y2="11"></line>
                                 <line x1="15" y1="11" x2="15.01" y2="11"></line>
                             </svg>
                         </button>
+                        </div>
                     </div>
                 </td>
                 <td class="col-resolution">${escapeHtml(item.resolution || item.metadata?.resolution || 'N/A')}<br/>
@@ -1821,19 +1872,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td class="col-size">${escapeHtml(item.size_human || item.metadata?.file_size_human || 'N/A')}</td>
                 <td class="col-score"><span style="color:var(--success-green);">${escapeHtml(item.score)}</span></td>
                 <td class="col-actions">
-                <div class="row-actions d-flex gap-2 align-items-center">
-                    <button class="btn btn-secondary p-1 d-flex align-items-center justify-content-center" style="width: 32px; height: 32px;" onclick="playMedia(${idx})" title="Play">
-                        <svg style="width: 32px; height: 32px;" fill="currentColor" viewBox="0 0 16 16"><!-- Play Icon -->
+                <div class="row-actions">
+                    <button class="icon-button" onclick="playMedia(${idx})" title="Play" aria-label="Play">
+                        <svg fill="currentColor" viewBox="0 0 16 16">
                         <path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.693-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/>
                         </svg>
                     </button>
-                    <button class="btn btn-secondary p-1 d-flex align-items-center justify-content-center" style="width: 32px; height: 32px;" onclick="renameMedia(${idx})" title="Rename">
-                        <svg style="width: 32px; height: 32px;" fill="currentColor" viewBox="0 0 16 16"><!-- Pencil Icon -->
+                    <button class="icon-button" onclick="renameMedia(${idx})" title="Rename" aria-label="Rename">
+                        <svg fill="currentColor" viewBox="0 0 16 16">
                         <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.204 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>
                         </svg>
                     </button>
-                    <button class="btn btn-danger p-1 d-flex align-items-center justify-content-center" style="width: 32px; height: 32px;" onclick="deleteMedia(${idx})" title="Delete">
-                        <svg style="width: 32px; height: 32px;" fill="currentColor" viewBox="0 0 16 16"><!-- Trash Icon -->
+                    <button class="icon-button icon-button-danger" onclick="deleteMedia(${idx})" title="Delete from disk" aria-label="Delete from disk">
+                        <svg fill="currentColor" viewBox="0 0 16 16">
                         <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/>
                         <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/>
                         </svg>
@@ -1847,6 +1898,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         <!-- populated lazily on first expand -->
                     </div>
                 </td>
+            </tr>
+            <tr class="duplicate-expand-row hidden" id="duplicate-row-${idx}">
+                <td colspan="7"><div class="duplicate-expand-content" id="duplicate-content-${idx}"></div></td>
             </tr>
             `;
         }).join("");
@@ -2167,6 +2221,8 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             if (renameSource === "library") {
                 loadLibrary({ reset: true });
+            } else if (renameSource === "duplicates") {
+                loadDuplicateGroups();
             } else {
                 performSearch();
             }
@@ -2259,16 +2315,16 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!ok) return;
 
         try {
-            const res = await fetch(`/api/actions/clean-record?path=${encodeURIComponent(item.file_path)}`, { 
-                method: "DELETE" 
+            const res = await fetch(`/api/actions/clean-record?path=${encodeURIComponent(item.file_path)}`, {
+                method: "DELETE"
             });
             const data = await res.json().catch(() => ({}));
-            
+
             if (!res.ok) {
                 showToast(`Cleaning failed: ${data.detail || res.statusText}`, "error", 8000);
                 return;
             }
-            
+
             showToast(`Removed DB records for ${item.file_name}. Disk file preserved.`, "success");
             performSearch();
         } catch (err) {
@@ -2280,12 +2336,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const tabBtnSearch = document.getElementById("tab-btn-search");
     const tabBtnLibrary = document.getElementById("tab-btn-library");
     const tabBtnDownloads = document.getElementById("tab-btn-downloads");
+    const tabBtnDuplicates = document.getElementById("tab-btn-duplicates");
     const tabPanelSearch = document.getElementById("tab-panel-search");
     const tabPanelLibrary = document.getElementById("tab-panel-library");
     const tabPanelDownloads = document.getElementById("tab-panel-downloads");
+    const tabPanelDuplicates = document.getElementById("tab-panel-duplicates");
 
-    const allTabBtns = [tabBtnSearch, tabBtnLibrary, tabBtnDownloads];
-    const allTabPanels = [tabPanelSearch, tabPanelLibrary, tabPanelDownloads];
+    const allTabBtns = [tabBtnSearch, tabBtnLibrary, tabBtnDownloads, tabBtnDuplicates];
+    const allTabPanels = [tabPanelSearch, tabPanelLibrary, tabPanelDownloads, tabPanelDuplicates];
 
     let downloadsPollInterval = null;
 
@@ -2305,9 +2363,22 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    function activateTab(btn, panel) {
+    const ACTIVE_TAB_KEY = "active_tab";
+    const TAB_IDS = {
+        search: [tabBtnSearch, tabPanelSearch],
+        library: [tabBtnLibrary, tabPanelLibrary],
+        downloads: [tabBtnDownloads, tabPanelDownloads],
+        duplicates: [tabBtnDuplicates, tabPanelDuplicates],
+    };
+
+    function activateTab(btn, panel, persist = true) {
         allTabBtns.forEach((b) => b?.classList.toggle("active", b === btn));
         allTabPanels.forEach((p) => p?.classList.toggle("active", p === panel));
+
+        if (persist) {
+            const tabId = Object.keys(TAB_IDS).find((key) => TAB_IDS[key][0] === btn);
+            if (tabId) localStorage.setItem(ACTIVE_TAB_KEY, tabId);
+        }
 
         // Handle downloads polling
         if (panel === tabPanelDownloads) {
@@ -2340,11 +2411,276 @@ document.addEventListener("DOMContentLoaded", () => {
         fetchDownloads();
     });
 
-    // Library is the default active tab on page load (see index.html), so the
-    // click handler above never fires on its own — load its data now too.
+    tabBtnDuplicates?.addEventListener("click", () => {
+        activateTab(tabBtnDuplicates, tabPanelDuplicates);
+        if (!duplicateGroups.length) {
+            loadDuplicateGroups(true);
+            // start observing sentinel after first load
+            setTimeout(() => {
+                const sentinel = document.getElementById("duplicates-sentinel");
+                if (sentinel) duplicateObserver.observe(sentinel);
+            }, 300);
+        }
+    });
+
+    // Duplicate filters
+    document.getElementById("dup-reviewed-filter")?.addEventListener("change", (e) => {
+        duplicateFilters.reviewed = e.target.value;
+        loadDuplicateGroups(true);
+    });
+    document.getElementById("dup-candidate-filter")?.addEventListener("change", (e) => {
+        duplicateFilters.status = e.target.value;
+        loadDuplicateGroups(true);
+    });
+    document.getElementById("duplicates-sort")?.addEventListener("change", (e) => {
+        duplicateSort.sort_by = e.target.value;
+        loadDuplicateGroups(true);
+    });
+    document.getElementById("duplicates-sort-dir")?.addEventListener("click", (e) => {
+        duplicateSort.sort_dir = duplicateSort.sort_dir === "asc" ? "desc" : "asc";
+        e.target.innerHTML = duplicateSort.sort_dir === "asc" ? "↑ Asc" : "↓ Desc";
+        loadDuplicateGroups(true);
+    });
+    document.getElementById("btn-duplicates-refresh")?.addEventListener("click", () => {
+        loadDuplicateGroups(true);
+    });
+
+    // Restore whichever tab was active before the last refresh. Library is the
+    // default active tab in the markup, so if nothing was saved (or the saved
+    // value is invalid) we fall through to that default.
+    const savedTabId = localStorage.getItem(ACTIVE_TAB_KEY);
+    const savedTab = savedTabId && TAB_IDS[savedTabId];
+    if (savedTab && savedTab[0] && savedTab[1]) {
+        activateTab(savedTab[0], savedTab[1], false);
+    }
+
     if (tabPanelLibrary?.classList.contains("active")) {
         ensureLibraryLoaded();
+    } else if (tabPanelDownloads?.classList.contains("active")) {
+        fetchDownloads();
+    } else if (tabPanelDuplicates?.classList.contains("active")) {
+        loadDuplicateGroups();
     }
+
+    async function loadDuplicateGroups(reset = true) {
+        if (duplicateLoading) return;
+        if (reset) {
+            duplicateOffset = 0;
+            duplicateGroups = [];
+            document.getElementById("duplicates-groups-container").innerHTML = "";
+        }
+
+        duplicateLoading = true;
+        const container = document.getElementById("duplicates-groups-container");
+
+        try {
+            const params = new URLSearchParams({
+                limit: DUPLICATE_PAGE_SIZE,
+                offset: duplicateOffset,
+                sort_by: duplicateSort.sort_by,
+                sort_dir: duplicateSort.sort_dir,
+            });
+            if (duplicateFilters.reviewed && duplicateFilters.reviewed !== "all") {
+                params.append("reviewed", duplicateFilters.reviewed);
+            }
+            if (duplicateFilters.status && duplicateFilters.status !== "all") {
+                params.append("status", duplicateFilters.status);
+            }
+            // mount and folder filters could be added later if needed
+
+            const res = await fetch(`/api/admin/duplicates/groups?${params.toString()}`);
+            if (!res.ok) throw new Error("Failed to load duplicate groups");
+            const data = await res.json();
+
+            // data: { items: groups[], total: number, unresolved_total: number }
+            const newGroups = data.items || [];
+            if (reset) {
+                duplicateGroups = newGroups;
+            } else {
+                duplicateGroups = duplicateGroups.concat(newGroups);
+            }
+            duplicateHasMore = duplicateGroups.length < data.total;
+            duplicateOffset = duplicateGroups.length;
+
+            renderDuplicateGroups(data.total, data.unresolved_total);
+
+            // update sentinel visibility: if hasMore, show sentinel; else hide
+            const sentinel = document.getElementById("duplicates-sentinel");
+            if (sentinel) {
+                sentinel.style.display = duplicateHasMore ? "block" : "none";
+            }
+        } catch (err) {
+            showToast(`Failed to load duplicate groups: ${err.message}`, "error");
+            container.innerHTML = `<div class="duplicates-empty">${escapeHtml(err.message)}</div>`;
+        } finally {
+            duplicateLoading = false;
+        }
+    }
+
+    function renderDuplicateGroups(total, unresolvedTotal) {
+        const container = document.getElementById("duplicates-groups-container");
+        if (!container) return;
+
+        if (duplicateGroups.length === 0) {
+            container.innerHTML = `<div class="duplicates-empty">No duplicate groups found matching the filters.</div>`;
+            return;
+        }
+
+        // Update counts
+        document.getElementById("duplicates-count").textContent = `${duplicateGroups.length} / ${total} groups`;
+        const unresolvedEl = document.getElementById("duplicates-unresolved-total");
+        if (unresolvedEl) {
+            unresolvedEl.textContent = `Unresolved: ${unresolvedTotal}`;
+        }
+
+        let html = "";
+        duplicateGroups.forEach((group, gIdx) => {
+            const candidates = group.candidates || [];
+            const reviewed = group.reviewed_status || "UNRESOLVED";
+            const badgeClass = reviewed === "RESOLVED" ? "completed" : "pending";
+            const activeCount = candidates.filter(c => c.status !== "NOT_DUPLICATE" && c.status !== "REJECTED").length;
+
+            html += `<div class="duplicate-group" data-group-id="${escapeHtml(group.group_id)}">`;
+            html += `<div class="duplicate-group-header">`;
+            html += `<span><strong>${escapeHtml(group.title_key || "Untitled")}</strong> &mdash; ${escapeHtml(group.mount || "?")} ${escapeHtml(group.folder_path || "")}</span>`;
+            html += `<span class="duplicate-group-meta">${candidates.length} candidates (${activeCount} active) &middot; <span class="status-badge ${badgeClass}">${escapeHtml(reviewed)}</span></span>`;
+            html += `<button class="btn btn-secondary btn-small" data-duplicate-group-action="delete-group" data-group-id="${escapeHtml(group.group_id)}">Delete group</button>`;
+            html += `</div>`;
+
+            // Candidate table
+            html += `<table class="vscode-table duplicate-candidates-table">`;
+            html += `<thead><tr><th>#</th><th></th><th>File</th><th>Size</th><th>Resolution</th><th>Duration</th><th>Score</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
+            candidates.forEach((cand, cIdx) => {
+                const mtime = cand.mtime || "";
+                const filePath = cand.full_path || cand.file_path || "";
+                const rank = cand.rank_in_group || "";
+                const status = cand.status || "PENDING";
+                const score = cand.overall_score != null ? `${cand.overall_score}%` : "—";
+                const sizeMb = cand.size_mb != null ? `${cand.size_mb} MB` : (cand.file_size ? `${(cand.file_size / 1024 / 1024).toFixed(2)} MB` : "—");
+                const resolution = cand.media_resolution || cand.quality || "—";
+                const duration = cand.duration_formatted || "—";
+
+                html += `<tr data-file-path="${escapeHtml(filePath)}" data-file-id="${escapeHtml(cand.file_id)}">`;
+                html += `<td>${escapeHtml(rank)}</td>`;
+                html += `<td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(cand)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" data-idx="${gIdx}" data-resolution="${escapeHtml(resolution === "—" ? "" : resolution)}" data-size="${escapeHtml(sizeMb === "—" ? "" : sizeMb)}" /></td>`;
+                html += `<td title="${escapeHtml(filePath)}">${escapeHtml(getRelativePath(filePath, cand.mount))}</td>`;
+                html += `<td>${escapeHtml(sizeMb)}<br/>${escapeHtml(dateTimeFormat(mtime))}</td>`;
+                html += `<td>${escapeHtml(resolution)}</td>`;
+                html += `<td>${escapeHtml(duration)}</td>`;
+                html += `<td>${escapeHtml(score)}</td>`;
+                html += `<td><span class="status-badge ${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span></td>`;
+                // Action buttons – reuse the existing helper, but we need to pass the correct context
+                // We'll generate them inline with data attributes.
+                html += `<td>${candidateActionButtonsHtml(cand, gIdx)}</td>`;
+                html += `</tr>`;
+            });
+            html += `</tbody></table>`;
+            html += `</div>`;
+        });
+
+        container.innerHTML = html;
+    }
+
+
+    document.getElementById("duplicates-groups-container")?.addEventListener("click", async (e) => {
+        const target = e.target.closest("[data-duplicate-action]");
+        if (!target) {
+            // check for group delete button
+            const groupDeleteBtn = e.target.closest("[data-duplicate-group-action='delete-group']");
+            if (groupDeleteBtn) {
+                const groupId = groupDeleteBtn.dataset.groupId;
+                const ok = await askConfirm({
+                    title: "Delete duplicate group",
+                    message: `Remove the entire group record? Files on disk will NOT be deleted.`,
+                    okLabel: "Delete group"
+                });
+                if (!ok) return;
+                try {
+                    const res = await fetch(`/api/admin/duplicates/group?group_id=${encodeURIComponent(groupId)}`, { method: "DELETE" });
+                    if (!res.ok) throw new Error("Failed to delete group");
+                    showToast("Group deleted.", "success");
+                    loadDuplicateGroups(true);
+                } catch (err) {
+                    showToast(`Delete failed: ${err.message}`, "error");
+                }
+            }
+            return;
+        }
+
+        const action = target.dataset.duplicateAction;
+        const filePath = target.dataset.filePath || "";
+        const fileName = filePath.split(/[\\/]/).pop() || "file";
+        const idx = target.dataset.idx;
+
+        if (action === "play") {
+            const group = idx !== undefined ? duplicateGroups[Number(idx)] : null;
+            if (group && group.candidates && group.candidates.length > 1) {
+                playDuplicateGroup(group.candidates, filePath);
+            } else {
+                openPlayer({
+                    file_path: filePath,
+                    file_name: fileName,
+                    resolution: target.dataset.resolution || "",
+                    size_human: target.dataset.size || "",
+                });
+            }
+            return;
+        }
+        if (action === "rename") {
+            openRenameModal({ file_path: filePath, file_name: fileName }, "duplicates");
+            return;
+        }
+
+        if (action === "delete-file") {
+            const ok = await askConfirm({
+                title: "Delete duplicate file",
+                message: `Permanently delete "${fileName}" from disk and remove its index, AI metadata and duplicate records?`,
+                okLabel: "Delete"
+            });
+            if (!ok) return;
+            try {
+                const res = await fetch(`/api/admin/duplicates/candidate?file_path=${encodeURIComponent(filePath)}&delete_from_disk=true`, { method: "DELETE" });
+                if (!res.ok) throw new Error("Delete failed");
+                showToast(`Deleted ${fileName}.`, "success");
+                loadDuplicateGroups(true);
+            } catch (err) {
+                showToast(`Delete failed: ${err.message}`, "error");
+            }
+            return;
+        }
+
+        if (action === "mark-not-duplicate") {
+            try {
+                const res = await fetch("/api/admin/duplicates/candidate/not-duplicate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ file_path: filePath })
+                });
+                if (!res.ok) throw new Error("Failed to mark as not duplicate");
+                showToast("Marked as not a duplicate.", "success");
+                loadDuplicateGroups(true);
+            } catch (err) {
+                showToast(`Action failed: ${err.message}`, "error");
+            }
+            return;
+        }
+
+        if (action === "undo-not-duplicate") {
+            try {
+                const res = await fetch("/api/admin/duplicates/candidate/undo-not-duplicate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ file_path: filePath })
+                });
+                if (!res.ok) throw new Error("Failed to undo");
+                showToast("Re‑added to review.", "success");
+                loadDuplicateGroups(true);
+            } catch (err) {
+                showToast(`Action failed: ${err.message}`, "error");
+            }
+            return;
+        }
+    });
 
     // Download API Handlers
     async function fetchDownloads() {
@@ -2377,7 +2713,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     function bytesToMB(bytes, decimals = 2) {
         if (bytes === 0) return '0.00 MB';
-        
+
         const mb = bytes / (1024 * 1024); // 1,048,576 bytes in a MB
         return `${mb.toFixed(decimals)} MB`;
     }
@@ -2387,14 +2723,14 @@ document.addEventListener("DOMContentLoaded", () => {
         if (isNaN(d)) return 'N/A';
 
         const pad = (n) => String(n).padStart(2, '0');
-        
+
         const month = pad(d.getMonth() + 1);
         const day = pad(d.getDate());
-        
+
         let hours = d.getHours();
         const ampm = hours >= 12 ? 'PM' : 'AM';
         hours = hours % 12 || 12; // Convert 0 to 12 for 12-hour format
-        
+
         const formattedHours = pad(hours);
         const minutes = pad(d.getMinutes());
         const seconds = pad(d.getSeconds());
@@ -2416,7 +2752,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (downloadsCount) {
             downloadsCount.textContent = `${items.length} / ${downloadsList.length} items`;
         }
-        
+
         downloadsBody.innerHTML = items.map((item, idx) => `
             <tr>
                 <td>${idx + 1}</td>
@@ -2446,14 +2782,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
                         <!-- Mark Complete (only when not completed) -->
                         ${item.status !== 'COMPLETED' && item.status !== 'completed' ? `
-                        <button class="btn-icon-clean" onclick="markDownloadComplete('${escapeHtml(item.id)}')" title="Mark as complete">
+                        <button class="icon-button icon-button-success" onclick="markDownloadComplete('${escapeHtml(item.id)}')" title="Mark as complete" aria-label="Mark as complete">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <polyline points="20 6 9 17 4 12"></polyline>
                             </svg>
                         </button>` : ''}
 
                         <!-- Delete -->
-                        <button class="btn-icon-clean btn-icon-danger" onclick="deleteDownload('${escapeHtml(item.id)}')" title="Delete">
+                        <button class="icon-button icon-button-danger" onclick="deleteDownload('${escapeHtml(item.id)}')" title="Delete download" aria-label="Delete download">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <polyline points="3 6 5 6 21 6"></polyline>
                                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -2554,30 +2890,6 @@ document.addEventListener("DOMContentLoaded", () => {
     // DUPLICATE GROUP: fetch and render functions
     // ==========================================
 
-    async function fetchDuplicatesForFolder(mount, path) {
-        if (mount === "all") return [];
-        try {
-            const params = new URLSearchParams({ mount, path });
-            const res = await fetch(`/api/admin/duplicates/folder?${params.toString()}`);
-            if (!res.ok) return [];
-            const data = await res.json();
-            return data.items || [];
-        } catch (err) {
-            console.error("Failed to fetch duplicates for folder:", err);
-            return [];
-        }
-    }
-
-    async function fetchDuplicateGroupById(groupId) {
-        try {
-            const res = await fetch(`/api/admin/duplicates/group?group_id=${encodeURIComponent(groupId)}`);
-            if (!res.ok) throw new Error('No group found');
-            return await res.json();
-        } catch (err) {
-            throw new Error(`Failed to fetch duplicate group: ${err.message}`);
-        }
-    }
-
     async function fetchDuplicateGroupByFile(filePath) {
         try {
             const params = new URLSearchParams({ file_path: filePath });
@@ -2591,6 +2903,353 @@ document.addEventListener("DOMContentLoaded", () => {
             return null;
         }
     }
+
+    function candidateThumbnailUrl(candidate) {
+        const jellyfinId = candidate.jellyfin_id || candidate.jellyfin?.jellyfin_id || candidate.jellyfin?.jf_id;
+        if (!jellyfinId) return THUMB_PLACEHOLDER;
+        const params = new URLSearchParams({ jellyfin_id: jellyfinId, width: 80, height: 120 });
+        const tag = candidate.primary_image_tag || candidate.jellyfin?.primary_image_tag;
+        if (tag) params.set("tag", tag);
+        return `/api/media/thumbnail?${params.toString()}`;
+    }
+
+    function candidateSizeMb(candidate) {
+        if (candidate.size_mb != null) return `${candidate.size_mb} MB`;
+        const bytes = candidate.file_size || 0;
+        if (!bytes) return "—";
+        return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    }
+
+    // Build a player-ready playlist from every candidate in a duplicate group, so
+    // Next/Prev buttons (and n/p keys) can step through all copies of that file.
+    function buildDuplicatePlaylist(candidates, filePath) {
+        const playlist = (candidates || [])
+            .map((cand) => {
+                const path = cand.full_path || cand.file_path || "";
+                if (!path) return null;
+                const resolution = cand.media_resolution || cand.quality || "";
+                const sizeHuman = candidateSizeMb(cand);
+                return {
+                    file_path: path,
+                    file_name: path.split(/[\\/]+/).pop() || "file",
+                    resolution,
+                    size_human: sizeHuman === "—" ? "" : sizeHuman,
+                };
+            })
+            .filter(Boolean);
+        let index = playlist.findIndex((it) => it.file_path === filePath);
+        if (index < 0) index = 0;
+        return { playlist, index };
+    }
+
+    // Opens the player queued with every file in the duplicate group, starting on
+    // whichever candidate was clicked, instead of just the single file.
+    function playDuplicateGroup(candidates, filePath) {
+        const { playlist, index } = buildDuplicatePlaylist(candidates, filePath);
+        if (!playlist.length) return;
+        openPlayer(playlist[index], playlist, index);
+    }
+
+    const DUP_ICON_PLAY = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.693-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>`;
+    const DUP_ICON_RENAME = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.204 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/></svg>`;
+    const DUP_ICON_DELETE = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/><path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/></svg>`;
+    const DUP_ICON_STATS = `<svg fill="currentColor" viewBox="0 0 16 16" width="10" height="10"><path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/></svg>`;
+    const DUP_ICON_NOT_DUP = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path d="M11.5 4.5a.5.5 0 0 1 0 .707l-6.293 6.293a.5.5 0 1 1-.707-.707L10.793 4.5a.5.5 0 0 1 .707 0"/></svg>`;
+    const DUP_ICON_UNDO = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path fill-rule="evenodd" d="M8 3a5 5 0 1 1-4.546 2.914.5.5 0 0 0-.908-.417A6 6 0 1 0 8 2z"/><path d="M8 4.466V.534a.25.25 0 0 0-.41-.192L5.23 2.308a.25.25 0 0 0 0 .384l2.36 1.966A.25.25 0 0 0 8 4.466"/></svg>`;
+
+    // Candidate is considered "resolved away" once marked NOT_DUPLICATE, or
+    // via the legacy REJECTED status from before this status was added.
+    function isCandidateMarkedNotDuplicate(candidate) {
+        const status = (candidate && candidate.status) || "PENDING";
+        return status === "NOT_DUPLICATE" || status === "REJECTED";
+    }
+
+    // Shared row-actions markup used both by the Media Explorer's inline
+    // duplicate expand panel and the dedicated Duplicate Review tab, so the
+    // "mark as not a duplicate" action lives in one place. This replaces the
+    // old group-level "delete group" button — marking every-but-one
+    // candidate in a group as not-duplicate is what resolves the group now.
+    function candidateActionButtonsHtml(candidate, idx) {
+        const filePath = candidate.full_path || candidate.file_path || "";
+        const idxAttr = idx !== undefined ? ` data-idx="${escapeHtml(String(idx))}"` : "";
+        const candResolution = candidate.media_resolution || candidate.quality || "";
+        const candSizeRaw = candidateSizeMb(candidate);
+        const candSize = candSizeRaw === "—" ? "" : candSizeRaw;
+        const metaAttrs = ` data-resolution="${escapeHtml(candResolution)}" data-size="${escapeHtml(candSize)}"`;
+        const notDupBtn = isCandidateMarkedNotDuplicate(candidate)
+            ? `<button class="icon-button icon-button-success" data-duplicate-action="undo-not-duplicate" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Undo — treat as a duplicate candidate again" aria-label="Undo not-duplicate mark">${DUP_ICON_UNDO}</button>`
+            : `<button class="icon-button icon-button-warning" data-duplicate-action="mark-not-duplicate" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Mark as not a duplicate — keeps the record but stops it being reported again" aria-label="Mark not duplicate">${DUP_ICON_NOT_DUP}</button>`;
+        return `<div class="row-actions">
+            <button class="icon-button" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}"${idxAttr}${metaAttrs} title="Play" aria-label="Play">${DUP_ICON_PLAY}</button>
+            <button class="icon-button" data-duplicate-action="rename" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Rename" aria-label="Rename">${DUP_ICON_RENAME}</button>
+            ${notDupBtn}
+            <button class="icon-button icon-button-danger" data-duplicate-action="delete-file" data-file-path="${escapeHtml(filePath)}"${idxAttr} title="Delete file from disk and index" aria-label="Delete file from disk and index">${DUP_ICON_DELETE}</button>
+        </div>`;
+    }
+
+    function candStatChip(label) {
+        return `<span class="cand-stat-chip">${escapeHtml(String(label))}</span>`;
+    }
+
+    function candStatPercent(value) {
+        if (value === null || value === undefined || value === "") return "—";
+        const n = Number(value);
+        if (Number.isNaN(n)) return "—";
+        return `${Math.round(n * 100)}%`;
+    }
+
+    function candStatScore(value) {
+        return (value === null || value === undefined || value === "") ? "—" : `${value}%`;
+    }
+
+    function candStatLine(label, valueHtml) {
+        return `<div class="cand-stats-row-line"><span class="cand-stats-label">${escapeHtml(label)}</span><span class="cand-stats-value">${valueHtml}</span></div>`;
+    }
+
+    function candStatTokenList(tokens) {
+        if (!tokens || !tokens.length) return "—";
+        return tokens.map(candStatChip).join(" ");
+    }
+
+    // Builds the expandable "match stats" panel for a single duplicate candidate,
+    // surfacing song_title / movie_or_album / artists and the underlying scoring
+    // details from stats_json (similarities, token breakdowns, gate result, etc).
+    function candStatTokenListDiff(tokensA, tokensB) {
+        if (!tokensA || !tokensA.length) return "—";
+        const setB = new Set((tokensB || []).map(t => String(t).toLowerCase()));
+        return tokensA.map(t => {
+            const isCommon = setB.has(String(t).toLowerCase());
+            const cls = isCommon ? "cand-stat-chip" : "cand-stat-chip cand-stat-chip-diff";
+            return `<span class="${cls}">${escapeHtml(String(t))}</span>`;
+        }).join(" ");
+    }
+
+    function candidateStatsHtml(candidate) {
+        const stats = candidate.stats_json || {};
+        const artists = candidate.artists || candidate.artists_json || stats.artists || [];
+        const movieOrAlbum = candidate.movie_or_album || stats.movie_or_album || null;
+        const songTitle = candidate.song_title || stats.song_title || "—";
+        const matchedIds = stats.matched_file_ids || [];
+        const hasMovieTokens = (stats.movie_tokens_a && stats.movie_tokens_a.length) || (stats.movie_tokens_b && stats.movie_tokens_b.length);
+
+        let gateHtml = "—";
+        if (stats.gate_passed === true) gateHtml = `<span class="status-badge completed">PASSED</span>`;
+        else if (stats.gate_passed === false) gateHtml = `<span class="status-badge failed">FAILED</span>`;
+
+        // Side-by-side token rows so differences between "this file" and the
+        // matched file jump out immediately instead of being read top-to-bottom.
+        const compareRows = [
+            ["Title Tokens", candStatTokenListDiff(stats.title_tokens_a, stats.title_tokens_b), candStatTokenListDiff(stats.title_tokens_b, stats.title_tokens_a)],
+            ["Artist Tokens", candStatTokenListDiff(stats.artist_tokens_a, stats.artist_tokens_b), candStatTokenListDiff(stats.artist_tokens_b, stats.artist_tokens_a)],
+        ];
+        if (hasMovieTokens) {
+            compareRows.push(["Movie Tokens", candStatTokenListDiff(stats.movie_tokens_a, stats.movie_tokens_b), candStatTokenListDiff(stats.movie_tokens_b, stats.movie_tokens_a)]);
+        }
+
+        return `<div class="cand-stats-wrap">
+            <div class="cand-stats-summary-row">
+                <div class="cand-stats-block">
+                    <div class="cand-stats-block-title">Identified As</div>
+                    ${candStatLine("Song Title", escapeHtml(songTitle))}
+                    ${candStatLine("Movie / Album", movieOrAlbum ? escapeHtml(movieOrAlbum) : "<em>—</em>")}
+                    ${candStatLine("Artists", candStatTokenList(artists))}
+                </div>
+                <div class="cand-stats-block">
+                    <div class="cand-stats-block-title">Match Scores</div>
+                    ${candStatLine("Overall", candStatScore(candidate.overall_score))}
+                    ${candStatLine("Title Score", candStatScore(candidate.title_score))}
+                    ${candStatLine("Movie Score", candStatScore(candidate.movie_score))}
+                    ${candStatLine("Artist Score", candStatScore(candidate.artist_score))}
+                    ${candStatLine("Confidence", escapeHtml(candidate.confidence || "—"))}
+                    ${candStatLine("Gate", gateHtml)}
+                </div>
+                <div class="cand-stats-block">
+                    <div class="cand-stats-block-title">Similarity Detail</div>
+                    ${candStatLine("Title Similarity", candStatPercent(stats.title_similarity))}
+                    ${candStatLine("Artist Similarity", candStatPercent(stats.artist_similarity))}
+                    ${candStatLine("Movie Similarity", candStatPercent(stats.movie_similarity))}
+                    ${candStatLine("Coverage (long)", candStatPercent(stats.title_coverage_long))}
+                    ${candStatLine("Coverage (short)", candStatPercent(stats.title_coverage_short))}
+                    ${candStatLine("Token Set Ratio", candStatPercent(stats.title_token_set_ratio))}
+                </div>
+            </div>
+
+            <div class="cand-stats-compare">
+                <div class="cand-stats-block-title">Token Comparison &mdash; This File vs. Matched File</div>
+                <table class="cand-stats-compare-table">
+                    <thead><tr><th>Field</th><th>This File</th><th>Matched File</th></tr></thead>
+                    <tbody>
+                        ${compareRows.map(([label, a, b]) => `<tr><td class="cand-compare-label">${escapeHtml(label)}</td><td>${a}</td><td>${b}</td></tr>`).join("")}
+                    </tbody>
+                </table>
+                <div class="cand-stats-legend"><span class="cand-stat-chip cand-stat-chip-diff">token</span> = present on only one side</div>
+            </div>
+
+            ${matchedIds.length ? `<div class="cand-stats-footer">
+                <span class="cand-stats-footer-label">Matched File IDs</span>
+                <span class="cand-stats-mono">${matchedIds.map(id => escapeHtml(id)).join(", ")}</span>
+            </div>` : ""}
+        </div>`;
+    }
+
+    function duplicateMetadataHtml(group, idx) {
+        const candidates = group?.candidates || [];
+        if (!candidates.length) return `<div class="duplicates-empty">No duplicate candidates are available.</div>`;
+        const groupId = group.group_id || "";
+        const activeCount = candidates.filter(c => !isCandidateMarkedNotDuplicate(c)).length;
+        const reviewed = group.reviewed_status || (activeCount <= 1 ? "RESOLVED" : "UNRESOLVED");
+        const reviewedBadgeClass = reviewed === "RESOLVED" ? "status-badge completed" : "status-badge pending";
+        return `<div class="duplicate-meta-header">
+                <strong>Duplicate Candidates</strong>
+                <span>${candidates.length} file${candidates.length === 1 ? "" : "s"} &middot; ${activeCount} active</span>
+                <span class="${reviewedBadgeClass}">${escapeHtml(reviewed)}</span>
+                <button class="btn btn-secondary btn-small" data-duplicate-action="delete-group" data-group-id="${escapeHtml(groupId)}" data-idx="${idx}" title="Remove this group record entirely (files on disk untouched). Use the per-file &quot;not duplicate&quot; action instead if only some files here aren't real duplicates.">Remove group record</button>
+            </div>` +
+            `<table class="vscode-table duplicate-candidates-table"><thead><tr><th>#</th><th></th><th>File</th><th>Size</th><th>Resolution</th><th>Duration</th><th>Quality</th><th>Score</th><th>Status</th><th></th><th>Actions</th></tr></thead><tbody>` +
+            candidates.map((candidate, cIdx) => {
+                const filePath = candidate.full_path || candidate.file_path || "";
+                const status = candidate.status || "PENDING";
+                const rank = candidate.rank_in_group || "";
+                const quality = (candidate.resolution || "").toUpperCase() || "—";
+                const resolution = candidate.media_resolution || candidate.quality || "—";
+                const duration = candidate.duration_formatted || "—";
+                const score = candidate.overall_score != null ? `${candidate.overall_score}%` : "—";
+                const statsRowId = `cand-stats-${idx}-${cIdx}`;
+                return `<tr>
+                    <td style="padding: 5px !important;">${escapeHtml(rank)}</td>
+                    <td class="col-thumb"><img class="thumb-img duplicate-thumb" src="${candidateThumbnailUrl(candidate)}" alt="thumb" loading="lazy" onerror="this.src='${THUMB_PLACEHOLDER}'" data-duplicate-action="play" data-file-path="${escapeHtml(filePath)}" data-idx="${idx}" data-resolution="${escapeHtml(resolution === "—" ? "" : resolution)}" data-size="${escapeHtml(candidateSizeMb(candidate) === "—" ? "" : candidateSizeMb(candidate))}" /></td>
+                    <td title="${escapeHtml(filePath)}">${escapeHtml(getRelativePath(filePath, candidate.mount))}</td>
+                    <td>${escapeHtml(candidateSizeMb(candidate))}</td>
+                    <td>${escapeHtml(resolution)}</td>
+                    <td>${escapeHtml(duration)}</td>
+                    <td>${escapeHtml(quality)}</td>
+                    <td title="${escapeHtml(candidate.confidence || "")}">${escapeHtml(score)}</td>
+                    <td><span class="status-badge ${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span></td>
+                    <td><button class="icon-button cand-stats-toggle" data-cand-stats-toggle="${statsRowId}" title="View match stats" aria-label="View match stats">${DUP_ICON_STATS}</button></td>
+                    <td>${candidateActionButtonsHtml(candidate, idx)}</td>
+                </tr>
+                <tr class="candidate-stats-row hidden" id="${statsRowId}">
+                    <td colspan="11"><div class="candidate-stats-content">${candidateStatsHtml(candidate)}</div></td>
+                </tr>`;
+            }).join("") + `</tbody></table>`;
+    }
+
+    // Cache of the duplicate-group object currently shown in each search-result row's
+    // expand panel, keyed by row index — lets that row's "Play" buttons queue up the
+    // whole group as a playlist instead of just the one clicked file.
+    let duplicateContentGroups = {};
+
+    async function renderDuplicateContent(idx) {
+        const content = document.getElementById(`duplicate-content-${idx}`);
+        const item = currentResults[idx];
+        if (!content || !item) return;
+        content.innerHTML = llmMetadataLoadingHtml();
+        try {
+            // duplicate matching is keyed on the resolved on-disk path, not the raw index path
+            const group = await fetchDuplicateGroupByFile(item.mounted_file_path || item.file_path);
+            duplicateContentGroups[idx] = group;
+            content.innerHTML = duplicateMetadataHtml(group, idx);
+        } catch (err) {
+            delete duplicateContentGroups[idx];
+            content.innerHTML = `<div class="duplicates-empty">Failed to load duplicate candidates: ${escapeHtml(err.message)}</div>`;
+        }
+    }
+
+    window.toggleDuplicateMetadata = async (idx) => {
+        const row = document.getElementById(`duplicate-row-${idx}`);
+        const item = currentResults[idx];
+        if (!row || !item) return;
+        if (!row.classList.contains("hidden")) {
+            row.classList.add("hidden");
+            return;
+        }
+        row.classList.remove("hidden");
+        await renderDuplicateContent(idx);
+    };
+
+    async function deleteDuplicateCandidate(filePath) {
+        const params = new URLSearchParams({ file_path: filePath, delete_from_disk: "true" });
+        const res = await fetch(`/api/admin/duplicates/candidate?${params.toString()}`, { method: "DELETE" });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || "Delete failed");
+        }
+        return res.json();
+    }
+
+    async function deleteDuplicateGroup(groupId) {
+        const params = new URLSearchParams({ group_id: groupId });
+        const res = await fetch(`/api/admin/duplicates/group?${params.toString()}`, { method: "DELETE" });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || "Delete failed");
+        }
+        return res.json();
+    }
+
+    resultsBody.addEventListener("click", async (event) => {
+        const statsToggle = event.target.closest("[data-cand-stats-toggle]");
+        if (statsToggle) {
+            const row = document.getElementById(statsToggle.dataset.candStatsToggle);
+            if (row) row.classList.toggle("hidden");
+            statsToggle.classList.toggle("expanded");
+            return;
+        }
+
+        const trigger = event.target.closest("[data-duplicate-action]");
+        if (!trigger) return;
+        const action = trigger.dataset.duplicateAction;
+        const filePath = trigger.dataset.filePath || "";
+        const fileName = filePath.split(/[\\/]/).pop() || "file";
+        const idx = trigger.dataset.idx;
+
+        if (action === "play") {
+            const group = idx !== undefined ? duplicateContentGroups[idx] : null;
+            if (group && group.candidates && group.candidates.length > 1) {
+                playDuplicateGroup(group.candidates, filePath);
+            } else {
+                openPlayer({ file_path: filePath, file_name: fileName });
+            }
+        }
+        if (action === "rename") openRenameModal({ file_path: filePath, file_name: fileName }, "search");
+
+        if (action === "delete-file") {
+            const ok = await askConfirm({
+                title: "Delete duplicate file",
+                message: `Permanently delete "${fileName}" from disk and remove its index, AI metadata and duplicate records?`,
+                okLabel: "Delete"
+            });
+            if (!ok) return;
+            try {
+                const data = await deleteDuplicateCandidate(filePath);
+                const groupsGone = (data.groups_removed || []).length;
+                showToast(`Deleted ${fileName}.${groupsGone ? " Group cleared (fewer than 2 members left)." : ""}`, "success");
+                if (idx !== undefined) await renderDuplicateContent(idx);
+            } catch (err) {
+                showToast(`Delete failed: ${err.message}`, "error", 8000);
+            }
+        }
+
+        if (action === "delete-group") {
+            const groupId = trigger.dataset.groupId;
+            const ok = await askConfirm({
+                title: "Delete duplicate group",
+                message: "Mark these files as not duplicates and remove the group record? No files are deleted from disk.",
+                okLabel: "Delete group"
+            });
+            if (!ok) return;
+            try {
+                await deleteDuplicateGroup(groupId);
+                showToast("Duplicate group removed.", "success");
+                if (idx !== undefined) {
+                    const content = document.getElementById(`duplicate-content-${idx}`);
+                    if (content) content.innerHTML = `<div class="duplicates-empty">No duplicate candidates are available.</div>`;
+                }
+            } catch (err) {
+                showToast(`Delete failed: ${err.message}`, "error", 8000);
+            }
+        }
+    });
 
     async function updateDuplicateAction(filePath, action) {
         try {
@@ -2607,160 +3266,12 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // Show duplicate group modal
-    async function showDuplicateGroupModal(groupId) {
-        const modal = document.getElementById('modal-duplicate-group');
-        const container = document.getElementById('dup-group-candidates');
-        const groupIdDisplay = document.getElementById('dup-group-id-display');
-        groupIdDisplay.textContent = groupId;
-
-        try {
-            const group = await fetchDuplicateGroupById(groupId);
-            renderCandidates(group.candidates, container, groupId);
-            modal.classList.remove('hidden');
-        } catch (err) {
-            showToast(`Failed to load duplicate group: ${err.message}`, 'error');
-        }
-    }
-
-    function renderCandidates(candidates, container, groupId) {
-        if (!candidates || candidates.length === 0) {
-            container.innerHTML = '<div class="empty-state">No candidates in this group.</div>';
-            return;
-        }
-
-        let html = `<table class="vscode-table">
-            <thead><tr><th>File</th><th>Status</th><th>Actions</th></tr></thead><tbody>`;
-        candidates.forEach(cand => {
-            const relPath = getRelativePath(cand.full_path, cand.mount || '');
-            const status = cand.status || 'PENDING';
-            const isCanonical = cand.file_id === cand.canonical_file_id; // may not exist, fallback
-            const typeLabel = isCanonical ? '<span class="badge-original">Original</span>' : '';
-
-            html += `<tr data-file-path="${escapeHtml(cand.full_path)}" data-mount="${escapeHtml(cand.mount || '')}">
-                <td title="${escapeHtml(cand.full_path)}">${escapeHtml(relPath)} ${typeLabel}</td>
-                <td><span class="status-badge ${status.toLowerCase()}">${escapeHtml(status)}</span></td>
-                <td>
-                    <div class="row-actions" style="gap: 4px;">
-                        <button class="btn-icon-play" data-action="play" title="Play">▶</button>
-                        <button class="btn-icon-rename" data-action="rename" title="Rename">✏</button>
-                        <button class="btn-icon-delete" data-action="delete" title="Delete">🗑</button>
-                        <button class="btn-icon-status" data-action="status-duplicate" title="Mark as Duplicate">✓</button>
-                        <button class="btn-icon-status" data-action="status-unique" title="Mark as Unique">✗</button>
-                        <button class="btn-icon-status" data-action="status-pending" title="Reset to Pending">⟳</button>
-                    </div>
-                </td>
-            </tr>`;
-        });
-        html += `</tbody></table>`;
-        container.innerHTML = html;
-    }
-
-    // Event delegation for actions inside the duplicate group modal
-    document.getElementById('dup-group-candidates').addEventListener('click', async (e) => {
-        const btn = e.target.closest('button[data-action]');
-        if (!btn) return;
-        const tr = btn.closest('tr');
-        const filePath = tr.dataset.filePath;
-        const mount = tr.dataset.mount || '';
-        const action = btn.dataset.action;
-
-        switch (action) {
-            case 'play': {
-                // Build minimal item to play
-                const fileName = filePath.split(/[\\/]/).pop() || 'file';
-                const item = { file_path: filePath, file_name: fileName, mount: mount };
-                openPlayer(item, [item], 0);
-                break;
-            }
-            case 'rename': {
-                // Build item for rename modal
-                const fileName = filePath.split(/[\\/]/).pop() || 'file';
-                const item = { file_path: filePath, file_name: fileName, mount: mount };
-                openRenameModal(item, 'search');
-                break;
-            }
-            case 'delete': {
-                const ok = await askConfirm({
-                    title: 'Delete file',
-                    message: `Delete this file from disk?<br/><br/><strong>${escapeHtml(filePath)}</strong>`,
-                    okLabel: 'Delete'
-                });
-                if (!ok) return;
-                try {
-                    const res = await fetch(`/api/actions/file?path=${encodeURIComponent(filePath)}`, { method: 'DELETE' });
-                    if (!res.ok) throw new Error('Delete failed');
-                    showToast('File deleted', 'success');
-                    // Refresh the modal content by re-fetching group
-                    const groupId = document.getElementById('dup-group-id-display').textContent;
-                    showDuplicateGroupModal(groupId);
-                } catch (err) {
-                    showToast(`Delete failed: ${err.message}`, 'error');
-                }
-                break;
-            }
-            case 'status-duplicate':
-            case 'status-unique':
-            case 'status-pending': {
-                let newStatus = action === 'status-duplicate' ? 'DUPLICATE' : (action === 'status-unique' ? 'REJECTED' : 'PENDING');
-                try {
-                    await updateDuplicateAction(filePath, newStatus);
-                    showToast(`Status updated to ${newStatus}`, 'success');
-                    // Refresh modal
-                    const groupId = document.getElementById('dup-group-id-display').textContent;
-                    showDuplicateGroupModal(groupId);
-                    // Also refresh library duplicates section if active
-                    if (libraryMount !== 'all') {
-                        const groups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
-                        annotateLibraryItemsWithGroups(groups);
-                        renderDuplicatesGroups(groups, document.getElementById('library-duplicates-content'));
-                    }
-                } catch (err) {
-                    showToast(`Status update failed: ${err.message}`, 'error');
-                }
-                break;
-            }
-        }
-    });
-
-    // Close duplicate group modal
-    document.getElementById('dup-group-close').addEventListener('click', () => {
-        document.getElementById('modal-duplicate-group').classList.add('hidden');
-    });
-
-    // Click handler for .dup-tag tags
-    document.addEventListener('click', async (e) => {
-        const tag = e.target.closest('.dup-tag');
-        if (!tag) return;
-        const groupId = tag.dataset.groupId;
-        if (groupId) {
-            showDuplicateGroupModal(groupId);
-        } else {
-            // Fallback: fetch by file path
-            const filePath = tag.dataset.filePath;
-            if (filePath) {
-                try {
-                    const group = await fetchDuplicateGroupByFile(filePath);
-                    if (group && group.group_id) {
-                        showDuplicateGroupModal(group.group_id);
-                    } else {
-                        showToast('No duplicate group found for this file.', 'info');
-                    }
-                } catch (err) {
-                    showToast(`Failed to load duplicate info: ${err.message}`, 'error');
-                }
-            }
-        }
-    });
-
     // Render duplicate groups in the library duplicates section
     function renderDuplicatesGroups(groups, container) {
         if (!groups || groups.length === 0) {
             container.innerHTML = "<div class='duplicates-empty'>No duplicate groups found in this folder.</div>";
-            document.getElementById("library-duplicates-section").style.display = "none";
             return;
         }
-        document.getElementById("library-duplicates-section").style.display = "block";
 
         // Each group already has a 'candidates' list
         let html = "";
@@ -2803,9 +3314,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 try {
                     await updateDuplicateAction(filePath, action);
                     showToast(`Action ${action} applied to ${filePath}`, "success");
-                    const freshGroups = await fetchDuplicatesForFolder(libraryMount, libraryPath);
-                    annotateLibraryItemsWithGroups(freshGroups);
-                    renderDuplicatesGroups(freshGroups, document.getElementById("library-duplicates-content"));
                 } catch (err) {
                     showToast(`Failed to update: ${err.message}`, "error");
                 }

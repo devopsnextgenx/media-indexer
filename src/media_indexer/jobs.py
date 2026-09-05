@@ -319,7 +319,8 @@ class BackgroundJobManager:
         if self._is_alive(job_id):
             return job_id
 
-        targets = [mount] if mount else list(mount_registry.keys())
+        allowed = settings.duplicates.mounts or list(mount_registry.keys())
+        targets = [mount] if mount else [name for name in mount_registry if name in allowed]
         job = mysql_db_instance.get_job(job_id)
         if not job:
             mysql_db_instance.create_job(job_id, "duplicate_detect", mount, total_items=len(targets))
