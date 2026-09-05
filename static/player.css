@@ -346,11 +346,11 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 12px 16px;
+    padding: 12px 16px 12px 16px;
     background: var(--bar-bg);
     -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
     backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-    border-top: 1px solid var(--glass-stroke-soft);
+    border-top: none;
     box-shadow: 0 1px 0 var(--glass-highlight) inset;
 }
 
@@ -478,6 +478,96 @@
     box-shadow: 0 1px 4px var(--glass-shadow), 0 0 0 1px rgba(0, 0, 0, 0.05);
     cursor: pointer;
     transition: transform 0.15s var(--apple-ease), box-shadow 0.15s var(--apple-ease);
+}
+
+/* Spacer – takes all available space between the left and right groups */
+.player-controls .spacer {
+    flex: 1;
+}
+
+/* Increase the width of the volume slider */
+.player-volume {
+    flex: 0 0 160px;   /* was 110px – now wider */
+}
+
+/* Optional: reduce the gap slightly for a tighter fit */
+.player-controls {
+    gap: 10px;          /* was 12px – adjust as needed */
+}
+
+#player-progress {
+    position: absolute;
+    top: -8px;                /* sits exactly on the top edge */
+    left: 0;
+    right: 0;
+    width: 100%;
+    height: 20px;             /* large clickable area, but the track is thin */
+    margin: 0;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;  /* hide the default track */
+}
+
+#player-progress::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 4px;
+    background: var(--glass-fill-strong);
+    border-radius: 2px;
+    border: none;
+    transition: background 0.2s;
+}
+
+/* Firefox track */
+#player-progress::-moz-range-track {
+    width: 100%;
+    height: 4px;
+    background: var(--glass-fill-strong);
+    border-radius: 2px;
+    border: none;
+}
+
+#player-progress::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #0430f680;
+    cursor: pointer;
+    margin-top: -1px;        /* center the 6px thumb on the 4px track */
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.1);
+    transition: width 0.2s ease, height 0.2s ease, box-shadow 0.2s ease, margin-top 0.2s ease;
+}
+
+/* Firefox thumb */
+#player-progress::-moz-range-thumb {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #0430f680;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.1);
+    transition: width 0.2s ease, height 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Hover effect on the progress bar – dot expands to circle */
+#player-progress:hover::-webkit-slider-thumb {
+    width: 9px;
+    height: 9px;
+    margin-top: -3px;       /* re‑center the bigger thumb */
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.3);
+}
+
+#player-progress:hover::-moz-range-thumb {
+    width: 9px;
+    height: 9px;
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.3);
+}
+
+#player-progress:hover::-webkit-slider-runnable-track,
+#player-progress:hover::-moz-range-track {
+    background: rgba(255,255,255,0.35);
 }
 
 .player-range::-webkit-slider-thumb:hover {
