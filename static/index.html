@@ -328,6 +328,33 @@
         </div>
     </div>
 
+    <!-- LLM Metadata Side Panel (Library view) -->
+    <div id="llm-panel-overlay" class="llm-panel-overlay"></div>
+    <aside id="llm-panel" class="llm-side-panel" aria-hidden="true">
+        <div class="llm-panel-header">
+            <div class="llm-panel-title">
+                <strong>AI Metadata</strong>
+                <span id="llm-panel-filename" class="llm-panel-filename"></span>
+            </div>
+            <div class="llm-panel-header-actions">
+                <button id="llm-panel-reparse" class="btn-icon-llm-action btn-llm-reparse" title="Re-parse with AI">
+                    <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                </button>
+                <button id="llm-panel-close" class="btn-icon-llm-action btn-llm-close" title="Close (Esc)">
+                    <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+        </div>
+        <div id="llm-panel-body" class="llm-panel-body">
+            <!-- populated dynamically -->
+        </div>
+        <div class="llm-panel-footer">
+            <button id="llm-panel-save" class="btn-icon-llm-action btn-llm-save" title="Save (Ctrl+S)">
+                <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            </button>
+        </div>
+    </aside>
+
     <!-- Toast Notifications -->
     <div id="toast-container" class="toast-container"></div>
 

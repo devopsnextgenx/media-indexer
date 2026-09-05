@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from collections import Counter
 from qdrant_client import QdrantClient, models
 from media_indexer.config import settings
 from media_indexer.utils import generate_file_id
@@ -737,6 +738,64 @@ class MySQLDatabase:
             return result
         except Exception as e:
             logger.error(f"Failed to get duplicate group ids for paths: {e}")
+            return {}
+
+    def find_existing_group_id_for_paths(self, mount: str, full_paths: list[str]) -> str | None:
+        """Look up whether any of the given full_paths already belong to a
+        duplicate group for this mount. Used before minting a brand-new
+        group_id for a freshly (re)detected cluster: if the cluster's
+        membership has only shifted slightly since the last run (a file
+        added/removed, or one previously excluded via NOT_DUPLICATE now
+        rejoining), the hash-derived group_id would differ from before and
+        we'd otherwise end up creating a duplicate/orphaned group instead of
+        updating the one reviewers already have decisions/history on.
+        Returns the group_id most of the current members already share, or
+        None if none of them belong to an existing group yet."""
+        if not self.enabled or not full_paths:
+            return None
+        conn = self._get_connection()
+        if not conn:
+            return None
+        try:
+            normalized_paths = [self._normalize_path(p) for p in full_paths]
+            with conn.cursor() as cursor:
+                placeholders = ','.join(['%s'] * len(normalized_paths))
+                query = (
+                    f"SELECT group_id FROM duplicate_group_candidates "
+                    f"WHERE mount = %s AND full_path IN ({placeholders})"
+                )
+                cursor.execute(query, tuple([mount] + normalized_paths))
+                rows = cursor.fetchall()
+            conn.close()
+            if not rows:
+                return None
+            counts = Counter(row["group_id"] for row in rows)
+            return counts.most_common(1)[0][0]
+        except Exception as e:
+            logger.error(f"Failed to find existing group for members: {e}")
+            return None
+
+    def get_group_candidate_statuses(self, group_id: str) -> dict:
+        """Return {file_id: status} for a group's existing candidates, so a
+        re-detected cluster being persisted into this same group can tell
+        which members were already reviewed (NOT_DUPLICATE/REJECTED) and
+        avoid clobbering that decision back to PENDING."""
+        if not self.enabled or not group_id:
+            return {}
+        conn = self._get_connection()
+        if not conn:
+            return {}
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT file_id, status FROM duplicate_group_candidates WHERE group_id = %s",
+                    (group_id,),
+                )
+                statuses = {row["file_id"]: row["status"] for row in cursor.fetchall()}
+            conn.close()
+            return statuses
+        except Exception as e:
+            logger.error(f"Failed to fetch candidate statuses for group {group_id}: {e}")
             return {}
 
     def update_candidate_status(self, file_path: str, new_status: str) -> bool:

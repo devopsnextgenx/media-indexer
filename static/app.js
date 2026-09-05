@@ -741,6 +741,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const actionsHtml = isFolder ? "" : `
                     <div class="library-card-actions">
+                        <button class="library-tile-icon-btn icon-llm" data-action="llm" title="Edit AI Metadata">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 2l1.9 5.8L20 9l-5.8 1.9L12 17l-1.9-5.8L4 9l5.8-1.9L12 2z"></path>
+                            </svg>
+                        </button>
                         <button class="library-tile-icon-btn icon-rename" data-action="rename" title="Rename">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M12 20h9"></path>
@@ -801,7 +806,9 @@ document.addEventListener("DOMContentLoaded", () => {
             const actionEntry = libraryItems[actionIdx];
             if (!actionEntry) return;
 
-            if (actionBtn.dataset.action === "rename") {
+            if (actionBtn.dataset.action === "llm") {
+                openLlmPanel(actionEntry);
+            } else if (actionBtn.dataset.action === "rename") {
                 openRenameModal(actionEntry, "library");
             } else if (actionBtn.dataset.action === "delete") {
                 deleteLibraryEntry(actionEntry);
@@ -2053,6 +2060,158 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast(`Re-parse failed: ${err.message}`, "error", 8000);
         }
     };
+
+    // ==========================================
+    // AI/LLM Metadata: Library side panel editor
+    // ==========================================
+    const llmPanel = document.getElementById("llm-panel");
+    const llmPanelOverlay = document.getElementById("llm-panel-overlay");
+    const llmPanelBody = document.getElementById("llm-panel-body");
+    const llmPanelFilename = document.getElementById("llm-panel-filename");
+    const llmPanelCloseBtn = document.getElementById("llm-panel-close");
+    const llmPanelSaveBtn = document.getElementById("llm-panel-save");
+    const llmPanelReparseBtn = document.getElementById("llm-panel-reparse");
+
+    let llmPanelItem = null;
+    let llmPanelData = null;
+
+    function llmPanelFieldsHtml(data) {
+        const found = !!(data && data.found);
+        const songTitle = found ? (data.song_title || "") : "";
+        const movieOrAlbum = found ? (data.movie_or_album || "") : "";
+        const artists = found && Array.isArray(data.artists) ? data.artists.join(", ") : "";
+        const source = found ? (data.source_endpoint || "") : "";
+        const emptyNote = found ? "" : `<div class="llm-empty-note">No AI-extracted metadata cached for this file yet.</div>`;
+        const sourceHtml = source ? `<div class="llm-panel-source">Source: ${escapeHtml(source)}</div>` : "";
+
+        return `
+            ${sourceHtml}
+            ${emptyNote}
+            <div class="llm-meta-fields">
+                <div class="llm-song-row">
+                    <input type="text" class="llm-song-input" id="llm-panel-song" title="Song Title" placeholder="Song Title" value="${escapeHtml(songTitle)}" />
+                </div>
+                <div class="llm-meta-row">
+                    <div class="llm-movie-col">
+                        <input type="text" id="llm-panel-movie" title="Movie / Album" placeholder="Movie / Album" value="${escapeHtml(movieOrAlbum)}" />
+                    </div>
+                </div>
+                <div class="llm-meta-row">
+                    <div class="llm-artists-col">
+                        <input type="text" id="llm-panel-artists" title="Artists (comma-separated)" placeholder="Artists (comma-separated)" value="${escapeHtml(artists)}" />
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function isLlmPanelOpen() {
+        return llmPanel.classList.contains("open");
+    }
+
+    function openLlmPanel(item) {
+        llmPanelItem = item;
+        llmPanelData = null;
+        llmPanelFilename.textContent = item.name || item.file_name || "";
+        llmPanelBody.innerHTML = llmMetadataLoadingHtml();
+
+        llmPanel.classList.add("open");
+        llmPanel.setAttribute("aria-hidden", "false");
+        llmPanelOverlay.classList.add("open");
+
+        fetchLlmMetadata(item.file_path)
+            .then((data) => {
+                if (llmPanelItem !== item) return; // panel closed/switched while loading
+                llmPanelData = data;
+                llmPanelBody.innerHTML = llmPanelFieldsHtml(data);
+            })
+            .catch((err) => {
+                if (llmPanelItem !== item) return;
+                llmPanelBody.innerHTML = `<div class="llm-empty-note">Failed to load AI metadata: ${escapeHtml(err.message)}</div>`;
+            });
+    }
+
+    function closeLlmPanel() {
+        if (!isLlmPanelOpen()) return;
+        llmPanel.classList.remove("open");
+        llmPanel.setAttribute("aria-hidden", "true");
+        llmPanelOverlay.classList.remove("open");
+        llmPanelItem = null;
+        llmPanelData = null;
+    }
+
+    async function saveLlmPanel() {
+        if (!llmPanelItem) return;
+        const item = llmPanelItem;
+
+        const songTitle = document.getElementById("llm-panel-song")?.value.trim() || null;
+        const movieOrAlbum = document.getElementById("llm-panel-movie")?.value.trim() || null;
+        const artistsRaw = document.getElementById("llm-panel-artists")?.value.trim() || "";
+        const artists = artistsRaw ? artistsRaw.split(",").map(a => a.trim()).filter(Boolean) : [];
+
+        try {
+            const res = await fetch("/api/media/llm-metadata", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    file_path: item.file_path,
+                    song_title: songTitle,
+                    movie_or_album: movieOrAlbum,
+                    artists
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast(`Save failed: ${data.detail || res.statusText}`, "error", 8000);
+                return;
+            }
+            llmPanelData = { found: true, ...data };
+            if (llmPanelItem === item) llmPanelBody.innerHTML = llmPanelFieldsHtml(llmPanelData);
+            showToast("AI metadata saved.", "success");
+        } catch (err) {
+            showToast(`Save failed: ${err.message}`, "error", 8000);
+        }
+    }
+
+    async function reparseLlmPanel() {
+        if (!llmPanelItem) return;
+        const item = llmPanelItem;
+        llmPanelBody.innerHTML = llmMetadataLoadingHtml();
+
+        try {
+            const res = await fetch(
+                `/api/admin/llm-parse/single?file_path=${encodeURIComponent(item.file_path)}&force=true`,
+                { method: "POST" }
+            );
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast(`Re-parse failed: ${data.detail || res.statusText}`, "error", 8000);
+                if (llmPanelItem === item) llmPanelBody.innerHTML = llmPanelFieldsHtml(llmPanelData);
+                return;
+            }
+            llmPanelData = { found: true, ...data };
+            if (llmPanelItem === item) llmPanelBody.innerHTML = llmPanelFieldsHtml(llmPanelData);
+            showToast("Re-parsed with AI.", "success");
+        } catch (err) {
+            showToast(`Re-parse failed: ${err.message}`, "error", 8000);
+        }
+    }
+
+    llmPanelCloseBtn.addEventListener("click", closeLlmPanel);
+    llmPanelOverlay.addEventListener("click", closeLlmPanel);
+    llmPanelSaveBtn.addEventListener("click", saveLlmPanel);
+    llmPanelReparseBtn.addEventListener("click", reparseLlmPanel);
+
+    document.addEventListener("keydown", (e) => {
+        if (!isLlmPanelOpen()) return;
+        if (e.key === "Escape") {
+            e.preventDefault();
+            closeLlmPanel();
+        } else if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+            e.preventDefault();
+            saveLlmPanel();
+        }
+    });
 
     // ---- Toast Notifications ----
     const toastContainer = document.getElementById("toast-container");

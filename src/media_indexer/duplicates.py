@@ -301,11 +301,15 @@ class DuplicateDetector:
         if not files_map:
             return []
 
-        # Files a reviewer has already marked "not a duplicate" are excluded
-        # entirely so a resolved decision doesn't get re-clustered and
-        # re-reported on the next detection run.
-        ignored_paths = mysql_db_instance.get_ignored_candidate_paths(mount_name)
-
+        # Files a reviewer has already marked "not a duplicate" are still
+        # loaded as entries (rather than excluded outright) so a cluster that
+        # still legitimately includes them keeps the *same* membership -
+        # and therefore the same group_id - run over run. `_persist_group`
+        # is what actually protects the reviewer's decision, by refusing to
+        # write that candidate's status back to PENDING when it re-persists
+        # the group. Excluding the file here instead would shrink the
+        # cluster, mint a new group_id, and leave the reviewer's decision
+        # stranded in an orphaned group of its own.
         names_by_rel = {
             rel_path: os.path.basename(rel_path)
             for rel_path, rec in files_map.items()
@@ -315,12 +319,8 @@ class DuplicateDetector:
 
         entries: List[TrackEntry] = []
         skipped = 0
-        ignored = 0
         for rel_path, file_name in names_by_rel.items():
             full_path = os.path.join(mount_path, rel_path).replace("\\", "/")
-            if full_path in ignored_paths:
-                ignored += 1
-                continue
             meta = metadata.get(mysql_db_instance._normalize_file_key(file_name))
             if not meta or not (meta.get("song_title") or "").strip():
                 skipped += 1
@@ -340,11 +340,6 @@ class DuplicateDetector:
 
         if skipped:
             logger.info(f"Mount {mount_name}: skipped {skipped} files without usable LLM metadata")
-        if ignored:
-            logger.info(
-                f"Mount {mount_name}: skipped {ignored} files previously marked "
-                "'not a duplicate' by a reviewer"
-            )
         return entries
 
     def detect_for_mount(self, mount_name: str, mount_path: str):
@@ -434,7 +429,22 @@ class DuplicateDetector:
                        matches: Dict[str, Dict[str, Tuple[float, dict]]]) -> bool:
         representative = max(members, key=lambda m: (len(by_id[m].title), by_id[m].quality_rank))
         title_key = by_id[representative].title_key
-        group_id = _group_id_for(scope_key, title_key, members)
+
+        # Before minting a fresh hash-derived group_id, check whether these
+        # members already belong to a group from a previous run. Membership
+        # can shift slightly between runs (a file added/removed from the
+        # scope), which would otherwise change the hash and spawn a new,
+        # disconnected group even though it's the same logical duplicate
+        # cluster - stranding any prior reviewer decisions in the old one.
+        member_paths = [by_id[m].full_path for m in members]
+        existing_group_id = mysql_db_instance.find_existing_group_id_for_paths(mount_name, member_paths)
+        group_id = existing_group_id or _group_id_for(scope_key, title_key, members)
+
+        # Candidates a reviewer already resolved (NOT_DUPLICATE/REJECTED) for
+        # this group must keep that status rather than being written back to
+        # PENDING just because the detector re-clustered them here.
+        existing_statuses = mysql_db_instance.get_group_candidate_statuses(group_id) if existing_group_id else {}
+        resolved_statuses = {"NOT_DUPLICATE", "REJECTED"}
 
         rows = []
         for file_id in members:
@@ -479,8 +489,14 @@ class DuplicateDetector:
         if not inserted:
             return False
 
+        skipped_resolved = 0
         for rank, row in enumerate(rows, start=1):
             entry = row["entry"]
+            if existing_statuses.get(entry.file_id) in resolved_statuses:
+                # Leave this candidate's row untouched - a reviewer already
+                # decided it's not a duplicate of this group.
+                skipped_resolved += 1
+                continue
             mysql_db_instance.insert_candidate(
                 group_id=group_id,
                 file_id=entry.file_id,
@@ -500,5 +516,10 @@ class DuplicateDetector:
                 song_title=entry.song_title,
                 movie_or_album=entry.movie_or_album,
                 artists=entry.artists,
+            )
+        if skipped_resolved:
+            logger.info(
+                f"Group {group_id}: kept {skipped_resolved} previously-reviewed "
+                "candidate(s) as-is (not re-marked)"
             )
         return True
