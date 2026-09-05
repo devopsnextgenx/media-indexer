@@ -1472,14 +1472,23 @@ document.addEventListener("DOMContentLoaded", () => {
     let loopMode = localStorage.getItem("player_loop") || "off"; // off | all | one
 
     function buildPlayOrder(playlist, startIndex, shuffle) {
+        const n = playlist.length;
         const indices = playlist.map((_, i) => i);
-        if (!shuffle) return indices;
-        const rest = indices.filter((i) => i !== startIndex);
+        if (!n) return indices;
+        // Clamp start so a missing/negative index still yields a valid order.
+        const start = Math.max(0, Math.min(Number(startIndex) || 0, n - 1));
+        if (!shuffle) {
+            // Sequential order starting at the clicked/requested track, then wrap.
+            // (Previously this ignored startIndex and always began at 0, so
+            // duplicate-candidate Play on row 2 still opened the first file.)
+            return indices.slice(start).concat(indices.slice(0, start));
+        }
+        const rest = indices.filter((i) => i !== start);
         for (let i = rest.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [rest[i], rest[j]] = [rest[j], rest[i]];
         }
-        return [startIndex, ...rest];
+        return [start, ...rest];
     }
 
     function applyShuffleUI() {
@@ -3478,6 +3487,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // Build a player-ready playlist from every candidate in a duplicate group, so
     // Next/Prev buttons (and n/p keys) can step through all copies of that file.
     function buildDuplicatePlaylist(candidates, filePath) {
+        const normalizePath = (p) => String(p || "").replace(/\\/g, "/").trim();
+        const target = normalizePath(filePath);
         const playlist = (candidates || [])
             .map((cand) => {
                 const path = cand.full_path || cand.file_path || "";
@@ -3492,17 +3503,35 @@ document.addEventListener("DOMContentLoaded", () => {
                 };
             })
             .filter(Boolean);
-        let index = playlist.findIndex((it) => it.file_path === filePath);
+        let index = playlist.findIndex((it) => normalizePath(it.file_path) === target);
+        // Fallback: match by basename if full-path comparison failed (mount prefix differences)
+        if (index < 0 && target) {
+            const base = target.split("/").pop();
+            index = playlist.findIndex((it) => normalizePath(it.file_path).split("/").pop() === base);
+        }
         if (index < 0) index = 0;
         return { playlist, index };
     }
 
     // Opens the player queued with every file in the duplicate group, starting on
-    // whichever candidate was clicked, instead of just the single file.
+    // whichever candidate was clicked. Group order is preserved (no rotation) so
+    // Next/Prev step through candidates in the same sequence shown in the UI.
+    // Shuffle is forced off — sequence matters when reviewing duplicate copies.
     function playDuplicateGroup(candidates, filePath) {
         const { playlist, index } = buildDuplicatePlaylist(candidates, filePath);
         if (!playlist.length) return;
-        openPlayer(playlist[index], playlist, index);
+
+        if (shuffleOn) {
+            shuffleOn = false;
+            localStorage.setItem("player_shuffle", "false");
+            applyShuffleUI();
+        }
+
+        currentPlaylist = playlist;
+        // Exact candidate order from the group (same as the table rows)
+        playOrder = playlist.map((_, i) => i);
+        orderPos = Math.max(0, Math.min(index, playlist.length - 1));
+        playCurrentTrack();
     }
 
     const DUP_ICON_PLAY = `<svg fill="currentColor" viewBox="0 0 16 16" width="12" height="12"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.693-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>`;

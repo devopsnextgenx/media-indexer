@@ -113,9 +113,18 @@ class MediaActions:
 
     @staticmethod
     def delete_file(file_path: str) -> dict:
-        if os.path.exists(file_path):
-            os.remove(file_path)
 
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except FileNotFoundError as e:
+                logger.error(f"Failed to delete file {file_path}: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error while deleting file {file_path}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to delete file: {e}")
+        else:
+            logger.warning(f"File {file_path} does not exist on disk. Proceeding to clean index records.")
+                
         # Synchronize Vector DB
         removed = db_instance.delete_by_file_path(file_path)
         if not removed:
