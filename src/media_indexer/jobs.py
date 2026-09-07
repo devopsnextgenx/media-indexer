@@ -324,7 +324,7 @@ class BackgroundJobManager:
         job = mysql_db_instance.get_job(job_id)
         if not job:
             mysql_db_instance.create_job(job_id, "duplicate_detect", mount, total_items=len(targets))
-        mysql_db_instance.update_job(job_id, status="RUNNING", requested_status=None, last_error=None)
+        mysql_db_instance.update_job(job_id, status="PENDING", requested_status=None, last_error=None)
 
         t = threading.Thread(target=self._run_duplicate_detect, args=(job_id, mount_registry, targets), daemon=True)
         with self._lock:

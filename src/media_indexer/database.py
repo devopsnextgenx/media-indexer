@@ -1771,6 +1771,25 @@ class MySQLDatabase:
             logger.error(f"Failed to list background jobs: {e}")
             return []
 
+    def delete_job(self, job_id: str) -> bool:
+        """Permanently remove a background job record. Callers are expected
+        to have already verified the job is in a terminal state (COMPLETED,
+        FAILED, or CANCELLED) — this method does not itself check status."""
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM background_jobs WHERE job_id = %s", (job_id,))
+                deleted = cursor.rowcount > 0
+            conn.close()
+            return deleted
+        except Exception as e:
+            logger.error(f"Failed to delete background job {job_id}: {e}")
+            return False
+
     def get_mount_action_statuses(self, mount_names: list[str]) -> dict:
         """
         Returns a dict mapping mount_name -> {

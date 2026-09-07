@@ -8,6 +8,7 @@ const SVG_ICONS = {
     pause: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>`,
     resume: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`,
     cancel: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>`,
+    trash: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
     folder: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
 };
 
@@ -78,6 +79,7 @@ function renderJobsTable(jobs) {
         const canPause = job.status === "RUNNING" || job.status === "PENDING";
         const canResume = job.status === "PAUSED" || job.status === "FAILED";
         const canCancel = job.status === "RUNNING" || job.status === "PENDING" || job.status === "PAUSED";
+        const canDelete = job.status === "COMPLETED" || job.status === "FAILED" || job.status === "CANCELLED";
         const eta = job.eta_seconds != null ? formatDuration(job.eta_seconds) : "—";
         tr.innerHTML = `
             <td><code>${escapeHtml(job.job_id)}</code></td>
@@ -93,6 +95,7 @@ function renderJobsTable(jobs) {
                     ${canPause ? `<button class="btn-job-action btn-job-pause" data-action="pause" data-job="${escapeHtml(job.job_id)}" title="Pause Job">${getIcon('pause')} <span>Pause</span></button>` : ""}
                     ${canResume ? `<button class="btn-job-action btn-job-resume" data-action="resume" data-job="${escapeHtml(job.job_id)}" title="Resume Job">${getIcon('resume')} <span>Resume</span></button>` : ""}
                     ${canCancel ? `<button class="btn-job-action btn-job-cancel" data-action="cancel" data-job="${escapeHtml(job.job_id)}" title="Cancel Job">${getIcon('cancel')} <span>Cancel</span></button>` : ""}
+                    ${canDelete ? `<button class="btn-job-action btn-job-delete" data-action="delete" data-job="${escapeHtml(job.job_id)}" title="Delete Job">${getIcon('trash')} <span>Delete</span></button>` : ""}
                 </div>
             </td>`;
         tbody.appendChild(tr);
@@ -101,6 +104,16 @@ function renderJobsTable(jobs) {
         btn.addEventListener("click", async () => {
             const action = btn.dataset.action;
             const jobId = btn.dataset.job;
+            if (action === "delete") {
+                if (!confirm(`Delete job ${jobId}? This cannot be undone.`)) return;
+                const res = await fetch(`/api/admin/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    alert(data.detail || "Failed to delete job");
+                }
+                refresh();
+                return;
+            }
             await fetch(`/api/admin/jobs/${encodeURIComponent(jobId)}/${action}`, { method: "POST" });
             refresh();
         });

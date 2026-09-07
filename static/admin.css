@@ -585,4 +585,13 @@
     border-color: #f14668;
 }
 
-
+.btn-job-delete {
+    background: rgba(148, 163, 184, 0.12);
+    border-color: rgba(148, 163, 184, 0.3);
+    color: #94a3b8;
+}
+.btn-job-delete:hover {
+    background: rgba(244, 63, 94, 0.2);
+    border-color: #f43f5e;
+    color: #fb7185;
+}

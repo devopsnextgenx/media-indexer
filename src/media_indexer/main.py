@@ -1214,6 +1214,24 @@ def cancel_background_job(job_id: str):
     return {"status": "cancel_requested", "job_id": job_id}
 
 
+_TERMINAL_JOB_STATUSES = {"COMPLETED", "FAILED", "CANCELLED"}
+
+
+@app.delete("/api/admin/jobs/{job_id}", tags=["Admin", "Jobs"])
+def delete_background_job(job_id: str):
+    job = job_manager.status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") not in _TERMINAL_JOB_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete job in status '{job.get('status')}'; cancel it first.",
+        )
+    if not mysql_db_instance.delete_job(job_id):
+        raise HTTPException(status_code=500, detail="Failed to delete job")
+    return {"status": "deleted", "job_id": job_id}
+
+
 # ==========================================
 # Admin status dashboard
 # ==========================================
