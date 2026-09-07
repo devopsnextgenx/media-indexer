@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <title>Media Indexer Companion</title>
     <link rel="stylesheet" href="popup.css">
+    <link rel="stylesheet" href="player.css">
 </head>
 
 <body>
@@ -133,23 +134,21 @@
 
             <!-- controls -->
             <div class="player-controls">
-                <button id="player-shuffle" class="player-btn" title="Shuffle" aria-label="Shuffle">&#8646;</button>
-                <button id="player-prev" class="player-btn" title="Previous" aria-label="Previous">&#9194;</button>
-                <button id="player-play" class="player-btn player-play-btn" title="Play / Pause"
-                    aria-label="Play">&#9654;</button>
-                <button id="player-next" class="player-btn" title="Next" aria-label="Next">&#9195;</button>
-                <button id="player-loop" class="player-btn" title="Loop" aria-label="Loop">&#128257;</button>
-
                 <span id="player-current" class="player-time">00:00</span>
-                <input type="range" id="player-progress" class="player-range" min="0" max="0" value="0" step="0.1" />
+                <button id="player-shuffle" class="player-btn" title="Shuffle">&#128256;</button>
+                <button id="player-prev" class="player-btn" title="Previous">&#9198;</button>
+                <button id="player-play" class="player-btn" title="Play / Pause">&#9654;</button>
+                <button id="player-next" class="player-btn" title="Next">&#9197;</button>
+                <button id="player-loop" class="player-btn" data-mode="off" title="Loop: off">&#128257;</button>
+
+                <input type="range" id="player-progress" class="player-range" value="0" min="0" max="100" step="0.1" />
+                <span class="spacer"></span> <!-- pushes everything after it to the right -->
+
+                <button id="player-mute" class="player-btn" title="Mute / Unmute">&#128266;</button>
+                <input type="range" id="player-volume" class="player-range player-volume" value="0.05" min="0" max="1"
+                    step="0.01" />
+                <button id="player-fullscreen" class="player-btn" title="Fullscreen">&#9974;</button>
                 <span id="player-duration" class="player-time">00:00</span>
-
-                <button id="player-mute" class="player-btn" title="Mute" aria-label="Mute">&#128266;</button>
-                <input type="range" id="player-volume" class="player-range player-volume" min="0" max="1" step="0.05"
-                    value="0.4" />
-
-                <button id="player-fullscreen" class="player-btn" title="Fullscreen"
-                    aria-label="Fullscreen">&#9711;</button>
             </div>
         </div>
     </div>
