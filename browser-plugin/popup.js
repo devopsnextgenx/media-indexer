@@ -1013,8 +1013,8 @@ playerPlay.addEventListener('click', togglePlay);
 playerVideo.addEventListener('play', () => { playerPlay.innerHTML = '&#10074;&#10074;'; });
 playerVideo.addEventListener('pause', () => { playerPlay.innerHTML = '&#9654;'; });
 
-// Duration label click-to-cycle: total duration -> remaining -> current time
-let durationDisplayMode = 'duration'; // 'duration' | 'remaining' | 'current'
+// Duration label click-to-cycle: total duration -> remaining
+let durationDisplayMode = 'duration'; // 'duration' | 'remaining'
 
 function updateDurationLabel() {
     const duration = isFinite(playerVideo.duration) ? playerVideo.duration : 0;
@@ -1027,7 +1027,7 @@ function updateDurationLabel() {
 }
 
 playerDuration.style.cursor = 'pointer';
-playerDuration.title = 'Click to toggle: duration / remaining / current time';
+playerDuration.title = 'Click to toggle: duration / remaining time';
 playerDuration.addEventListener('click', () => {
     durationDisplayMode = durationDisplayMode === 'duration' ? 'remaining'
         : 'duration';
