@@ -3904,4 +3904,28 @@ document.addEventListener("DOMContentLoaded", () => {
             });
         });
     }
+
+    // ---- Deep-link autoplay (opened via Ctrl+Click from the extension popup) ----
+    (function handleAutoplayFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("autoplay") !== "1") return;
+
+        const jellyfinId = params.get("jellyfin_id") || "";
+        const filePath = params.get("file_path") || "";
+        if (!jellyfinId && !filePath) return;
+
+        const item = {
+            jellyfin_id: jellyfinId,
+            file_path: filePath,
+            normalized_title: params.get("title") || "",
+            resolution: params.get("resolution") || "",
+            size_human: params.get("size") || ""
+        };
+
+        openPlayer(item);
+
+        // Strip the query string so a refresh/share of the tab doesn't replay it.
+        const cleanUrl = window.location.pathname + window.location.hash;
+        window.history.replaceState({}, document.title, cleanUrl);
+    })();
 });

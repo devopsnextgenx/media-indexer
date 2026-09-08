@@ -284,9 +284,15 @@ function resultRow(item) {
 
     const displayTitle = item.normalized_title || item.file_name || "Untitled";
     const titleEl = text("div", "result-title", displayTitle);
-    titleEl.title = displayTitle;
+    titleEl.title = displayTitle + " (Ctrl+Click to open in full player tab)";
     titleEl.style.cursor = "pointer";
-    titleEl.addEventListener("click", () => openPlayer(item));
+    titleEl.addEventListener("click", (e) => {
+        if (e.ctrlKey || e.metaKey) {
+            openInFullAppTab(item);
+        } else {
+            openPlayer(item);
+        }
+    });
     body.appendChild(titleEl);
 
     body.appendChild(
@@ -862,6 +868,34 @@ let currentPlayerItem = null;
 let playerSeekTimer = null;
 let arrowSeekIndex = 0;
 let arrowSeekSteps = [3, 5, 7, 10];
+
+// ------------------------------------------------------------------ Full app deep link
+const FULL_APP_URL = "http://minis.local:2345/";
+
+function openInFullAppTab(item) {
+    if (!item) return;
+    const jellyfinId = item.jellyfin?.jellyfin_id || item.jellyfin?.jf_id || item.jellyfin_id;
+    const title = item.normalized_title || item.file_name || item.name || "";
+    const resolution = item.resolution || item.metadata?.resolution || "";
+    const sizeHuman = item.size_human || item.metadata?.file_size_human || "";
+
+    const params = new URLSearchParams({ autoplay: "1" });
+    if (jellyfinId) {
+        params.set("jellyfin_id", jellyfinId);
+    } else {
+        params.set("file_path", item.file_path || item.path || "");
+    }
+    if (title) params.set("title", title);
+    if (resolution) params.set("resolution", resolution);
+    if (sizeHuman) params.set("size", sizeHuman);
+
+    const url = `${FULL_APP_URL}?${params.toString()}`;
+    if (typeof chrome !== "undefined" && chrome.tabs?.create) {
+        chrome.tabs.create({ url });
+    } else {
+        window.open(url, "_blank");
+    }
+}
 
 // ------------------------------------------------------------------ Stream URL
 function streamUrl(item) {
