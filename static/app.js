@@ -53,6 +53,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const librarySortDirBtn = document.getElementById("library-sort-dir");
     const cardSizeGroup = document.getElementById("card-size-group");
     const btnLibraryRefresh = document.getElementById("btn-library-refresh");
+    const librarySearchInput = document.getElementById("library-search-input");
+    const librarySearchClear = document.getElementById("library-search-clear");
+    const librarySearchCount = document.getElementById("library-search-count");
 
     const MAX_LOG_LINES = 5000;
     const MAX_HISTORY = 15;
@@ -93,6 +96,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const SAVED_CARD_SIZE = localStorage.getItem("library_card_size");
     let cardSize = (SAVED_CARD_SIZE && CARD_SIZE_PX.hasOwnProperty(SAVED_CARD_SIZE)) ? SAVED_CARD_SIZE : "m";
     let libraryRequestToken = 0;    // guards against out-of-order responses when navigating fast
+
+    // Library search-as-you-type state (filters/highlights within the current folder)
+    let librarySearchQuery = "";           // lower-cased, trimmed
+    let librarySearchMatchIndices = [];    // indices into libraryItems that match, folders first
+    let librarySearchFocusPos = -1;        // position within librarySearchMatchIndices currently focused
 
     // Duplicate groups state
     let duplicateGroups = [];
@@ -728,6 +736,29 @@ document.addEventListener("DOMContentLoaded", () => {
         navigateLibrary(target.dataset.mount, target.dataset.path || "");
     });
 
+    // Wraps every case-insensitive occurrence of `query` inside `name` with a
+    // <mark> so matches stand out in the library grid as the user types.
+    function highlightLibraryName(name, query) {
+        const safeName = String(name ?? "");
+        if (!query) return escapeHtml(safeName);
+
+        const lowerName = safeName.toLowerCase();
+        const lowerQuery = query.toLowerCase();
+        let idx = lowerName.indexOf(lowerQuery);
+        if (idx === -1) return escapeHtml(safeName);
+
+        let result = "";
+        let start = 0;
+        while (idx !== -1) {
+            result += escapeHtml(safeName.slice(start, idx));
+            result += `<mark class="library-search-highlight">${escapeHtml(safeName.slice(idx, idx + lowerQuery.length))}</mark>`;
+            start = idx + lowerQuery.length;
+            idx = lowerName.indexOf(lowerQuery, start);
+        }
+        result += escapeHtml(safeName.slice(start));
+        return result;
+    }
+
     function libraryCardHtml(entry, idx) {
         const isFolder = entry.type === "folder";
         const thumbSrc = libraryThumbnailUrl(entry);
@@ -738,6 +769,14 @@ document.addEventListener("DOMContentLoaded", () => {
         const metaBits = isFolder
             ? [`${entry.item_count}${entry.count_capped ? "+" : ""} item${entry.item_count === 1 ? "" : "s"}`]
             : [entry.duration, entry.resolution, entry.size_human].filter(Boolean);
+
+        // Case-insensitive, partial-match filtering against the active search query.
+        const query = librarySearchQuery;
+        const isMatch = !query || entry.name.toLowerCase().includes(query);
+        const nameHtml = query ? highlightLibraryName(entry.name, query) : escapeHtml(entry.name);
+        const searchClasses = query
+            ? `${isMatch ? "search-match" : "search-hidden"}${isFolder && isMatch ? " search-match-folder" : ""}`
+            : "";
 
         const actionsHtml = isFolder ? "" : `
                     <div class="library-card-actions">
@@ -763,14 +802,14 @@ document.addEventListener("DOMContentLoaded", () => {
                     </div>`;
 
         return `
-            <div class="library-card ${isFolder ? "is-folder" : "is-file"}" data-idx="${idx}" title="${escapeHtml(entry.name)}">
+            <div class="library-card ${isFolder ? "is-folder" : "is-file"} ${searchClasses}" data-idx="${idx}" title="${escapeHtml(entry.name)}">
                 <div class="library-card-thumb">
                     ${thumbHtml}
                     ${isFolder ? `<span class="library-card-count-badge">${entry.item_count}${entry.count_capped ? "+" : ""}</span>` : ""}
                     ${actionsHtml}
                 </div>
                 <div class="library-card-body">
-                    <div class="library-card-name">${escapeHtml(entry.name)}</div>
+                    <div class="library-card-name">${nameHtml}</div>
                     <div class="library-card-meta">${metaBits.map(escapeHtml).join(" \u2022 ")}</div>
                 </div>
             </div>
@@ -844,7 +883,129 @@ document.addEventListener("DOMContentLoaded", () => {
         libraryMount = mount;
         libraryPath = path || "";
         saveLibraryState();
+        resetLibrarySearch();
         loadLibrary({ reset: true });
+    }
+
+    // ==========================================
+    // Library search-as-you-type (filter + highlight + focus)
+    // ==========================================
+
+    function resetLibrarySearch() {
+        if (librarySearchInput) librarySearchInput.value = "";
+        librarySearchQuery = "";
+        librarySearchMatchIndices = [];
+        librarySearchFocusPos = -1;
+        if (librarySearchCount) librarySearchCount.textContent = "";
+        if (librarySearchClear) librarySearchClear.classList.add("hidden");
+    }
+
+    // Removes the current keyboard/auto focus ring from whichever card has it.
+    function clearLibrarySearchFocusClass() {
+        const focused = libraryGrid.querySelector(".library-card.search-focused");
+        if (focused) focused.classList.remove("search-focused");
+    }
+
+    // Applies the outline + scrolls the currently focused match into view so
+    // the user can see it without hunting through the grid themselves.
+    function focusLibrarySearchMatch() {
+        clearLibrarySearchFocusClass();
+        if (librarySearchFocusPos < 0 || !librarySearchMatchIndices.length) return;
+        const idx = librarySearchMatchIndices[librarySearchFocusPos];
+        const card = libraryGrid.querySelector(`.library-card[data-idx="${idx}"]`);
+        if (card) {
+            card.classList.add("search-focused");
+            card.scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+    }
+
+    // Re-filters/highlights the grid against the current input value.
+    // Case-insensitive, partial match, recalculated on every keystroke.
+    function applyLibrarySearch(rawQuery) {
+        librarySearchQuery = (rawQuery || "").trim().toLowerCase();
+        if (librarySearchClear) librarySearchClear.classList.toggle("hidden", !librarySearchQuery);
+
+        renderLibraryGrid(false);
+
+        if (!librarySearchQuery) {
+            librarySearchMatchIndices = [];
+            librarySearchFocusPos = -1;
+            if (librarySearchCount) librarySearchCount.textContent = "";
+            return;
+        }
+
+        // Folders are sorted first so Enter/arrow-key cycling jumps into
+        // navigable folders before landing on individual files.
+        librarySearchMatchIndices = libraryItems
+            .map((entry, idx) => ({ entry, idx }))
+            .filter(({ entry }) => entry.name.toLowerCase().includes(librarySearchQuery))
+            .sort((a, b) => (a.entry.type === "folder" ? 0 : 1) - (b.entry.type === "folder" ? 0 : 1))
+            .map(({ idx }) => idx);
+
+        if (librarySearchCount) {
+            librarySearchCount.textContent = librarySearchMatchIndices.length
+                ? `${librarySearchMatchIndices.length} match${librarySearchMatchIndices.length === 1 ? "" : "es"}`
+                : "No matches";
+        }
+
+        librarySearchFocusPos = librarySearchMatchIndices.length ? 0 : -1;
+        focusLibrarySearchMatch();
+    }
+
+    // Opens/plays whichever result currently has the search focus ring —
+    // mirrors double-click for folders and single-click for files.
+    function activateLibrarySearchFocus() {
+        if (librarySearchFocusPos < 0) return;
+        const idx = librarySearchMatchIndices[librarySearchFocusPos];
+        const entry = libraryItems[idx];
+        if (!entry) return;
+
+        if (entry.type === "folder") {
+            navigateLibrary(entry.mount, entry.path);
+        } else {
+            const playlist = libraryItems.filter((i) => i.type === "file");
+            const playIdx = playlist.indexOf(entry);
+            openLibraryPlayer(playlist, playIdx);
+        }
+    }
+
+    function clearLibrarySearch() {
+        resetLibrarySearch();
+        renderLibraryGrid(false);
+    }
+
+    if (librarySearchInput) {
+        librarySearchInput.addEventListener("input", (e) => applyLibrarySearch(e.target.value));
+
+        librarySearchInput.addEventListener("keydown", (e) => {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                clearLibrarySearch();
+                librarySearchInput.blur();
+                return;
+            }
+            if (!librarySearchMatchIndices.length) return;
+
+            if (e.key === "Enter") {
+                e.preventDefault();
+                activateLibrarySearchFocus();
+            } else if (e.key === "ArrowDown") {
+                e.preventDefault();
+                librarySearchFocusPos = (librarySearchFocusPos + 1) % librarySearchMatchIndices.length;
+                focusLibrarySearchMatch();
+            } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                librarySearchFocusPos = (librarySearchFocusPos - 1 + librarySearchMatchIndices.length) % librarySearchMatchIndices.length;
+                focusLibrarySearchMatch();
+            }
+        });
+    }
+
+    if (librarySearchClear) {
+        librarySearchClear.addEventListener("click", () => {
+            clearLibrarySearch();
+            librarySearchInput.focus();
+        });
     }
 
     async function loadLibrary({ reset }) {
@@ -864,6 +1025,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 renderBreadcrumb(cached.breadcrumb);
                 renderLibraryGrid(false);
                 updateLibraryCount(cached.total);
+                if (librarySearchQuery) applyLibrarySearch(librarySearchInput.value);
                 return;
             }
 
@@ -877,6 +1039,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 renderLibraryGrid(false);
                 updateLibraryCount(idbCached.total);
                 libraryPageCache.set(cacheKey, { ...idbCached, cachedAt: Date.now() });
+                if (librarySearchQuery) applyLibrarySearch(librarySearchInput.value);
                 return;
             }
         }
@@ -908,6 +1071,7 @@ document.addEventListener("DOMContentLoaded", () => {
             renderBreadcrumb(data.breadcrumb);
             renderLibraryGrid(!reset);
             updateLibraryCount(data.total);
+            if (librarySearchQuery) applyLibrarySearch(librarySearchInput.value);
 
             const cacheEntry = {
                 items: libraryItems,
@@ -2954,9 +3118,21 @@ document.addEventListener("DOMContentLoaded", () => {
         duplicates: [tabBtnDuplicates, tabPanelDuplicates],
     };
 
+    // Keeps the sticky library toolbar pinned exactly below the sticky nav-tabs
+    // bar, whatever height that bar happens to render at (fonts/zoom/etc).
+    function updateStickyOffsets() {
+        const navTabsEl = document.querySelector(".nav-tabs");
+        if (navTabsEl) {
+            document.documentElement.style.setProperty("--nav-tabs-height", `${navTabsEl.offsetHeight}px`);
+        }
+    }
+    window.addEventListener("resize", updateStickyOffsets);
+    updateStickyOffsets();
+
     function activateTab(btn, panel, persist = true) {
         allTabBtns.forEach((b) => b?.classList.toggle("active", b === btn));
         allTabPanels.forEach((p) => p?.classList.toggle("active", p === panel));
+        updateStickyOffsets();
 
         if (persist) {
             const tabId = Object.keys(TAB_IDS).find((key) => TAB_IDS[key][0] === btn);
