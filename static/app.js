@@ -1541,7 +1541,17 @@ document.addEventListener("DOMContentLoaded", () => {
         playerVideo.src = streamUrl(item);
         playerOverlay.classList.remove("hidden");
         playerVideo.volume = Number(playerVolume.value);
-        playerVideo.play().catch(() => { });
+        playerVideo.play().catch(() => {
+            // Autoplay-with-sound can be blocked when the page has no
+            // in-document user gesture yet (e.g. a tab opened by the
+            // extension's Ctrl+Click deep link). Muted autoplay is
+            // reliably allowed, so retry muted, then unmute once playback
+            // has actually started.
+            playerVideo.muted = true;
+            playerVideo.play().then(() => {
+                playerVideo.muted = false;
+            }).catch(() => { /* still blocked; user can press play manually */ });
+        });
         updateQueueInfo();
         // Keep player-attached panels in sync when the track changes
         if (isPlayerLlmPanelOpen()) {
@@ -2126,15 +2136,37 @@ document.addEventListener("DOMContentLoaded", () => {
     playerVideo.addEventListener("play", () => { playerPlay.innerHTML = "&#10074;&#10074;"; });
     playerVideo.addEventListener("pause", () => { playerPlay.innerHTML = "&#9654;"; });
 
+    // Duration label click-to-cycle: total duration -> remaining -> current time
+    let durationDisplayMode = "duration"; // "duration" | "remaining" | "current"
+
+    function updateDurationLabel() {
+        const duration = isFinite(playerVideo.duration) ? playerVideo.duration : 0;
+        const current = playerVideo.currentTime || 0;
+        if (durationDisplayMode === "remaining") {
+            playerDuration.innerText = `-${formatClock(Math.max(0, duration - current))}`;
+        } else {
+            playerDuration.innerText = formatClock(duration);
+        }
+    }
+
+    playerDuration.style.cursor = "pointer";
+    playerDuration.title = "Click to toggle: duration / remaining / current time";
+    playerDuration.addEventListener("click", () => {
+        durationDisplayMode = durationDisplayMode === "duration" ? "remaining"
+            : "duration";
+        updateDurationLabel();
+    });
+
     playerVideo.addEventListener("loadedmetadata", () => {
         playerProgress.max = isFinite(playerVideo.duration) ? playerVideo.duration : 0;
-        playerDuration.innerText = formatClock(playerVideo.duration);
+        updateDurationLabel();
     });
 
     playerVideo.addEventListener("timeupdate", () => {
         if (seeking) return;
         playerProgress.value = playerVideo.currentTime;
         playerCurrent.innerText = formatClock(playerVideo.currentTime);
+        updateDurationLabel();
     });
 
     playerProgress.addEventListener("input", () => {

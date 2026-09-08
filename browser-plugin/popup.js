@@ -1013,16 +1013,38 @@ playerPlay.addEventListener('click', togglePlay);
 playerVideo.addEventListener('play', () => { playerPlay.innerHTML = '&#10074;&#10074;'; });
 playerVideo.addEventListener('pause', () => { playerPlay.innerHTML = '&#9654;'; });
 
+// Duration label click-to-cycle: total duration -> remaining -> current time
+let durationDisplayMode = 'duration'; // 'duration' | 'remaining' | 'current'
+
+function updateDurationLabel() {
+    const duration = isFinite(playerVideo.duration) ? playerVideo.duration : 0;
+    const current = playerVideo.currentTime || 0;
+    if (durationDisplayMode === 'remaining') {
+        playerDuration.textContent = `-${formatClock(Math.max(0, duration - current))}`;
+    } else {
+        playerDuration.textContent = formatClock(duration);
+    }
+}
+
+playerDuration.style.cursor = 'pointer';
+playerDuration.title = 'Click to toggle: duration / remaining / current time';
+playerDuration.addEventListener('click', () => {
+    durationDisplayMode = durationDisplayMode === 'duration' ? 'remaining'
+        : 'duration';
+    updateDurationLabel();
+});
+
 playerVideo.addEventListener('loadedmetadata', () => {
     const dur = isFinite(playerVideo.duration) ? playerVideo.duration : 0;
     playerProgress.max = dur;
-    playerDuration.textContent = formatClock(dur);
+    updateDurationLabel();
 });
 
 playerVideo.addEventListener('timeupdate', () => {
     if (playerProgress === document.activeElement) return;
     playerProgress.value = playerVideo.currentTime;
     playerCurrent.textContent = formatClock(playerVideo.currentTime);
+    updateDurationLabel();
 });
 
 playerProgress.addEventListener('input', () => {
