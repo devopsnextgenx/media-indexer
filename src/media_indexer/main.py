@@ -567,7 +567,10 @@ def ytdlp_options():
 
 @app.post("/api/ytdlp/formats", tags=["Browser Plugin"])
 def ytdlp_formats(req: FormatsRequest):
-    return ytdlp.fetch_formats(req.url, cookies=req.cookies)
+    # Convert https://www.youtube.com/watch?v=b6-cTEdj1lw&list=RDb6-cTEdj1lw&start_radio=1 -> https://www.youtube.com/watch?v=b6-cTEdj1lw
+    url = req.url.split("&")[0]
+    print(f"Fetching formats for URL: {url}")
+    return ytdlp.fetch_formats(url, cookies=req.cookies)
 
 
 @app.post("/api/ytdlp/download", tags=["Browser Plugin"])
