@@ -639,7 +639,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const THUMB_PLACEHOLDER = `data:image/svg+xml,${encodeURIComponent(THUMB_PLACEHOLDER_SVG)}`;
 
     function thumbnailUrl(item) {
-        const jellyfinId = item.jellyfin?.jellyfin_id || item.jellyfin?.jf_id;
+        // Some callers (search "Play", duplicate play, deep-link autoplay)
+        // hand us a flat { jellyfin_id, ... } shape rather than the nested
+        // { jellyfin: { jellyfin_id } } shape, so check both — matching
+        // streamUrl()'s fallback below, or this silently misses a real
+        // poster and falls back to the gray placeholder.
+        const jellyfinId = item.jellyfin?.jellyfin_id || item.jellyfin?.jf_id || item.jellyfin_id;
         if (!jellyfinId) return THUMB_PLACEHOLDER;
 
         const params = new URLSearchParams({
@@ -1600,6 +1605,54 @@ document.addEventListener("DOMContentLoaded", () => {
         }, 800);
     }
 
+    // ---- Poster overlay: shown while the next file is buffering at start,
+    // and left up when playback ends with nothing queued to play next
+    // (no loop, no next track) instead of a black/frozen video frame. ----
+    let playerPosterImg = document.getElementById("player-poster");
+    if (!playerPosterImg && playerStage) {
+        playerPosterImg = document.createElement("img");
+        playerPosterImg.id = "player-poster";
+        playerPosterImg.className = "player-poster hidden";
+        playerPosterImg.alt = "";
+        playerPosterImg.style.position = "absolute";
+        playerPosterImg.style.inset = "0";
+        playerPosterImg.style.width = "100%";
+        playerPosterImg.style.height = "100%";
+        playerPosterImg.style.objectFit = "cover";
+        playerPosterImg.style.background = "#000";
+        playerPosterImg.style.pointerEvents = "none";
+        playerPosterImg.style.zIndex = "1";
+        playerStage.style.position = playerStage.style.position || "relative";
+        playerVideo.insertAdjacentElement("afterend", playerPosterImg);
+    }
+
+    function itemJellyfinId(item) {
+        return item?.jellyfin?.jellyfin_id || item?.jellyfin?.jf_id || item?.jellyfin_id || null;
+    }
+
+    function showPlayerPoster(item) {
+        if (!playerPosterImg || !item) return;
+        // Only overlay a real poster. Without a Jellyfin match there's no
+        // actual thumbnail to show, and stretching the library-card gray
+        // placeholder (a tall 2:3 box) over the wide video area just reads
+        // as a gray column — worse than leaving the video frame alone.
+        if (!itemJellyfinId(item)) {
+            hidePlayerPoster();
+            return;
+        }
+        playerPosterImg.src = thumbnailUrl(item);
+        playerPosterImg.classList.remove("hidden");
+    }
+
+    function hidePlayerPoster() {
+        if (playerPosterImg) playerPosterImg.classList.add("hidden");
+    }
+
+    // The poster only needs to disappear once the video actually has frames
+    // to show; "playing" fires both on first start and after a mid-stream
+    // buffering stall resolves.
+    playerVideo.addEventListener("playing", hidePlayerPoster);
+
     function formatClock(seconds) {
         if (!isFinite(seconds)) return "00:00";
         const total = Math.max(0, Math.floor(seconds));
@@ -1702,6 +1755,10 @@ document.addEventListener("DOMContentLoaded", () => {
         const resolution = item.resolution || item.metadata?.resolution || "";
         const sizeHuman = item.size_human || item.metadata?.file_size_human || "";
         playerMeta.innerText = [resolution, sizeHuman].filter(Boolean).join(" \u2022 ");
+        // Show the poster immediately so the switch/buffer gap to the next
+        // file isn't a black screen; the "playing" listener clears it once
+        // real frames are ready.
+        showPlayerPoster(item);
         playerVideo.src = streamUrl(item);
         playerOverlay.classList.remove("hidden");
         playerVideo.volume = Number(playerVolume.value);
@@ -2155,16 +2212,19 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    // Returns true if playback actually advanced to another track, false if
+    // there was nothing left to play (end of queue, loop off).
     function nextTrack() {
-        if (!currentPlaylist.length) return;
+        if (!currentPlaylist.length) return false;
         if (orderPos < playOrder.length - 1) {
             orderPos++;
         } else if (loopMode === "all") {
             orderPos = 0;
         } else {
-            return;
+            return false;
         }
         playCurrentTrack();
+        return true;
     }
 
     function prevTrack() {
@@ -2194,7 +2254,12 @@ document.addEventListener("DOMContentLoaded", () => {
             playerVideo.play().catch(() => { });
             return;
         }
-        nextTrack();
+        const advanced = nextTrack();
+        if (!advanced) {
+            // Nothing left to play (no loop, no next track) — show the
+            // thumbnail instead of leaving a black/frozen last frame.
+            showPlayerPoster(currentPlaylist[playOrder[orderPos]]);
+        }
     });
 
     function closePlayer() {
@@ -2204,6 +2269,8 @@ document.addEventListener("DOMContentLoaded", () => {
         playerVideo.pause();
         playerVideo.removeAttribute("src");
         playerVideo.load();
+        hidePlayerPoster();
+        if (playerPosterImg) playerPosterImg.removeAttribute("src");
         playerOverlay.classList.add("hidden");
         currentPlaylist = [];
         playOrder = [];
