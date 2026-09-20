@@ -1,0 +1,198 @@
+openapi: 3.1.0
+asyncapi: 2.6.0
+
+info:
+  title: NATS Download Service
+  version: 1.0.0
+  description: |
+    Single-worker download service. Requests are JSON-encoded messages on
+    request topics; status is streamed back on per-request response subjects.
+
+servers:
+  production:
+    url: nats://192.168.12.111:4222
+    protocol: nats
+
+defaultContentType: application/json
+
+channels:
+  nats.download.request.songs:
+    subscribe:
+      operationId: requestSongDownload
+      message: { $ref: '#/components/messages/SongDownloadRequest' }
+  nats.download.request.movies:
+    subscribe:
+      operationId: requestMovieDownload
+      message: { $ref: '#/components/messages/MovieDownloadRequest' }
+  nats.download.request.serials:
+    subscribe:
+      operationId: requestSerialDownload
+      message: { $ref: '#/components/messages/SerialDownloadRequest' }
+  nats.download.request.aria2c:
+    subscribe:
+      operationId: requestAria2cDownload
+      message: { $ref: '#/components/messages/Aria2cDownloadRequest' }
+  nats.download.request.mp3:
+    subscribe:
+      operationId: requestMp3Download
+      message: { $ref: '#/components/messages/Mp3DownloadRequest' }
+  nats.query.request.songs:
+    subscribe:
+      operationId: querySongFormats
+      message: { $ref: '#/components/messages/QueryRequest' }
+  nats.query.request.movies:
+    subscribe:
+      operationId: queryMovieFormats
+      message: { $ref: '#/components/messages/QueryRequest' }
+
+  "nats.download.response.{id}":
+    parameters:
+      id: { description: Request id echoed from the request, schema: { type: string } }
+    publish:
+      operationId: onDownloadStatus
+      message: { $ref: '#/components/messages/StatusResponse' }
+  "nats.query.response.{id}":
+    parameters:
+      id: { description: Request id echoed from the request, schema: { type: string } }
+    publish:
+      operationId: onQueryStatus
+      message: { $ref: '#/components/messages/QueryResponse' }
+
+components:
+  messages:
+    SongDownloadRequest:
+      name: SongDownloadRequest
+      payload: { $ref: '#/components/schemas/SongDownloadRequest' }
+    MovieDownloadRequest:
+      name: MovieDownloadRequest
+      payload: { $ref: '#/components/schemas/MovieDownloadRequest' }
+    SerialDownloadRequest:
+      name: SerialDownloadRequest
+      payload: { $ref: '#/components/schemas/MovieDownloadRequest' }
+    Aria2cDownloadRequest:
+      name: Aria2cDownloadRequest
+      payload: { $ref: '#/components/schemas/Aria2cDownloadRequest' }
+    Mp3DownloadRequest:
+      name: Mp3DownloadRequest
+      payload: { $ref: '#/components/schemas/Mp3DownloadRequest' }
+    QueryRequest:
+      name: QueryRequest
+      payload: { $ref: '#/components/schemas/QueryRequest' }
+    StatusResponse:
+      name: StatusResponse
+      payload: { $ref: '#/components/schemas/StatusResponse' }
+    QueryResponse:
+      name: QueryResponse
+      payload: { $ref: '#/components/schemas/QueryResponse' }
+
+  schemas:
+    SongDownloadRequest:
+      type: object
+      required: [id, url]
+      properties:
+        id:         { type: string, description: Client-generated unique request id }
+        url:        { type: string, format: uri }
+        format:     { type: string, description: "e.g. 720, 1080 — used if resolution missing" }
+        resolution: { type: string, description: "e.g. 720p, 1080 — used if format missing" }
+        lang:       { type: string, examples: [hindi, english, south, marathi] }
+        actress name: { type: string }
+      additionalProperties: true
+
+    MovieDownloadRequest:
+      type: object
+      required: [id]
+      properties:
+        id:         { type: string }
+        url:        { type: string, format: uri, description: Full URL }
+        vid:        { type: string, description: Video id (e.g. OK.ru) }
+        format:     { type: string }
+        resolution: { type: string }
+        lang:       { type: string, description: english → hollywood folder, else bollywood }
+        movie name: { type: string }
+      oneOf:
+        - required: [url]
+        - required: [vid]
+
+    Aria2cDownloadRequest:
+      type: object
+      required: [id]
+      properties:
+        id:         { type: string }
+        url:        { type: string, format: uri }
+        vid:        { type: string }
+        format:     { type: string, description: file extension if url is used (default mp4) }
+        lang:       { type: string }
+        movie name: { type: string }
+      oneOf:
+        - required: [url]
+        - required: [vid]
+      additionalProperties: true
+
+    Mp3DownloadRequest:
+      type: object
+      required: [id, url]
+      properties:
+        id:  { type: string }
+        url: { type: string, format: uri }
+      additionalProperties: true
+
+    QueryRequest:
+      type: object
+      required: [id]
+      properties:
+        id:  { type: string }
+        url: { type: string, format: uri }
+        vid: { type: string }
+      oneOf:
+        - required: [url]
+        - required: [vid]
+      additionalProperties: true
+
+    StatusResponse:
+      type: object
+      required: [id, hostname, status]
+      properties:
+        id:       { type: string }
+        hostname: { type: string, description: Host name of the service instance that published the response }
+        status:
+          type: string
+          enum: [started, progress, merging, moving, completed, failed]
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        message:  { type: string }
+        error:    { type: string }
+        file:     { type: string }
+        size:     { type: integer, description: bytes on disk }
+        thumbnail: { type: string, description: base64-encoded 256×256 JPEG }
+        ts:       { type: number }
+      additionalProperties: true
+
+    QueryResponse:
+      type: object
+      required: [id, hostname, status]
+      properties:
+        id:           { type: string }
+        hostname:     { type: string, description: Host name of the service instance that published the response }
+        status:       { type: string, enum: [completed, failed] }
+        url:          { type: string }
+        audio_format: { type: string, description: Recommended audio-only format id }
+        audio:
+          type: object
+          description: Recommended audio-only format and metadata.
+          properties:
+            format_id: { type: string }
+            ext:       { type: string, description: Container or codec extension }
+            size_mb:   { type: number, nullable: true, description: Size in MiB; null when unavailable }
+        formats:
+          type: array
+          items:
+            type: object
+            properties:
+              format_id: { type: string }
+              height:    { type: integer }
+              width:     { type: integer }
+              ext:       { type: string, description: Container extension }
+              size_mb:   { type: number, nullable: true, description: Size in MiB; null when unavailable }
+              kind:      { type: string, enum: [video, audio, both] }
+        error: { type: string }
+        ts:    { type: number }
+      additionalProperties: true

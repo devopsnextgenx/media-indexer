@@ -21,7 +21,9 @@ const state = {
     pollTimer: null,
     hideLabels: false,
     buildEntryOnly: false,
-    selectedResolution: ""
+    selectedResolution: "",
+    jobStatusEvents: [],
+    jobStatusExpanded: false
 };
 
 const el = (id) => document.getElementById(id);
@@ -44,6 +46,7 @@ async function init() {
     el("toggle-build-entry-only").checked = state.buildEntryOnly;
     applyHideLabelsState();
 
+    buildMediaTypeToggle();
     bindEvents();
     await loadOptions(prefs);
     await readActiveTab();
@@ -60,6 +63,7 @@ function bindEvents() {
     el("search-btn").addEventListener("click", searchLibrary);
     el("search-input").addEventListener("keypress", (e) => { if (e.key === "Enter") searchLibrary(); });
     el("formats-btn").addEventListener("click", fetchFormats);
+    el("job-status").addEventListener("click", toggleJobStatusConsole);
 
     el("toggle-hide-labels").addEventListener("change", (e) => {
         state.hideLabels = e.target.checked;
@@ -103,9 +107,16 @@ function applyHideLabelsState() {
 
 function buildDownloadEntry(res) {
     const resolution = res || state.selectedResolution || "";
+    const url = state.pageUrl || "";
+
+    if (isMovieMode()) {
+        // Same 4-field shape as songs: url|resolution|lang|name
+        // lang is "english" (hollywood) or a non-English value (bollywood).
+        return `${url}|${resolution}|${movieLanguage()}|${el("movie-name").value.trim()}`;
+    }
+
     const language = (el("language").value || "").toLowerCase();
     const actress = el("actress").value.trim();
-    const url = state.pageUrl || "";
 
     return `${url}|${resolution}|${language}|${actress}`;
 }
@@ -149,8 +160,7 @@ async function loadOptions(prefs) {
     fillSelect(el("quality"), state.options.qualities, prefs.quality);
     fillSelect(el("industry"), state.options.industries, prefs.industry);
     el("actress").value = prefs.actress || "";
-    el("media-type").value = prefs.mediaType || "song";
-    el("media-type").dispatchEvent(new Event("change"));
+    setMediaType(prefs.mediaType);
 }
 
 function fillSelect(select, values, selected) {
@@ -477,6 +487,7 @@ function populateFromFolderTag(targetField, value) {
     el(targetField).value = value;
     persistPrefs();
     updateTargetPreview();
+    updateDownloadEntry();
 }
 
 function thumbnailUrl(item) {
@@ -560,7 +571,8 @@ async function fetchFormats() {
         state.formats = await api("POST", "/api/ytdlp/formats", {
             url: state.pageUrl,
             cookies: cookies,
-            verbose: false
+            verbose: false,
+            media_type: el("media-type").value
         });
 
         if (cookieCount > 0 && state.formats.cookies_received === false) {
@@ -595,8 +607,9 @@ async function startDownload(videoFormat, audioFormat) {
         }
 
         try {
-            await api("POST", "/api/ytdlp/download-entry", { entry: downloadEntry, title: state.pageTitle || "" });
-            toast(`Added download entry ${downloadEntry} for ${state.pageTitle || "Unknown Title"}`, "success");
+            const title = targetPayload().title;
+            await api("POST", "/api/ytdlp/download-entry", { entry: downloadEntry, title });
+            toast(`Added download entry ${downloadEntry} for ${title || "Unknown Title"}`, "success");
         } catch (err) {
             toast(`Failed to save entry: ${err.message}`, "error");
         }
@@ -623,6 +636,7 @@ async function startDownload(videoFormat, audioFormat) {
     }
 
     persistPrefs();
+    resetJobStatusConsole();
     setJobStatus(`Queuing download: Video [${videoFormat.height}p] + Audio [${audioFormat?.format_id || 'muxed'}]...`, false);
     document.querySelectorAll(".fmt-btn").forEach((b) => { b.disabled = true; });
 
@@ -638,26 +652,65 @@ async function startDownload(videoFormat, audioFormat) {
     }
 }
 
+function formatBytes(n) {
+    n = Number(n);
+    if (!isFinite(n) || n <= 0) return "";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1);
+    return `${(n / Math.pow(1024, i)).toFixed(i ? 1 : 0)} ${units[i]}`;
+}
+
+function describeJobEvent(job) {
+    const status = job.status || "update";
+    let head = status;
+    if (job.phase) head += ` [${job.phase}]`;
+    if (job.progress !== undefined && job.progress !== null && job.progress !== "") {
+        head += ` ${job.progress}%`;
+    }
+
+    const parts = [head];
+    if (job.message) parts.push(job.message);
+    if (job.error) parts.push(job.error);
+    if (job.file) {
+        const size = formatBytes(job.size);
+        parts.push(size ? `${job.file} (${size})` : job.file);
+    }
+    const host = job.hostname || job.host;
+    if (host) parts.push(`@${host}`);
+    return parts.join(" · ");
+}
+
 function connectJobSSE(jobId) {
-    const sseUrl = `${state.serverUrl}/api/ytdlp/stream/${jobId}`;
-    const evtSource = new EventSource(sseUrl);
+    const evtSource = new EventSource(`${state.serverUrl}/api/ytdlp/stream/${jobId}`);
+    const enableButtons = () =>
+        document.querySelectorAll(".fmt-btn").forEach((b) => { b.disabled = false; });
 
     evtSource.onmessage = (event) => {
-        const job = JSON.parse(event.data);
-        const isFailed = job.status === "failed";
+        let job;
+        try {
+            job = JSON.parse(event.data);
+        } catch {
+            setJobStatus(event.data, false);   // non-JSON line: show it as-is
+            return;
+        }
 
-        setJobStatus(job.message || `${job.status}...`, isFailed);
+        const failed = job.status === "failed" || job.status === "error" || Boolean(job.error);
+        const done = failed || job.status === "success" || job.status === "completed";
+        const line = describeJobEvent(job);
 
-        if (job.status === "success" || job.status === "completed" || isFailed) {
+        setJobStatus(line, failed);
+
+        if (done) {
             evtSource.close();
-            document.querySelectorAll(".fmt-btn").forEach((b) => { b.disabled = false; });
-            toast(job.message, isFailed ? "error" : "success");
+            enableButtons();
+            toast(line, failed ? "error" : "success");
         }
     };
 
     evtSource.onerror = () => {
         evtSource.close();
-        document.querySelectorAll(".fmt-btn").forEach((b) => { b.disabled = false; });
+        enableButtons();
+        setJobStatus("Lost connection to the job stream", true);
     };
 }
 
@@ -687,6 +740,9 @@ function renderFormats() {
     const container = el("format-buttons");
     container.textContent = "";
 
+    const processor = state.formats?.processor || "legacy";
+    const serviceHost = state.formats?.service_host || state.formats?.nats_host || "unknown host";
+
     const videos = state.formats?.video_formats || [];
     if (!videos.length) {
         container.appendChild(emptyState("No 720/1080/1440/2160 streams available."));
@@ -712,25 +768,134 @@ function renderFormats() {
     if (audio) {
         const note = document.createElement("div");
         note.className = "empty-state fmt-audio-note";
-        note.textContent = `Audio track: ${audio.ext || "?"} · ${audio.filesize_human}`;
-        note.style.color = "var(--fmt-audio)";
+        const audioText = text("span", "", `Audio track: ${audio.ext || "?"} · ${audio.filesize_human || "Unknown size"}`);
+        const serviceTag = text("span", `format-tag format-tag-${processor}`, processor.toUpperCase());
+        const hostTag = text("span", "format-tag format-tag-host", serviceHost);
+        note.append(audioText, serviceTag, hostTag);
         container.appendChild(note);
     }
+}
+
+/* ------------------------------------------------- song / movie toggle */
+
+const MEDIA_TOGGLE_CSS = `
+.media-toggle { display: inline-flex; align-items: center; gap: 10px; user-select: none; }
+.media-toggle-side { cursor: pointer; opacity: .55; font-weight: 500; transition: opacity .15s; }
+.media-toggle-side.active { opacity: 1; }
+.media-switch { position: relative; display: inline-block; flex: none; width: 40px; height: 22px; }
+.media-switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
+.media-switch-track { position: absolute; inset: 0; border-radius: 11px; background: #3b82f6; }
+.media-switch-thumb { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.media-switch input:checked ~ .media-switch-track .media-switch-thumb { transform: translateX(18px); }
+.media-switch input:focus-visible ~ .media-switch-track { outline: 2px solid #93c5fd; outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+    .media-toggle-side, .media-switch-thumb { transition: none; }
+}
+`;
+
+// Replaces the #media-type <select> with a Song/Movie switch. A hidden input
+// keeps the id "media-type", so every existing `el("media-type").value` read
+// and the "change" listener in bindEvents() keep working unchanged.
+function buildMediaTypeToggle() {
+    const select = el("media-type");
+    if (!select || select.tagName !== "SELECT") return;
+
+    if (!document.getElementById("media-toggle-style")) {
+        const style = document.createElement("style");
+        style.id = "media-toggle-style";
+        style.textContent = MEDIA_TOGGLE_CSS;
+        document.head.appendChild(style);
+    }
+
+    const hidden = document.createElement("input");
+    hidden.type = "hidden";
+    hidden.id = "media-type";
+    hidden.value = "song";
+
+    const wrap = document.createElement("div");
+    wrap.className = "media-toggle";
+    wrap.setAttribute("role", "group");
+    wrap.setAttribute("aria-label", "Media type");
+
+    const songSide = text("span", "media-toggle-side", "Song");
+    songSide.dataset.side = "song";
+    const movieSide = text("span", "media-toggle-side", "Movie");
+    movieSide.dataset.side = "movie";
+
+    const switchLabel = document.createElement("label");
+    switchLabel.className = "media-switch";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.id = "media-type-toggle";
+    checkbox.setAttribute("role", "switch");
+    checkbox.setAttribute("aria-label", "Movie mode");
+    const track = document.createElement("span");
+    track.className = "media-switch-track";
+    track.appendChild(document.createElement("span")).className = "media-switch-thumb";
+    switchLabel.append(checkbox, track);
+
+    wrap.append(songSide, switchLabel, movieSide);
+
+    checkbox.addEventListener("change", () => setMediaType(checkbox.checked ? "movie" : "song"));
+    songSide.addEventListener("click", () => setMediaType("song"));
+    movieSide.addEventListener("click", () => setMediaType("movie"));
+
+    select.replaceWith(wrap, hidden);
+}
+
+function setMediaType(type) {
+    const next = type === "movie" ? "movie" : "song";
+    const hidden = el("media-type");
+    hidden.value = next;
+
+    const checkbox = el("media-type-toggle");
+    if (checkbox) checkbox.checked = next === "movie";
+    document.querySelectorAll(".media-toggle-side").forEach((node) => {
+        node.classList.toggle("active", node.dataset.side === next);
+    });
+
+    hidden.dispatchEvent(new Event("change"));
+}
+
+function isMovieMode() {
+    return el("media-type").value === "movie";
+}
+
+// Movie folder rule: English -> hollywood, everything else -> bollywood.
+// Mirrors ytdlp.resolve_movie_target() on the server.
+function movieIndustry() {
+    return el("industry").value === "hollywood" ? "hollywood" : "bollywood";
+}
+
+function movieLanguage() {
+    return movieIndustry() === "hollywood" ? "english" : "hindi";
 }
 
 /* ----------------------------------------------------------- download */
 
 function targetPayload() {
     const mediaType = el("media-type").value;
-    return {
+    const title = mediaType === "movie"
+        ? (el("movie-name").value.trim() || state.formats?.title || state.pageTitle || "")
+        : (state.formats?.title || state.pageTitle || "");
+    const payload = {
         media_type: mediaType,
-        title: (state.formats?.suggested_filename || state.pageTitle || "").trim(),
+        title: title.trim(),
         language: el("language").value,
         quality: el("quality").value,
         actress: el("actress").value.trim(),
         industry: el("industry").value,
         movie_name: el("movie-name").value.trim()
     };
+
+    if (mediaType === "movie") {
+        // The song-only fields are hidden in movie mode; don't let their stale
+        // values leak into a movie request.
+        payload.language = movieLanguage();
+        payload.industry = movieIndustry();
+        payload.actress = "";
+    }
+    return payload;
 }
 
 function sanitizeComponent(value) {
@@ -777,11 +942,35 @@ function pollJob(jobId) {
     }, 2000);
 }
 
+function resetJobStatusConsole() {
+    state.jobStatusEvents = [];
+    state.jobStatusExpanded = false;
+    const box = el("job-status");
+    box.classList.remove("expanded", "failed");
+    box.setAttribute("aria-expanded", "false");
+}
+
+function toggleJobStatusConsole() {
+    if (!state.jobStatusEvents.length) return;
+    state.jobStatusExpanded = !state.jobStatusExpanded;
+    renderJobStatus();
+}
+
+function renderJobStatus() {
+    const box = el("job-status");
+    box.classList.toggle("expanded", state.jobStatusExpanded);
+    box.setAttribute("aria-expanded", String(state.jobStatusExpanded));
+    box.textContent = state.jobStatusExpanded
+        ? state.jobStatusEvents.join("\n")
+        : state.jobStatusEvents[state.jobStatusEvents.length - 1];
+}
+
 function setJobStatus(message, failed) {
     const box = el("job-status");
     box.classList.remove("hidden");
     box.classList.toggle("failed", Boolean(failed));
-    box.textContent = message;
+    state.jobStatusEvents.push(message);
+    renderJobStatus();
 }
 
 /* ------------------------------------------------------------ helpers */

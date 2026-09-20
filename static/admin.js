@@ -434,6 +434,28 @@ async function refresh() {
         document.getElementById("ollama-embed-grid").innerHTML =
             (data.ollama.embedding || []).map(ollamaCard).join("") || `<span class="admin-hint">Single endpoint (no pool)</span>`;
 
+        const processor = data.download_processor || {};
+        const processorButton = document.getElementById("btn-toggle-download-processor");
+        const activeProcessor = processor.processor || "legacy";
+        if (processorButton) {
+            const isNats = activeProcessor === "nats";
+            processorButton.dataset.processor = activeProcessor;
+            processorButton.classList.toggle("is-nats", isNats);
+            processorButton.setAttribute("aria-pressed", String(isNats));
+            processorButton.querySelector(".processor-toggle-label").textContent = isNats ? "NATS" : "Legacy";
+            processorButton.setAttribute("aria-label", `Use ${isNats ? "legacy" : "NATS"} download processor`);
+            processorButton.disabled = !isNats && !processor.nats_enabled;
+            processorButton.title = processorButton.disabled
+                ? "NATS is disabled in config.yml"
+                : `Currently using ${isNats ? "NATS unified downloader" : "legacy local yt-dlp"}`;
+        }
+        const processorStatus = document.getElementById("download-processor-status");
+        if (processorStatus) {
+            processorStatus.textContent = isNats
+                ? `NATS active: ${processor.nats_url || "configured endpoint"}`
+                : "Legacy local yt-dlp active";
+        }
+
         await populateMountSelects(data.mounts || []);
         renderBacklog(data.llm_parse_backlog);
         renderJobsTable(data.jobs || []);
@@ -448,6 +470,22 @@ document.getElementById("btn-refresh").addEventListener("click", refresh);
 
 document.getElementById("btn-refresh-ollama").addEventListener("click", async () => {
     await fetch("/api/admin/ollama/refresh", { method: "POST" });
+    refresh();
+});
+
+document.getElementById("btn-toggle-download-processor")?.addEventListener("click", async () => {
+    const processorButton = document.getElementById("btn-toggle-download-processor");
+    processorButton.disabled = true;
+    const currentProcessor = processorButton.dataset.processor === "nats" ? "legacy" : "nats";
+    const res = await fetch("/api/admin/download-processor", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ processor: currentProcessor })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        alert(data.detail || "Unable to change download processor");
+    }
     refresh();
 });
 

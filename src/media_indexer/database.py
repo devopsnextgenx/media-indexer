@@ -9,17 +9,18 @@ import redis
 
 logger = logging.getLogger(__name__)
 
+
 class VectorDatabase:
     def __init__(self):
         v_cfg = settings.vectordb
         if v_cfg.host and v_cfg.port:
-            logger.info(f"Connecting to standalone Qdrant at {v_cfg.host}:{v_cfg.port}")
             self.client = QdrantClient(host=v_cfg.host, port=v_cfg.port)
         else:
-            os.makedirs(v_cfg.embedded_path, exist_ok=True)
-            logger.info(f"Initializing embedded Qdrant DB at path: {v_cfg.embedded_path}")
+            logger.info(
+                f"Initializing embedded Qdrant DB at path: {v_cfg.embedded_path}"
+            )
             self.client = QdrantClient(path=v_cfg.embedded_path)
-            
+
         self.collection_name = v_cfg.collection_name
         self._ensure_collection()
 
@@ -378,9 +379,23 @@ class MySQLDatabase:
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         thumbnail MEDIUMTEXT DEFAULT NULL,
                         size BIGINT DEFAULT 0,
+                        processor VARCHAR(32) DEFAULT 'legacy',
+                        service_host VARCHAR(255) DEFAULT NULL,
+                        request_payload MEDIUMTEXT DEFAULT NULL,
+                        event_history MEDIUMTEXT DEFAULT NULL,
                         INDEX idx_status (status)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """)
+                for statement in (
+                    "ALTER TABLE download_tracker ADD COLUMN processor VARCHAR(32) DEFAULT 'legacy'",
+                    "ALTER TABLE download_tracker ADD COLUMN service_host VARCHAR(255) DEFAULT NULL",
+                    "ALTER TABLE download_tracker ADD COLUMN request_payload MEDIUMTEXT DEFAULT NULL",
+                    "ALTER TABLE download_tracker ADD COLUMN event_history MEDIUMTEXT DEFAULT NULL",
+                ):
+                    try:
+                        cursor.execute(statement)
+                    except Exception:
+                        pass
             conn.close()
             logger.info("MySQL 'download_tracker' table initialized.")
         except Exception as e:
@@ -1426,7 +1441,9 @@ class MySQLDatabase:
                 query = """
                     INSERT INTO download_tracker (entry, status, updated_at, title)
                     VALUES (%s, 'PENDING', CURRENT_TIMESTAMP, %s)
-                    ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP;
+                    ON DUPLICATE KEY UPDATE
+                        updated_at = CURRENT_TIMESTAMP,
+                        title = COALESCE(NULLIF(VALUES(title), ''), title);
                 """
                 cursor.execute(query, (entry, title))
             conn.close()
@@ -1435,7 +1452,16 @@ class MySQLDatabase:
             logger.error(f"Failed to add/update download entry '{entry}': {e}")
             return "ERROR"
 
-    def update_download_status(self, entry: str, status: str, size: int = 0, thumbnail: str = None) -> bool:
+    def update_download_status(
+        self,
+        entry: str,
+        status: str,
+        size: int = 0,
+        thumbnail: str = None,
+        processor: str = None,
+        service_host: str = None,
+        request_payload: dict = None,
+    ) -> bool:
         if not self.enabled:
             return False
         conn = self._get_connection()
@@ -1443,14 +1469,108 @@ class MySQLDatabase:
             return False
         try:
             with conn.cursor() as cursor:
-                query = "UPDATE download_tracker SET status=%s, size=%s, thumbnail=%s WHERE entry=%s"
-                cursor.execute(query, (status, size, thumbnail, entry))
+                fields = ["status=%s", "size=%s", "thumbnail=%s"]
+                values = [status, size, thumbnail]
+                if processor is not None:
+                    fields.append("processor=%s")
+                    values.append(processor)
+                if service_host is not None:
+                    fields.append("service_host=%s")
+                    values.append(service_host)
+                if request_payload is not None:
+                    fields.append("request_payload=%s")
+                    values.append(json.dumps(request_payload))
+                values.append(entry)
+                cursor.execute(
+                    f"UPDATE download_tracker SET {', '.join(fields)} WHERE entry=%s",
+                    values,
+                )
                 updated = cursor.rowcount > 0
             conn.close()
             return updated
         except Exception as e:
             logger.error(f"Failed to update download entry status: {e}")
             return False
+
+    def record_download_event(self, entry: str, event: dict) -> bool:
+        """Persist a bounded event history for reloadable download consoles."""
+        if not self.enabled:
+            return False
+        conn = self._get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT event_history FROM download_tracker WHERE entry=%s", (entry,))
+                row = cursor.fetchone()
+                if not row:
+                    conn.close()
+                    return False
+                try:
+                    history = json.loads(row.get("event_history") or "[]")
+                except (TypeError, ValueError):
+                    history = []
+                if not isinstance(history, list):
+                    history = []
+                history.append(event)
+                history = history[-200:]
+                cursor.execute(
+                    "UPDATE download_tracker SET event_history=%s WHERE entry=%s",
+                    (json.dumps(history, default=str), entry),
+                )
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to record download event '{entry}': {e}")
+            return False
+
+    def get_download_request(self, entry: str) -> dict | None:
+        if not self.enabled:
+            return None
+        conn = self._get_connection()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT request_payload FROM download_tracker WHERE entry=%s",
+                    (entry,),
+                )
+                row = cursor.fetchone()
+            if not row or not row.get("request_payload"):
+                return None
+            return json.loads(row["request_payload"])
+        except (TypeError, ValueError, Exception) as e:
+            logger.error(f"Failed to read download request '{entry}': {e}")
+            return None
+        finally:
+            conn.close()
+
+    def get_download_entry(self, entry: str) -> dict | None:
+        if not self.enabled:
+            return None
+        conn = self._get_connection()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                          """SELECT entry, title, status, updated_at, thumbnail, size,
+                              processor, service_host, event_history
+                       FROM download_tracker WHERE entry=%s""",
+                    (entry,),
+                )
+                row = cursor.fetchone()
+            if not row:
+                return None
+            try:
+                row["events"] = json.loads(row.get("event_history") or "[]")
+            except (TypeError, ValueError):
+                row["events"] = []
+            row.pop("event_history", None)
+            return row
+        finally:
+            conn.close()
 
     def remove_download_entry(self, entry: str) -> bool:
         if not self.enabled:

@@ -18,6 +18,7 @@ dependencies = [
     "redis>=5.0.0",
     "rapidfuzz>=3.6.0",
     "Jellyfish>=1.2.1",
+    "nats-py>=2.9.0",
 ]
 
 [build-system]

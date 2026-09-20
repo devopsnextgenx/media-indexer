@@ -79,9 +79,20 @@ class JellyfinConfig(BaseModel):
     api_key: str = ""
     user_id: str = ""
 
+
+class NatsDownloadConfig(BaseModel):
+    enabled: bool = False
+    url: str = "nats://192.168.12.111:4222"
+    user: str | None = "zboxnats"
+    password: str | None = "zboxpswd"
+    timeout_seconds: int = 3600
+
+
 class DownloadsConfig(BaseModel):
     songs_root: str = "/media/storage/songs"
     movies_root: str = "/media/storage/movies"
+    processor: str = "legacy"
+    nats: NatsDownloadConfig = Field(default_factory=NatsDownloadConfig)
 
 class AutoScanConfig(BaseModel):
     enabled: bool = False
