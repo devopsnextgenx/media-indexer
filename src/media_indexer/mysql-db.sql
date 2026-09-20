@@ -3,6 +3,11 @@ CREATE TABLE `download_tracker` (
   `status` varchar(50) DEFAULT 'PENDING',
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `title` varchar(255) DEFAULT NULL,
+  `thumbnail` mediumtext,
+  `size` bigint DEFAULT '0',
+  `processor` varchar(32) DEFAULT 'legacy',
+  `service_host` varchar(255) DEFAULT NULL,
+  `request_payload` mediumtext,
   PRIMARY KEY (`entry`),
   KEY `idx_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

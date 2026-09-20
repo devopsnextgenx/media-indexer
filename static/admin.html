@@ -35,6 +35,20 @@
 
         <section class="admin-section">
             <div class="admin-section-header">
+                <h2>Download Processor</h2>
+                <div class="admin-subhead">
+                    <span class="results-sort-label">Format lookup and downloads</span>
+                    <button id="btn-toggle-download-processor" class="processor-toggle" type="button" aria-pressed="false">
+                        <span class="processor-toggle-label">Legacy</span>
+                        <span class="processor-toggle-track" aria-hidden="true"><span class="processor-toggle-thumb"></span></span>
+                    </button>
+                </div>
+            </div>
+            <div id="download-processor-status" class="admin-hint"></div>
+        </section>
+
+        <section class="admin-section">
+            <div class="admin-section-header">
                 <h2>Ollama Servers</h2>
                 <div class="admin-subhead">
                     <span class="admin-hint">LLM parsing pauses automatically when every endpoint below is unreachable, and resumes as soon as one recovers.</span>

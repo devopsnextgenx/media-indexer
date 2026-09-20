@@ -114,6 +114,13 @@ downloads:
   # e.g. /media/zbox/Crucial-X6/ShareMe/media/songs/target -> /media/storage/songs
   songs_root: "/media/storage/songs"
   movies_root: "/media/storage/movies"
+  processor: "nats" # "legacy" or "nats"
+  nats:
+    enabled: true
+    url: "nats://192.168.12.111:4222"
+    user: "zboxnats"
+    password: "zboxpswd"
+    timeout_seconds: 3600
 
 jellyfin:
   enabled: true

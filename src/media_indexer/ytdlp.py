@@ -5,11 +5,16 @@ import subprocess
 import tempfile
 import threading
 import uuid
+import socket
+import asyncio
+from collections.abc import Callable
 from urllib.parse import urlparse
 from fastapi import HTTPException
 import json
 from media_indexer.config import settings
 from media_indexer.utils import format_file_size
+
+import nats
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +33,17 @@ HOST_COOKIE_FILE = "/app/cookies/yt_cookies.txt"
 
 _JOBS: dict[str, dict] = {}
 _JOBS_LOCK = threading.Lock()
+_NATS_TERMINAL_STATUSES = {"completed", "failed"}
+_DOWNLOAD_SUBSCRIBERS: dict[
+    str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]
+] = {}
+_DOWNLOAD_SUBSCRIBERS_LOCK = threading.Lock()
+_DOWNLOAD_EVENTS: dict[str, list[dict]] = {}
+
+
+def _tracker():
+    from media_indexer.database import mysql_db_instance
+    return mysql_db_instance
 
 def _set_job(job_id: str, **updates) -> dict:
     with _JOBS_LOCK:
@@ -41,6 +57,258 @@ def get_job(job_id: str) -> dict:
     if not job:
         raise HTTPException(status_code=404, detail="Unknown download job")
     return dict(job)
+
+
+def subscribe_download_events(
+    entry: str,
+) -> tuple[asyncio.Queue, Callable[[], None]]:
+    """Subscribe an SSE client to events for one tracked download."""
+    loop = asyncio.get_running_loop()
+    queue = asyncio.Queue()
+    subscriber = (loop, queue)
+    with _DOWNLOAD_SUBSCRIBERS_LOCK:
+        _DOWNLOAD_SUBSCRIBERS.setdefault(entry, set()).add(subscriber)
+
+    def unsubscribe() -> None:
+        with _DOWNLOAD_SUBSCRIBERS_LOCK:
+            subscribers = _DOWNLOAD_SUBSCRIBERS.get(entry)
+            if subscribers:
+                subscribers.discard(subscriber)
+                if not subscribers:
+                    _DOWNLOAD_SUBSCRIBERS.pop(entry, None)
+
+    return queue, unsubscribe
+
+
+def _publish_download_event(entry: str, event: dict) -> None:
+    """Fan out a NATS event to browser SSE subscribers in other event loops."""
+    with _DOWNLOAD_SUBSCRIBERS_LOCK:
+        subscribers = list(_DOWNLOAD_SUBSCRIBERS.get(entry, ()))
+    for loop, queue in subscribers:
+        if loop.is_closed():
+            continue
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+
+def get_download_events(entry: str) -> list[dict]:
+    """Return the in-memory event snapshot for an ongoing download."""
+    with _DOWNLOAD_SUBSCRIBERS_LOCK:
+        return list(_DOWNLOAD_EVENTS.get(entry, ()))
+
+
+def processor_mode() -> str:
+    configured = getattr(settings.downloads, "processor", "legacy")
+    nats_cfg = getattr(settings.downloads, "nats", None)
+    if configured == "nats" and nats_cfg and nats_cfg.enabled:
+        return "nats"
+    return "legacy"
+
+
+def _nats_config():
+    cfg = settings.downloads.nats
+    return cfg
+
+
+def _nats_size_label(size_mb) -> str:
+    if size_mb is None:
+        return "Unknown size"
+    try:
+        return f"{float(size_mb):.1f} MiB"
+    except (TypeError, ValueError):
+        return "Unknown size"
+
+
+def _nats_format_size(item: dict) -> float:
+    try:
+        size_mb = float(item.get("size_mb"))
+    except (TypeError, ValueError):
+        return float("inf")
+    return size_mb if 0 <= size_mb < 999999 else float("inf")
+
+
+def _nats_size_value(item: dict):
+    return item.get("size_mb") if _nats_format_size(item) != float("inf") else None
+
+
+async def _connect_nats():
+    cfg = _nats_config()
+    options = {"servers": [cfg.url]}
+    if cfg.user:
+        options.update(user=cfg.user, password=cfg.password or "")
+    return await nats.connect(**options)
+
+
+def _nats_subject(media_type: str, query: bool = False) -> str:
+    action = "query" if query else "download"
+    category = "movies" if media_type == "movie" else "songs"
+    return f"nats.{action}.request.{category}"
+
+
+def _nats_download_payload(job_id: str, data: dict) -> tuple[str, dict]:
+    media_type = data.get("media_type", "song")
+    video_format = data.get("video_format") or {}
+    height = video_format.get("height") or data.get("quality")
+    payload = {
+        "id": job_id,
+        "url": data["url"],
+        "format": str(height) if height else None,
+        "resolution": str(height) if height else None,
+    }
+    if media_type == "movie":
+        # Service rule: lang "english" -> hollywood folder, anything else -> bollywood.
+        lang, _ = resolve_movie_target(data.get("industry"), data.get("language"))
+        payload["lang"] = lang
+    else:
+        payload["lang"] = data.get("language") or data.get("industry")
+        payload["actress name"] = data.get("actress")
+    payload["movie name"] = data.get("movie_name") or data.get("title")
+    return _nats_subject(media_type), {key: value for key, value in payload.items() if value is not None}
+
+
+def _nats_query_payload(request_id: str, url: str, media_type: str) -> tuple[str, dict]:
+    return _nats_subject(media_type, query=True), {"id": request_id, "url": url}
+
+
+def _record_download_event(entry: str, event: dict, host: str | None = None):
+    status = str(event.get("status", "")).upper()
+    mapped_status = "COMPLETED" if status == "COMPLETED" else "FAILED" if status == "FAILED" else status
+    _tracker().update_download_status(
+        entry,
+        mapped_status or "DOWNLOADING",
+        size=int(event.get("size") or 0),
+        thumbnail=event.get("thumbnail"),
+        processor="nats",
+        service_host=event.get("hostname") or host,
+    )
+    with _DOWNLOAD_SUBSCRIBERS_LOCK:
+        _DOWNLOAD_EVENTS.setdefault(entry, []).append(event)
+        _DOWNLOAD_EVENTS[entry] = _DOWNLOAD_EVENTS[entry][-200:]
+    _publish_download_event(entry, event)
+    if status in {"COMPLETED", "FAILED"}:
+        with _DOWNLOAD_SUBSCRIBERS_LOCK:
+            _DOWNLOAD_EVENTS.pop(entry, None)
+
+
+async def fetch_formats_nats(url: str, media_type: str = "song") -> dict:
+    request_id = str(uuid.uuid4())
+    subject, payload = _nats_query_payload(request_id, url, media_type)
+    nc = await _connect_nats()
+    result = asyncio.get_running_loop().create_future()
+
+    async def on_message(msg):
+        try:
+            event = json.loads(msg.data.decode())
+            logger.info("NATS format response for %s: %s", request_id, event)
+            if event.get("status") in _NATS_TERMINAL_STATUSES and not result.done():
+                result.set_result(event)
+        except Exception as exc:
+            if not result.done():
+                result.set_exception(exc)
+
+    try:
+        await nc.subscribe(f"nats.query.response.{request_id}", cb=on_message)
+        await nc.publish(subject, json.dumps(payload).encode())
+        await nc.flush()
+        event = await asyncio.wait_for(result, timeout=_nats_config().timeout_seconds)
+    finally:
+        await nc.drain()
+
+    if event.get("status") == "failed":
+        raise HTTPException(status_code=502, detail=event.get("error") or "NATS format lookup failed")
+
+    # The service may return multiple streams at one height. Keep the smallest
+    # known candidate so the UI and download request refer to the same choice.
+    formats_by_height = {}
+    for item in event.get("formats") or []:
+        if item.get("kind") not in (None, "video", "both") or not item.get("height"):
+            continue
+        height = item["height"]
+        current = formats_by_height.get(height)
+        if current is None or _nats_format_size(item) < _nats_format_size(current):
+            formats_by_height[height] = item
+    formats = [formats_by_height[height] for height in sorted(formats_by_height)]
+
+    audio = event.get("audio") or {}
+    audio_id = audio.get("format_id") or event.get("audio_format")
+    return {
+        "url": event.get("url") or url,
+        "title": event.get("title") or "",
+        "suggested_filename": event.get("title") or "download",
+        "video_formats": [
+            {
+                "format_id": item.get("format_id"),
+                "height": item.get("height"),
+                "width": item.get("width"),
+                "ext": item.get("ext") or "mp4",
+                "size_mb": _nats_size_value(item),
+                "filesize_human": _nats_size_label(_nats_size_value(item)),
+                "categorized_as": f"{item.get('height')}p" if item.get("height") else "",
+            }
+            for item in formats
+        ],
+        "audio_format": {
+            "format_id": audio_id,
+            "ext": audio.get("ext") or "m4a",
+            "size_mb": _nats_size_value(audio),
+            "filesize_human": _nats_size_label(_nats_size_value(audio)),
+        } if audio_id else None,
+        "nats_host": event.get("hostname"),
+        "processor": "nats",
+        "service_host": event.get("hostname"),
+    }
+
+
+async def _run_nats_download(job_id: str, data: dict, entry: str):
+    subject, payload = _nats_download_payload(job_id, data)
+    nc = await _connect_nats()
+    terminal = asyncio.get_running_loop().create_future()
+    async def on_message(msg):
+        try:
+            event = json.loads(msg.data.decode())
+            status = event.get("status", "progress")
+            updates = {
+                "status": "completed" if status == "completed" else "failed" if status == "failed" else status,
+                "nats_status": status,
+                "progress": event.get("progress"),
+                "message": event.get("message") or status,
+                "service_host": event.get("hostname"),
+            }
+            _set_job(job_id, **updates)
+            _record_download_event(entry, event)
+            if status in _NATS_TERMINAL_STATUSES and not terminal.done():
+                terminal.set_result(event)
+        except Exception as exc:
+            logger.exception("Invalid NATS download response for %s", job_id)
+            if not terminal.done():
+                terminal.set_exception(exc)
+
+    try:
+        await nc.subscribe(f"nats.download.response.{job_id}", cb=on_message)
+        await nc.publish(subject, json.dumps(payload).encode())
+        await nc.flush()
+        await asyncio.wait_for(terminal, timeout=_nats_config().timeout_seconds)
+    except Exception as exc:
+        event = {"status": "failed", "error": str(exc), "hostname": socket.gethostname()}
+        _set_job(job_id, status="failed", message=str(exc))
+        _record_download_event(entry, event)
+    finally:
+        await nc.drain()
+
+
+def start_nats_download(data: dict, entry: str) -> dict:
+    job_id = str(uuid.uuid4())
+    _set_job(job_id, status="queued", processor="nats", url=data.get("url"), progress=0)
+    _tracker().update_download_status(
+        entry, "PENDING", processor="nats", request_payload=data
+    )
+    _record_download_event(
+        entry,
+        {"status": "queued", "processor": "nats", "hostname": socket.gethostname()},
+    )
+    threading.Thread(
+        target=lambda: asyncio.run(_run_nats_download(job_id, data, entry)), daemon=True
+    ).start()
+    return _set_job(job_id)
 
 def sanitize_component(value: str | None, fallback: str = "") -> str:
     clean = _UNSAFE_PATH_CHARS.sub(" ", str(value or ""))
@@ -61,6 +329,25 @@ def resolve_dlang(lang: str) -> str:
         return "English"
     return "Hindi"
 
+def resolve_movie_target(industry: str | None, language: str | None) -> tuple[str, str]:
+    """Return a consistent (lang, industry) pair for a movie download.
+
+    English -> hollywood, anything else -> bollywood. An explicit, valid
+    ``industry`` wins; otherwise the industry is inferred from ``language``.
+    The returned ``lang`` always agrees with the returned industry, which is
+    what the NATS movie service expects ("english" -> hollywood folder, else
+    bollywood), so the legacy and NATS paths land in the same folder.
+    """
+    ind = (industry or "").strip().lower()
+    lang = (language or "").strip().lower()
+    if ind not in INDUSTRIES:
+        ind = "hollywood" if lang == "english" else "bollywood"
+    if ind == "hollywood":
+        lang = "english"
+    elif not lang or lang == "english":
+        lang = "hindi"
+    return lang, ind
+
 def resolve_resolution(vformat: int) -> str:
     if vformat < 720:
         return "sd"
@@ -68,17 +355,13 @@ def resolve_resolution(vformat: int) -> str:
         return "hd"
     return "xhd"
 
-def _resolve_cookie_file(cookies: str | None = None) -> str | None:
+def _resolve_cookie_file() -> str | None:
     content = ""
     
     # 1. Read host mounted cookies if present
     if os.path.exists(HOST_COOKIE_FILE) and os.path.getsize(HOST_COOKIE_FILE) > 0:
         with open(HOST_COOKIE_FILE, "r") as f:
             content = f.read().strip()
-            
-    # 2. Fall back to passed cookies parameter if host file is empty/missing
-    elif cookies and cookies.strip():
-        content = cookies.strip()
 
     if not content:
         return None
@@ -117,14 +400,14 @@ def _validate_url(url: str) -> bool:
     except Exception:
         return False
     
-def fetch_formats(url: str, cookies: str | None = None, verbose: bool = False) -> dict:
+def fetch_formats(url: str, verbose: bool = False) -> dict:
     """Extracts formats via yt-dlp, mapping non-exact heights to the nearest
     target height tier and formatting metadata properly for the extension UI.
     """
     if not _validate_url(url):
         raise HTTPException(status_code=400, detail="Invalid URL provided")
 
-    cookie_file = _resolve_cookie_file(cookies)
+    cookie_file = _resolve_cookie_file()
     cookies_verified = bool(cookie_file and os.path.exists(cookie_file))
 
     # Fetch complete format and video metadata as JSON
@@ -219,6 +502,8 @@ def fetch_formats(url: str, cookies: str | None = None, verbose: bool = False) -
         "video_formats": filtered_video_formats,
         "audio_format": best_audio,
         "cookies_received": cookies_verified,
+        "processor": "legacy",
+        "service_host": socket.gethostname(),
     }
 
 def plan_target(
@@ -245,7 +530,7 @@ def plan_target(
         stem = sanitize_component(title, "download")
     else:
         movie = sanitize_component(movie_name, "movie")
-        ind = sanitize_component(industry, "bollywood")
+        _, ind = resolve_movie_target(industry, language)
         directory = os.path.join(root, ind, movie)
         stem = movie
 
@@ -262,11 +547,18 @@ def _run_download(
     url: str,
     selector: str,
     target: dict,
-    cookies: str | None = None,
 ) -> None:
     directory = target["directory"]
-    output_template = os.path.join(directory, "%(title)s.%(ext)s")
-    cookie_file = _resolve_cookie_file(cookies)
+    # yt-dlp treats '%' specially in output templates, so escape literal ones.
+    safe_dir = directory.replace("%", "%%")
+    if target.get("media_type") == "movie":
+        # Movies are named after the movie (matches the previewed target path),
+        # not the source video's title.
+        safe_stem = target["stem"].replace("%", "%%")
+        output_template = os.path.join(safe_dir, f"{safe_stem}.%(ext)s")
+    else:
+        output_template = os.path.join(safe_dir, "%(title)s.%(ext)s")
+    cookie_file = _resolve_cookie_file()
 
     os.makedirs(directory, exist_ok=True)
 
@@ -333,7 +625,7 @@ def start_download(
     actress: str | None = None,
     industry: str | None = None,
     movie_name: str | None = None,
-    cookies: str | None = None,
+    verbose: bool = False,
 ) -> dict:
     v_id = video_format.get("format_id") if video_format else None
     a_id = audio_format.get("format_id") if audio_format else "bestaudio"
@@ -355,7 +647,7 @@ def start_download(
 
     thread = threading.Thread(
         target=_run_download,
-        args=(job_id, url, selector, target, cookies),
+        args=(job_id, url, selector, target),
         daemon=True,
     )
     thread.start()

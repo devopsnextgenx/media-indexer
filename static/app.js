@@ -72,6 +72,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let sortField = "score";
     let sortDir = "desc";
     let downloadsList = [];
+    const downloadEventStreams = new Map();
     let downloadStatusFilter = "all";
     let downloadSortField = "created_at";
     let downloadSortDir = "desc";
@@ -3579,6 +3580,10 @@ document.addEventListener("DOMContentLoaded", () => {
     function renderDownloads(items) {
         const downloadsBody = document.getElementById("downloads-body");
         const downloadsCount = document.getElementById("downloads-count");
+        const openEventEntries = new Set(
+            [...document.querySelectorAll(".download-events-row:not(.hidden)")]
+                .map(row => row.id.replace(/^download-events-/, ""))
+        );
 
         if (!downloadsBody) return; // Exit safely if the downloads tab isn't active/loaded
 
@@ -3593,7 +3598,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         downloadsBody.innerHTML = items.map((item, idx) => `
-            <tr>
+            <tr class="download-row" data-download-entry="${escapeHtml(item.id)}">
                 <td>${idx + 1}</td>
                 <td class="col-thumb">
                     <!-- item.thumbnail is a base64 image -->
@@ -3603,12 +3608,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td class="col-details">
                     <div class="file-title" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</div>
                     <small class="file-name" title="Language: ${escapeHtml(item.language || 'N/A')}">Lang: ${escapeHtml(item.language || 'N/A')}</small>
+                    <small class="file-name">Method: ${escapeHtml(item.processor || 'legacy')}${item.service_host ? ` · Host: ${escapeHtml(item.service_host)}` : ''}</small>
                 </td>
                 <td><strong>${escapeHtml(item.actress || 'N/A')}</strong></td>
                 <td><code>${escapeHtml(item.quality || 'N/A')}</code></td>
                 <td>${item.size ? bytesToMB(item.size) : 'N/A'}</td>
                 <td><small>${escapeHtml(formatDate(item.created_at))}</small></td>
-                <td><span class="status-badge ${escapeHtml((item.status || 'pending').toLowerCase())}">${escapeHtml(item.status || 'Pending')}</span></td>
+                <td class="download-status-cell"><span class="status-badge ${escapeHtml((item.status || 'pending').toLowerCase())}">${escapeHtml(item.status || 'Pending')}</span></td>
                 <td class="col-actions">
                     <div class="row-actions" style="display: flex; align-items: center; gap: 6px;">
                         <!-- Retry -->
@@ -3617,6 +3623,9 @@ document.addEventListener("DOMContentLoaded", () => {
                                 <polyline points="23 4 23 10 17 10"></polyline>
                                 <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
                             </svg>
+                        </button>
+                        <button class="icon-button" data-download-events-toggle="${escapeHtml(item.id)}" title="Show download events" aria-label="Show download events">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
                         </button>
 
                         <!-- Mark Complete (only when not completed) -->
@@ -3639,8 +3648,80 @@ document.addEventListener("DOMContentLoaded", () => {
                     </div>
                 </td>
             </tr>
+            <tr id="download-events-${escapeHtml(item.id)}" class="download-events-row hidden">
+                <td colspan="10"><div class="download-event-console" data-download-console="${escapeHtml(item.id)}">${downloadEventsHtml(item.events)}</div></td>
+            </tr>
         `).join('');
+        for (const entry of openEventEntries) {
+            document.getElementById(`download-events-${entry}`)?.classList.remove("hidden");
+        }
+        syncDownloadEventStreams();
     }
+
+    function downloadEventsHtml(events) {
+        return (events || []).map(event => `<div><span class="event-status">${escapeHtml(event.status || 'event')}</span> ${escapeHtml(event.message || event.error || '')}${event.progress != null ? ` · ${escapeHtml(event.progress)}%` : ''}${event.hostname ? ` · ${escapeHtml(event.hostname)}` : ''}</div>`).join('') || '<span class="admin-hint">No status events recorded.</span>';
+    }
+
+    function syncDownloadEventStreams() {
+        const activeEntries = new Set(downloadsList.map(item => item.id));
+        for (const item of downloadsList) {
+            if (downloadEventStreams.has(item.id)) continue;
+            const source = new EventSource(`/api/actions/downloads/stream?entry=${encodeURIComponent(item.id)}`);
+            downloadEventStreams.set(item.id, source);
+            source.onmessage = (event) => {
+                const payload = JSON.parse(event.data);
+                const current = downloadsList.find(download => download.id === item.id);
+                if (!current) return;
+                if (payload.type === "snapshot") {
+                    current.status = payload.status;
+                    current.events = payload.events || [];
+                } else {
+                    current.status = payload.status || current.status;
+                    current.events = [...(current.events || []), payload].slice(-200);
+                }
+                const row = [...document.querySelectorAll(".download-row")].find(el => el.dataset.downloadEntry === item.id);
+                if (row) {
+                    row.querySelector(".download-status-cell").innerHTML = `<span class="status-badge ${escapeHtml((current.status || 'pending').toLowerCase())}">${escapeHtml(current.status || 'Pending')}</span>`;
+                    const consoleEl = row.nextElementSibling?.querySelector(".download-event-console");
+                    if (consoleEl) {
+                        consoleEl.innerHTML = downloadEventsHtml(current.events);
+                        consoleEl.scrollTop = consoleEl.scrollHeight;
+                    }
+                }
+                if (["COMPLETED", "FAILED"].includes(String(payload.status || "").toUpperCase())) {
+                    source.close();
+                    downloadEventStreams.delete(item.id);
+                }
+            };
+            source.onerror = () => {
+                source.close();
+                downloadEventStreams.delete(item.id);
+            };
+        }
+        for (const [entry, source] of downloadEventStreams) {
+            if (!activeEntries.has(entry)) {
+                source.close();
+                downloadEventStreams.delete(entry);
+            }
+        }
+    }
+
+    window.toggleDownloadEvents = (entry) => {
+        const row = document.getElementById(`download-events-${entry}`);
+        if (row) row.classList.toggle("hidden");
+    };
+
+    document.getElementById("downloads-body")?.addEventListener("click", (event) => {
+        const toggle = event.target.closest("[data-download-events-toggle]");
+        if (!toggle) return;
+        const entry = toggle.dataset.downloadEventsToggle;
+        const row = [...document.querySelectorAll(".download-row")]
+            .find(item => item.dataset.downloadEntry === entry);
+        const consoleRow = row?.nextElementSibling;
+        if (consoleRow?.classList.contains("download-events-row")) {
+            consoleRow.classList.toggle("hidden");
+        }
+    });
 
     // Attach event listener for the refresh button
     document.getElementById("btn-refresh-downloads")?.addEventListener("click", () => {
@@ -3649,22 +3730,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
     window.retryDownload = async (entryString) => {
         try {
-            const res = await fetch("/api/ytdlp/download-entry", {
+            const res = await fetch("/api/ytdlp/retry", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ entry: entryString })
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || "Failed to retry download");
-
-            // Force status back to PENDING if necessary
-            await fetch("/api/ytdlp/update-status", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ entry: entryString, status: "PENDING" })
-            });
-
-            showToast("Download entry re-queued as PENDING.", "success");
+            showToast(`${data.processor === "nats" ? "NATS" : "Legacy"} download re-queued.`, "success");
             fetchDownloads();
         } catch (err) {
             showToast(`Retry failed: ${err.message}`, "error");

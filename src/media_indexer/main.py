@@ -4,6 +4,7 @@ import httpx
 import uvicorn
 import json
 import asyncio
+import socket
 from typing import Optional
 from fastapi import BackgroundTasks, FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -174,7 +175,7 @@ class TargetRequest(BaseModel):
 
 class FormatsRequest(BaseModel):
     url: str
-    cookies: str | None = None
+    media_type: str = "song"
 
 
 class LlmMetadataUpdate(BaseModel):
@@ -188,7 +189,6 @@ class YtDownloadRequest(TargetRequest):
     url: str
     video_format: dict | None = None
     audio_format: dict | None = None
-    cookies: str | None = None
     verbose: bool = False
 
 
@@ -566,11 +566,27 @@ def ytdlp_options():
 
 
 @app.post("/api/ytdlp/formats", tags=["Browser Plugin"])
-def ytdlp_formats(req: FormatsRequest):
+async def ytdlp_formats(req: FormatsRequest):
     # Convert https://www.youtube.com/watch?v=b6-cTEdj1lw&list=RDb6-cTEdj1lw&start_radio=1 -> https://www.youtube.com/watch?v=b6-cTEdj1lw
     url = req.url.split("&")[0]
     print(f"Fetching formats for URL: {url}")
-    return ytdlp.fetch_formats(url, cookies=req.cookies)
+    if ytdlp.processor_mode() == "nats":
+        return await ytdlp.fetch_formats_nats(url, media_type=req.media_type)
+    return ytdlp.fetch_formats(url)
+
+
+def _download_entry(data: dict) -> str:
+    video_format = data.get("video_format") or {}
+    quality = video_format.get("height") or data.get("quality") or ""
+    if data.get("media_type") == "movie":
+        # english -> hollywood, everything else -> bollywood; owner is the movie
+        # name (never a leftover actress value from song mode).
+        language, _ = ytdlp.resolve_movie_target(data.get("industry"), data.get("language"))
+        owner = data.get("movie_name") or data.get("title") or data.get("url") or ""
+    else:
+        language = data.get("language") or data.get("industry") or ""
+        owner = data.get("actress") or data.get("movie_name") or data.get("url") or ""
+    return "|".join((data.get("url", ""), str(quality), language, owner))
 
 
 @app.post("/api/ytdlp/download", tags=["Browser Plugin"])
@@ -587,7 +603,22 @@ def ytdlp_download(req: YtDownloadRequest):
         if a_id and "audio_format" not in data:
             data["audio_format"] = {"format_id": a_id}
 
-    return ytdlp.start_download(**data)
+    entry = _download_entry(data)
+    mysql_db_instance.add_or_update_download_entry(entry, data.get("title") or "")
+    mysql_db_instance.update_download_status(
+        entry,
+        "PENDING",
+        processor=ytdlp.processor_mode(),
+        service_host=socket.gethostname() if ytdlp.processor_mode() == "legacy" else None,
+        request_payload=data,
+    )
+    if ytdlp.processor_mode() == "nats":
+        return ytdlp.start_nats_download(data, entry)
+    job = ytdlp.start_download(**data)
+    mysql_db_instance.update_download_status(
+        entry, "DOWNLOADING", processor="legacy", service_host=socket.gethostname(),
+    )
+    return job
 
 
 @app.post("/api/ytdlp/target", tags=["Browser Plugin"])
@@ -770,7 +801,11 @@ def get_downloads():
     
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT entry, status, updated_at, title, size, thumbnail FROM download_tracker ORDER BY updated_at DESC")
+            cursor.execute("""
+                    SELECT entry, status, updated_at, title, size, thumbnail,
+                        processor, service_host
+                FROM download_tracker ORDER BY updated_at DESC
+            """)
             rows = cursor.fetchall()
             
             # Map database columns to the structure expected by the frontend UI
@@ -785,7 +820,6 @@ def get_downloads():
                 language = parts[2] if len(parts) >= 3 else None
                 size = row.get("size")
                 thumbnail = row.get("thumbnail")
-
                 results.append({
                     "id": entry_text,  # Primary key string
                     "title": title,
@@ -796,11 +830,50 @@ def get_downloads():
                     "status": row.get("status", "PENDING"),
                     "created_at": row.get("updated_at"),
                     "size": size,
-                    "thumbnail": thumbnail
+                    "thumbnail": thumbnail,
+                    "processor": row.get("processor") or "legacy",
+                    "service_host": row.get("service_host"),
                 })
             return results
     finally:
         conn.close()
+
+
+@app.get("/api/actions/downloads/stream", tags=["Download Tracker"])
+async def stream_download_events(entry: str = Query(..., description="Download tracker entry")):
+    """Streams live progress events for one download entry."""
+    if not mysql_db_instance.enabled:
+        raise HTTPException(status_code=503, detail="MySQL database is disabled")
+    if not mysql_db_instance.get_download_entry(entry):
+        raise HTTPException(status_code=404, detail="Download entry not found")
+
+    queue, unsubscribe = ytdlp.subscribe_download_events(entry)
+
+    async def event_generator():
+        try:
+            events = ytdlp.get_download_events(entry)
+            if events:
+                yield f"data: {json.dumps({'type': 'snapshot', 'events': events}, default=str)}\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"data: {json.dumps({'type': 'event', **event}, default=str)}\n\n"
+                    if str(event.get("status", "")).lower() in {"completed", "failed"}:
+                        break
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        finally:
+            unsubscribe()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @app.delete("/api/actions/downloads/{download_id:path}", tags=["Download Tracker"])
 def delete_download(download_id: str):
@@ -818,6 +891,10 @@ class UpdateEntryStatusRequest(BaseModel):
     status: str
     size: int | None = None
     thumbnail: str | None = None
+
+
+class RetryDownloadRequest(BaseModel):
+    entry: str
 
 
 @app.post("/api/ytdlp/download-entry", tags=["Browser Plugin"])
@@ -867,6 +944,50 @@ def update_entry_status(req: UpdateEntryStatusRequest):
         "entry": entry_text,
         "updated_status": status_text
     }
+
+
+@app.post("/api/ytdlp/retry", tags=["Browser Plugin"])
+def retry_download(req: RetryDownloadRequest):
+    entry = req.entry.strip()
+    payload = mysql_db_instance.get_download_request(entry)
+    if not payload:
+        raise HTTPException(status_code=404, detail="No saved request payload for this download")
+    mysql_db_instance.update_download_status(
+        entry,
+        "PENDING",
+        processor=ytdlp.processor_mode(),
+    )
+    if ytdlp.processor_mode() == "nats":
+        return ytdlp.start_nats_download(payload, entry)
+    job = ytdlp.start_download(**payload)
+    mysql_db_instance.update_download_status(
+        entry, "DOWNLOADING", processor="legacy", service_host=socket.gethostname(),
+    )
+    return job
+
+
+@app.get("/api/admin/download-processor", tags=["Admin"])
+def get_download_processor():
+    return {
+        "processor": ytdlp.processor_mode(),
+        "configured_processor": settings.downloads.processor,
+        "nats_enabled": settings.downloads.nats.enabled,
+        "nats_url": settings.downloads.nats.url,
+    }
+
+
+class DownloadProcessorRequest(BaseModel):
+    processor: str
+
+
+@app.put("/api/admin/download-processor", tags=["Admin"])
+def set_download_processor(req: DownloadProcessorRequest):
+    if req.processor not in ("legacy", "nats"):
+        raise HTTPException(status_code=400, detail="Processor must be legacy or nats")
+    if req.processor == "nats" and not settings.downloads.nats.enabled:
+        raise HTTPException(status_code=400, detail="NATS is disabled in config.yml")
+    settings.downloads.processor = req.processor
+    return get_download_processor()
 
 @app.patch("/api/actions/downloads/{download_id:path}", tags=["Download Tracker"])
 def update_download_status(download_id: str, update: DownloadUpdate):
@@ -1298,6 +1419,7 @@ def admin_status():
         },
         "resource_gate": {"free": resource_ok, "reason": resource_reason,
                            "enabled": settings.jobs.resource_gate.enabled},
+        "download_processor": get_download_processor(),
         "jobs": jobs,
         "mounts": list(MOUNT_REGISTRY.keys()),
         "llm_parse_backlog": {
