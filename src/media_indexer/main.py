@@ -175,7 +175,6 @@ class TargetRequest(BaseModel):
 
 class FormatsRequest(BaseModel):
     url: str
-    cookies: str | None = None
     media_type: str = "song"
 
 
@@ -190,7 +189,6 @@ class YtDownloadRequest(TargetRequest):
     url: str
     video_format: dict | None = None
     audio_format: dict | None = None
-    cookies: str | None = None
     verbose: bool = False
 
 
@@ -574,7 +572,7 @@ async def ytdlp_formats(req: FormatsRequest):
     print(f"Fetching formats for URL: {url}")
     if ytdlp.processor_mode() == "nats":
         return await ytdlp.fetch_formats_nats(url, media_type=req.media_type)
-    return ytdlp.fetch_formats(url, cookies=req.cookies)
+    return ytdlp.fetch_formats(url)
 
 
 def _download_entry(data: dict) -> str:
@@ -805,7 +803,7 @@ def get_downloads():
         with conn.cursor() as cursor:
             cursor.execute("""
                     SELECT entry, status, updated_at, title, size, thumbnail,
-                        processor, service_host, event_history
+                        processor, service_host
                 FROM download_tracker ORDER BY updated_at DESC
             """)
             rows = cursor.fetchall()
@@ -822,11 +820,6 @@ def get_downloads():
                 language = parts[2] if len(parts) >= 3 else None
                 size = row.get("size")
                 thumbnail = row.get("thumbnail")
-                try:
-                    events = json.loads(row.get("event_history") or "[]")
-                except (TypeError, ValueError):
-                    events = []
-
                 results.append({
                     "id": entry_text,  # Primary key string
                     "title": title,
@@ -840,7 +833,6 @@ def get_downloads():
                     "thumbnail": thumbnail,
                     "processor": row.get("processor") or "legacy",
                     "service_host": row.get("service_host"),
-                    "events": events if isinstance(events, list) else [],
                 })
             return results
     finally:
@@ -859,9 +851,9 @@ async def stream_download_events(entry: str = Query(..., description="Download t
 
     async def event_generator():
         try:
-            snapshot = mysql_db_instance.get_download_entry(entry)
-            if snapshot:
-                yield f"data: {json.dumps({'type': 'snapshot', **snapshot}, default=str)}\n\n"
+            events = ytdlp.get_download_events(entry)
+            if events:
+                yield f"data: {json.dumps({'type': 'snapshot', 'events': events}, default=str)}\n\n"
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15)

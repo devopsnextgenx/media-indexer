@@ -8,7 +8,6 @@ CREATE TABLE `download_tracker` (
   `processor` varchar(32) DEFAULT 'legacy',
   `service_host` varchar(255) DEFAULT NULL,
   `request_payload` mediumtext,
-  `event_history` mediumtext,
   PRIMARY KEY (`entry`),
   KEY `idx_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

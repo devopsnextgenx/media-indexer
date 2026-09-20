@@ -38,6 +38,7 @@ _DOWNLOAD_SUBSCRIBERS: dict[
     str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]
 ] = {}
 _DOWNLOAD_SUBSCRIBERS_LOCK = threading.Lock()
+_DOWNLOAD_EVENTS: dict[str, list[dict]] = {}
 
 
 def _tracker():
@@ -87,6 +88,12 @@ def _publish_download_event(entry: str, event: dict) -> None:
         if loop.is_closed():
             continue
         loop.call_soon_threadsafe(queue.put_nowait, event)
+
+
+def get_download_events(entry: str) -> list[dict]:
+    """Return the in-memory event snapshot for an ongoing download."""
+    with _DOWNLOAD_SUBSCRIBERS_LOCK:
+        return list(_DOWNLOAD_EVENTS.get(entry, ()))
 
 
 def processor_mode() -> str:
@@ -173,8 +180,13 @@ def _record_download_event(entry: str, event: dict, host: str | None = None):
         processor="nats",
         service_host=event.get("hostname") or host,
     )
-    _tracker().record_download_event(entry, event)
+    with _DOWNLOAD_SUBSCRIBERS_LOCK:
+        _DOWNLOAD_EVENTS.setdefault(entry, []).append(event)
+        _DOWNLOAD_EVENTS[entry] = _DOWNLOAD_EVENTS[entry][-200:]
     _publish_download_event(entry, event)
+    if status in {"COMPLETED", "FAILED"}:
+        with _DOWNLOAD_SUBSCRIBERS_LOCK:
+            _DOWNLOAD_EVENTS.pop(entry, None)
 
 
 async def fetch_formats_nats(url: str, media_type: str = "song") -> dict:
@@ -250,12 +262,9 @@ async def _run_nats_download(job_id: str, data: dict, entry: str):
     subject, payload = _nats_download_payload(job_id, data)
     nc = await _connect_nats()
     terminal = asyncio.get_running_loop().create_future()
-    history = []
-
     async def on_message(msg):
         try:
             event = json.loads(msg.data.decode())
-            history.append(event)
             status = event.get("status", "progress")
             updates = {
                 "status": "completed" if status == "completed" else "failed" if status == "failed" else status,
@@ -263,7 +272,6 @@ async def _run_nats_download(job_id: str, data: dict, entry: str):
                 "progress": event.get("progress"),
                 "message": event.get("message") or status,
                 "service_host": event.get("hostname"),
-                "event_history": history,
             }
             _set_job(job_id, **updates)
             _record_download_event(entry, event)
@@ -281,7 +289,7 @@ async def _run_nats_download(job_id: str, data: dict, entry: str):
         await asyncio.wait_for(terminal, timeout=_nats_config().timeout_seconds)
     except Exception as exc:
         event = {"status": "failed", "error": str(exc), "hostname": socket.gethostname()}
-        _set_job(job_id, status="failed", message=str(exc), event_history=history + [event])
+        _set_job(job_id, status="failed", message=str(exc))
         _record_download_event(entry, event)
     finally:
         await nc.drain()
@@ -289,7 +297,7 @@ async def _run_nats_download(job_id: str, data: dict, entry: str):
 
 def start_nats_download(data: dict, entry: str) -> dict:
     job_id = str(uuid.uuid4())
-    _set_job(job_id, status="queued", processor="nats", url=data.get("url"), progress=0, event_history=[])
+    _set_job(job_id, status="queued", processor="nats", url=data.get("url"), progress=0)
     _tracker().update_download_status(
         entry, "PENDING", processor="nats", request_payload=data
     )
@@ -347,17 +355,13 @@ def resolve_resolution(vformat: int) -> str:
         return "hd"
     return "xhd"
 
-def _resolve_cookie_file(cookies: str | None = None) -> str | None:
+def _resolve_cookie_file() -> str | None:
     content = ""
     
     # 1. Read host mounted cookies if present
     if os.path.exists(HOST_COOKIE_FILE) and os.path.getsize(HOST_COOKIE_FILE) > 0:
         with open(HOST_COOKIE_FILE, "r") as f:
             content = f.read().strip()
-            
-    # 2. Fall back to passed cookies parameter if host file is empty/missing
-    elif cookies and cookies.strip():
-        content = cookies.strip()
 
     if not content:
         return None
@@ -396,14 +400,14 @@ def _validate_url(url: str) -> bool:
     except Exception:
         return False
     
-def fetch_formats(url: str, cookies: str | None = None, verbose: bool = False) -> dict:
+def fetch_formats(url: str, verbose: bool = False) -> dict:
     """Extracts formats via yt-dlp, mapping non-exact heights to the nearest
     target height tier and formatting metadata properly for the extension UI.
     """
     if not _validate_url(url):
         raise HTTPException(status_code=400, detail="Invalid URL provided")
 
-    cookie_file = _resolve_cookie_file(cookies)
+    cookie_file = _resolve_cookie_file()
     cookies_verified = bool(cookie_file and os.path.exists(cookie_file))
 
     # Fetch complete format and video metadata as JSON
@@ -543,7 +547,6 @@ def _run_download(
     url: str,
     selector: str,
     target: dict,
-    cookies: str | None = None,
 ) -> None:
     directory = target["directory"]
     # yt-dlp treats '%' specially in output templates, so escape literal ones.
@@ -555,7 +558,7 @@ def _run_download(
         output_template = os.path.join(safe_dir, f"{safe_stem}.%(ext)s")
     else:
         output_template = os.path.join(safe_dir, "%(title)s.%(ext)s")
-    cookie_file = _resolve_cookie_file(cookies)
+    cookie_file = _resolve_cookie_file()
 
     os.makedirs(directory, exist_ok=True)
 
@@ -622,7 +625,6 @@ def start_download(
     actress: str | None = None,
     industry: str | None = None,
     movie_name: str | None = None,
-    cookies: str | None = None,
     verbose: bool = False,
 ) -> dict:
     v_id = video_format.get("format_id") if video_format else None
@@ -645,7 +647,7 @@ def start_download(
 
     thread = threading.Thread(
         target=_run_download,
-        args=(job_id, url, selector, target, cookies),
+        args=(job_id, url, selector, target),
         daemon=True,
     )
     thread.start()

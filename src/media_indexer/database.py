@@ -382,7 +382,6 @@ class MySQLDatabase:
                         processor VARCHAR(32) DEFAULT 'legacy',
                         service_host VARCHAR(255) DEFAULT NULL,
                         request_payload MEDIUMTEXT DEFAULT NULL,
-                        event_history MEDIUMTEXT DEFAULT NULL,
                         INDEX idx_status (status)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """)
@@ -390,7 +389,6 @@ class MySQLDatabase:
                     "ALTER TABLE download_tracker ADD COLUMN processor VARCHAR(32) DEFAULT 'legacy'",
                     "ALTER TABLE download_tracker ADD COLUMN service_host VARCHAR(255) DEFAULT NULL",
                     "ALTER TABLE download_tracker ADD COLUMN request_payload MEDIUMTEXT DEFAULT NULL",
-                    "ALTER TABLE download_tracker ADD COLUMN event_history MEDIUMTEXT DEFAULT NULL",
                 ):
                     try:
                         cursor.execute(statement)
@@ -1492,38 +1490,6 @@ class MySQLDatabase:
             logger.error(f"Failed to update download entry status: {e}")
             return False
 
-    def record_download_event(self, entry: str, event: dict) -> bool:
-        """Persist a bounded event history for reloadable download consoles."""
-        if not self.enabled:
-            return False
-        conn = self._get_connection()
-        if not conn:
-            return False
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT event_history FROM download_tracker WHERE entry=%s", (entry,))
-                row = cursor.fetchone()
-                if not row:
-                    conn.close()
-                    return False
-                try:
-                    history = json.loads(row.get("event_history") or "[]")
-                except (TypeError, ValueError):
-                    history = []
-                if not isinstance(history, list):
-                    history = []
-                history.append(event)
-                history = history[-200:]
-                cursor.execute(
-                    "UPDATE download_tracker SET event_history=%s WHERE entry=%s",
-                    (json.dumps(history, default=str), entry),
-                )
-            conn.close()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to record download event '{entry}': {e}")
-            return False
-
     def get_download_request(self, entry: str) -> dict | None:
         if not self.enabled:
             return None
@@ -1555,19 +1521,14 @@ class MySQLDatabase:
         try:
             with conn.cursor() as cursor:
                 cursor.execute(
-                          """SELECT entry, title, status, updated_at, thumbnail, size,
-                              processor, service_host, event_history
+                    """SELECT entry, title, status, updated_at, thumbnail, size,
+                              processor, service_host
                        FROM download_tracker WHERE entry=%s""",
                     (entry,),
                 )
                 row = cursor.fetchone()
             if not row:
                 return None
-            try:
-                row["events"] = json.loads(row.get("event_history") or "[]")
-            except (TypeError, ValueError):
-                row["events"] = []
-            row.pop("event_history", None)
             return row
         finally:
             conn.close()

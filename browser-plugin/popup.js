@@ -501,54 +501,6 @@ function thumbnailUrl(item) {
 }
 
 /* ------------------------------------------------------------ formats */
-async function getNetscapeCookies(url) {
-    if (typeof chrome === "undefined" || !chrome.cookies) return null;
-    try {
-        const targetUrl = new URL(url);
-        const domainUrl = `${targetUrl.protocol}//.youtube.com`;
-
-        const [urlCookies, domainCookies] = await Promise.all([
-            chrome.cookies.getAll({ url }),
-            chrome.cookies.getAll({ url: domainUrl })
-        ]);
-
-        const cookieMap = new Map();
-        [...urlCookies, ...domainCookies].forEach((c) => {
-            const key = `${c.domain}:${c.path}:${c.name}`;
-            if (!cookieMap.has(key)) {
-                cookieMap.set(key, c);
-            }
-        });
-
-        const cookies = Array.from(cookieMap.values());
-        if (!cookies.length) return null;
-
-        const lines = ["# Netscape HTTP Cookie File"];
-        const now = Math.floor(Date.now() / 1000);
-        const defaultExpiration = now + 31536000;
-
-        for (const c of cookies) {
-            const domain = c.domain;
-            const flag = domain.startsWith(".") ? "TRUE" : "FALSE";
-            const path = c.path || "/";
-            const secure = c.secure ? "TRUE" : "FALSE";
-            const expiration = Math.floor(c.expirationDate || defaultExpiration);
-            const name = c.name;
-            const value = c.value;
-            lines.push(`${domain}\t${flag}\t${path}\t${secure}\t${expiration}\t${name}\t${value}`);
-        }
-        return lines.join("\n");
-    } catch (err) {
-        return null;
-    }
-}
-
-function cookieEntryCount(cookieFileContent) {
-    if (!cookieFileContent) return 0;
-    return cookieFileContent
-        .split("\n")
-        .filter((line) => line.trim() && !line.trim().startsWith("#")).length;
-}
 
 async function fetchFormats() {
     if (!state.pageUrl) {
@@ -562,22 +514,12 @@ async function fetchFormats() {
     el("formats-btn").disabled = true;
 
     try {
-        const cookies = await getNetscapeCookies(state.pageUrl);
-        const cookieCount = cookieEntryCount(cookies);
-        if (cookieCount === 0) {
-            toast("No browser cookies found for this page - log into YouTube in this tab, or downloads may get HTTP 403.", "warn");
-        }
 
         state.formats = await api("POST", "/api/ytdlp/formats", {
             url: state.pageUrl,
-            cookies: cookies,
             verbose: false,
             media_type: el("media-type").value
         });
-
-        if (cookieCount > 0 && state.formats.cookies_received === false) {
-            toast("Cookies were sent but the server did not accept them - check the backend logs.", "warn");
-        }
 
         if (state.formats.title) {
             if (!el("search-input").value) el("search-input").value = state.formats.title;
@@ -616,18 +558,11 @@ async function startDownload(videoFormat, audioFormat) {
         return;
     }
 
-    const cookies = await getNetscapeCookies(state.pageUrl);
-    const cookieCount = cookieEntryCount(cookies);
-    if (cookieCount === 0) {
-        toast("Starting download with no cookies attached - expect possible HTTP 403.", "warn");
-    }
-
     const payload = {
         ...targetPayload(),
         url: state.pageUrl,
         video_format: videoFormat,
         audio_format: videoFormat.has_audio ? null : audioFormat,
-        cookies: cookies
     };
 
     if (!videoFormat.has_audio && !payload.audio_format) {
@@ -642,9 +577,7 @@ async function startDownload(videoFormat, audioFormat) {
 
     try {
         const job = await api("POST", "/api/ytdlp/download", payload);
-        if (cookieCount > 0 && job.cookies_received === false) {
-            toast("Cookies were sent but the server did not report using them - check the backend logs.", "warn");
-        }
+
         connectJobSSE(job.id);
     } catch (err) {
         setJobStatus(`Download failed: ${err.message}`, true);
