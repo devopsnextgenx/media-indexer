@@ -63,7 +63,8 @@ SERIALS_ROOT= STORAGE_SNG / "serials" / "TV Shows"
 MUSIC_ROOT  = HOME / "Music" / "audio"
 TMP_DIR     = HOME / "tmp"
 
-COOKIE_FILE = TMP_DIR / "cookies.txt"
+COOKIE_SOURCE = os.environ.get("NATS_COOKIE_FILE")
+COOKIE_FILE = Path(COOKIE_SOURCE) if COOKIE_SOURCE else TMP_DIR / "cookies.txt"
 
 NATS_URL             = os.environ.get("NATS_URL", "nats://192.168.12.111:4222")
 NATS_USER            = os.environ.get("NATS_USER") or None
@@ -101,10 +102,13 @@ class CookieManager:
     def __init__(self, dest: Path, interval: int = COOKIE_REFRESH_SEC):
         self.dest = dest
         self.interval = interval
+        self.browser_refresh = COOKIE_SOURCE is None
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
 
     async def refresh(self) -> bool:
+        if not self.browser_refresh:
+            return self.dest.exists()
         async with self._lock:
             self.dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.dest.with_suffix(".new")
@@ -138,7 +142,10 @@ class CookieManager:
             await asyncio.sleep(self.interval)
 
     def start(self):
-        self._task = asyncio.create_task(self._loop())
+        if self.browser_refresh:
+            self._task = asyncio.create_task(self._loop())
+        else:
+            LOG.info("using configured cookie file -> %s", self.dest)
 
     async def stop(self):
         if self._task:
@@ -321,7 +328,10 @@ class YtDlp:
             cmd[1:1] = ["--cookies", cookie_file]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        out, _ = await proc.communicate()
+        out, err = await proc.communicate()
+        if proc.returncode != 0:
+            detail = err.decode(errors="ignore").strip() or out.decode(errors="ignore").strip()
+            raise RuntimeError(f"yt-dlp format probe failed rc={proc.returncode}: {detail[-1000:]}")
         return out.decode(errors="ignore")
 
     @staticmethod
@@ -489,11 +499,16 @@ async def _download_video_pipeline(
     dest_builder: Callable[[dict, int], Path],
     extra_ytdlp_args: Optional[list[str]] = None,
     use_aria2_external: bool = False,
+    name_from_folder: bool = False,
 ) -> None:
     """
     Shared pipeline for songs / movies / serials / aria2c(vid):
       resolve -> download (video stream, audio stream, progress each)
               -> merge -> move -> thumbnail -> done
+
+    name_from_folder: name the final file after its destination folder
+    (<folder>/<folder>.<ext>) instead of the yt-dlp title. Used for movies
+    so the layout matches Jellyfin/Plex conventions.
     """
     url = req.get("url") or (
         f"https://ok.ru/video/{req['vid']}" if req.get("vid") else None)
@@ -547,7 +562,8 @@ async def _download_video_pipeline(
         await rep.send("moving", message=f"moving to {dest}")
 
         src = Path(final)
-        dst = dest / src.name
+        # Movies: "<Movie Folder>/<Movie Folder>.<ext>" (Jellyfin/Plex style)
+        dst = dest / (f"{dest.name}{src.suffix}" if name_from_folder else src.name)
         shutil.move(str(src), str(dst))
 
         size  = dst.stat().st_size
@@ -573,6 +589,7 @@ async def handle_movies_dl(req, rep, ctx):
         req, rep, ctx,
         dest_builder=lambda r, h: movies_dest(r.get("lang", ""),
                                               r.get("movie name") or r.get("name") or "Untitled"),
+        name_from_folder=True,
     )
 
 
@@ -592,6 +609,7 @@ async def handle_aria2c_dl(req, rep, ctx):
             dest_builder=lambda r, h: movies_dest(r.get("lang", ""),
                                                   r.get("movie name") or "Untitled"),
             use_aria2_external=True,
+            name_from_folder=True,
         )
         return
 
@@ -601,10 +619,11 @@ async def handle_aria2c_dl(req, rep, ctx):
         return
 
     name = req.get("movie name") or req.get("name") or "download"
-    ext  = req.get("format") or "mp4"
-    filename = f"{name}.{ext}"
+    ext  = (req.get("format") or "mp4").lstrip(".")
     dest = movies_dest(req.get("lang", ""), name)
     dest.mkdir(parents=True, exist_ok=True)
+    # File name always mirrors the movie folder: "<Movie Folder>/<Movie Folder>.<ext>"
+    filename = f"{dest.name}.{ext}"
 
     tmp = Path(tempfile.mkdtemp(dir=TMP_DIR))
     await rep.send("started", message="aria2c started")
@@ -670,7 +689,12 @@ async def _query_video(req, rep, ctx):
         await rep.send("failed", error="missing url or vid")
         return
 
-    fmt_list = await YtDlp.list_formats(url, ctx.cookies.path)
+    try:
+        fmt_list = await YtDlp.list_formats(url, ctx.cookies.path)
+    except Exception as e:
+        LOG.exception("format query failed for %s", url)
+        await rep.send("failed", url=url, error=str(e))
+        return
     formats  = parse_formats(fmt_list)
     audio    = parse_audio_format(fmt_list)
     smallest_by_height = {}

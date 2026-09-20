@@ -12,6 +12,7 @@
 #
 # Env overrides:
 #   NATS_URL   default nats://192.168.12.111:4222
+#   NATS_COOKIE_FILE  exported Netscape cookie file; skips browser refresh
 set -euo pipefail
 
 APP="nats-download-service"
@@ -29,6 +30,7 @@ NATS_PASSWORD="${NATS_PASSWORD:-zboxpswd}"
 NATS_TOKEN="${NATS_TOKEN:-}"
 NATS_CREDS="${NATS_CREDS:-}"
 NATS_NKEY_SEED="${NATS_NKEY_SEED:-}"
+NATS_COOKIE_FILE="${NATS_COOKIE_FILE:-}"
 
 help() {
   cat <<EOF
@@ -45,6 +47,7 @@ Actions:
 
 Env:
   NATS_URL             NATS server URL (default: $NATS_URL)
+  NATS_COOKIE_FILE     Netscape cookie file for yt-dlp (optional)
 
 Requires: python3, python3-venv, aria2c, ffmpeg, ffprobe
 EOF
@@ -90,6 +93,7 @@ write_unit() {
   add_env NATS_TOKEN      "$NATS_TOKEN"
   add_env NATS_CREDS      "$NATS_CREDS"
   add_env NATS_NKEY_SEED  "$NATS_NKEY_SEED"
+  add_env NATS_COOKIE_FILE "$NATS_COOKIE_FILE"
 
   # systemd 'Environment=' with a password → keep the unit file private.
   cat > "$UNIT" <<EOF
