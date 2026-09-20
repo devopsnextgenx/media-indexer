@@ -170,6 +170,10 @@ The service refreshes cookies every 15 min. If a request fails with
 (≤ 15 min) and re-submit. Because cookies are shared, one refresh fixes all
 subsequent requests.
 
+On hosts without an accessible Chrome profile, deploy with
+`NATS_COOKIE_FILE=/path/to/cookies.txt`. This uses an exported Netscape cookie
+file and disables browser refresh for that service instance.
+
 ## Example (Python)
 
 ```python

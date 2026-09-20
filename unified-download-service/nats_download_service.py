@@ -45,8 +45,7 @@ from nats.aio.client import Client as NATS
 
 # ─────────────────────────────── config ────────────────────────────────
 HOME        = Path.home()
-BIN         = HOME / "bin"
-YTDLP       = str(BIN / "yt-dlp")           # or set absolute path
+YTDLP       = "/usr/local/bin/yt-dlp"
 ARIA2C      = "/usr/bin/aria2c"
 
 HOSTNAME    = socket.gethostname()
@@ -62,9 +61,8 @@ MOVIES_ROOT = STORAGE_MOV / "movies"
 SERIALS_ROOT= STORAGE_SNG / "serials" / "TV Shows"
 MUSIC_ROOT  = HOME / "Music" / "audio"
 TMP_DIR     = HOME / "tmp"
-
-COOKIE_SOURCE = os.environ.get("NATS_COOKIE_FILE")
-COOKIE_FILE = Path(COOKIE_SOURCE) if COOKIE_SOURCE else TMP_DIR / "cookies.txt"
+COOKIE_FALLBACK = SONGS_ROOT / "cookies-zbox.txt"
+COOKIE_FILE = COOKIE_FALLBACK
 
 NATS_URL             = os.environ.get("NATS_URL", "nats://192.168.12.111:4222")
 NATS_USER            = os.environ.get("NATS_USER") or None
@@ -73,7 +71,6 @@ NATS_TOKEN           = os.environ.get("NATS_TOKEN") or None
 NATS_CREDS_FILE      = os.environ.get("NATS_CREDS") or None   # path to .creds
 NATS_NKEY_SEED       = os.environ.get("NATS_NKEY_SEED") or None
 NATS_QUEUE_GROUP     = os.environ.get("NATS_QUEUE_GROUP", "nats-download-service")
-COOKIE_REFRESH_SEC   = 15 * 60
 PROGRESS_STEP        = 10        # percent increments for progress events
 
 DOWNLOAD_TOPICS = {
@@ -97,67 +94,17 @@ logging.basicConfig(
 
 # ───────────────────────────── cookie manager ──────────────────────────
 class CookieManager:
-    """Refreshes cookies from the browser into one shared file every 15 min."""
+    """Provides the externally managed cookie file without modifying it."""
 
-    def __init__(self, dest: Path, interval: int = COOKIE_REFRESH_SEC):
+    def __init__(self, dest: Path):
         self.dest = dest
-        self.interval = interval
-        self.browser_refresh = COOKIE_SOURCE is None
-        self._task: Optional[asyncio.Task] = None
-        self._lock = asyncio.Lock()
-
-    async def refresh(self) -> bool:
-        if not self.browser_refresh:
-            return self.dest.exists()
-        async with self._lock:
-            self.dest.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.dest.with_suffix(".new")
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    YTDLP, "--cookies-from-browser", "chrome",
-                    "--cookies", str(tmp),
-                    "--skip-download", "--no-warnings",
-                    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await proc.wait()
-                if proc.returncode == 0 and tmp.exists():
-                    tmp.replace(self.dest)
-                    LOG.info("cookies refreshed -> %s", self.dest)
-                    return True
-                LOG.warning("cookie refresh failed rc=%s", proc.returncode)
-            except Exception as e:  # noqa
-                LOG.exception("cookie refresh error: %s", e)
-            finally:
-                tmp.unlink(missing_ok=True)
-            return False
-
-    async def _loop(self):
-        while True:
-            try:
-                await self.refresh()
-            except Exception:
-                LOG.exception("cookie loop error")
-            await asyncio.sleep(self.interval)
-
-    def start(self):
-        if self.browser_refresh:
-            self._task = asyncio.create_task(self._loop())
-        else:
-            LOG.info("using configured cookie file -> %s", self.dest)
-
-    async def stop(self):
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
 
     @property
     def path(self) -> Optional[str]:
-        return str(self.dest) if self.dest.exists() else None
+        if self.dest.exists():
+            return str(self.dest)
+        LOG.warning("configured cookie file is unavailable -> %s", self.dest)
+        return None
 
 
 # ──────────────────────────── storage helpers ──────────────────────────
@@ -487,9 +434,18 @@ class Ctx:
     nc: NATS
 
 
+async def _list_formats(url: str, ctx: Ctx) -> str:
+    """Probe formats using the externally managed cookie file only."""
+    return await YtDlp.list_formats(url, ctx.cookies.path)
+
+
 async def _resolve_video_audio(url: str, ctx: Ctx, target_h: int) -> tuple[Optional[str], Optional[str]]:
     """List formats, pick best video+audio pair. Returns (None, None) on failure."""
-    fmt_list = await YtDlp.list_formats(url, ctx.cookies.path)
+    try:
+        fmt_list = await _list_formats(url, ctx)
+    except Exception:
+        LOG.exception("format probe failed after retries for %s", url)
+        raise
     formats = parse_formats(fmt_list)
     return pick_video_format(formats, target_h), pick_audio_format(fmt_list)
 
@@ -519,7 +475,12 @@ async def _download_video_pipeline(
     target_h = target_height_from(req)
     await rep.send("started", message="Resolving formats")
 
-    vfmt, afmt = await _resolve_video_audio(url, ctx, target_h)
+    try:
+        vfmt, afmt = await _resolve_video_audio(url, ctx, target_h)
+    except Exception as e:
+        LOG.exception("format resolution failed for %s", url)
+        await rep.send("failed", error=str(e))
+        return
     if not vfmt:
         await rep.send("failed", error="no suitable video format found")
         return
@@ -690,9 +651,9 @@ async def _query_video(req, rep, ctx):
         return
 
     try:
-        fmt_list = await YtDlp.list_formats(url, ctx.cookies.path)
+        fmt_list = await _list_formats(url, ctx)
     except Exception as e:
-        LOG.exception("format query failed for %s", url)
+        LOG.exception("format query failed after retries for %s", url)
         await rep.send("failed", url=url, error=str(e))
         return
     formats  = parse_formats(fmt_list)
@@ -758,8 +719,6 @@ class DownloadService:
         LOG.info("connected to NATS %s (auth=%s) host=%s media_base=%s",
                  NATS_URL, auth_kind, HOSTNAME, MEDIA_BASE)
 
-        self.cookies.start()
-
         for kind, subj in DOWNLOAD_TOPICS.items():
             await self.nc.subscribe(subj, queue=NATS_QUEUE_GROUP, cb=self._dl_cb(kind))
             LOG.info("subscribed download topic %s (%s)", subj, kind)
@@ -813,7 +772,6 @@ class DownloadService:
 
     async def stop(self):
         self._stop.set()
-        await self.cookies.stop()
         if self.nc:
             await self.nc.drain()
 
@@ -839,3 +797,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         sys.exit(0)
+

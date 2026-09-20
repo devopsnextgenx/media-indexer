@@ -64,10 +64,7 @@ install_deps() {
   mkdir -p "$APP_DIR"
   [ -d "$VENV" ] || python3 -m venv "$VENV"
   "$VENV/bin/pip" install --upgrade pip >/dev/null
-  "$VENV/bin/pip" install --upgrade nats-py yt-dlp
-  # install the yt-dlp CLI to ~/bin so the service (and you) can call it
-  mkdir -p "$BIN_DIR"
-  "$VENV/bin/pip" show yt-dlp >/dev/null && ln -sf "$VENV/bin/yt-dlp" "$BIN_DIR/yt-dlp"
+  "$VENV/bin/pip" install --upgrade nats-py
 }
 
 copy_service() {
@@ -117,7 +114,7 @@ EOF
 }
 
 install_all() {
-  require python3 aria2c ffmpeg ffprobe
+  require python3 aria2c ffmpeg ffprobe /usr/local/bin/yt-dlp
   install_deps
   copy_service
   write_unit

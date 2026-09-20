@@ -137,7 +137,7 @@ success and failure statuses.
 ### 3.8 Deployment (`deploy-nats-download.sh`)
 | Flag         | Effect                                                |
 |--------------|-------------------------------------------------------|
-| `install`    | Create venv, `pip install nats-py yt-dlp`, symlink `yt-dlp` into `~/bin`, copy `nats_download_service.py` → `~/bin/`, write `~/.config/systemd/user/nats-download-service.service`, `systemctl --user enable --now`. |
+| `install`    | Create venv, `pip install nats-py`, require `/usr/local/bin/yt-dlp`, copy `nats_download_service.py` → `~/bin/`, write `~/.config/systemd/user/nats-download-service.service`, `systemctl --user enable --now`. |
 | `redeploy`   | Same as install (idempotent).                         |
 | `reload`     | Re-copy service file, `daemon-reload`, restart.       |
 | `restart`    | Restart running service.                              |
