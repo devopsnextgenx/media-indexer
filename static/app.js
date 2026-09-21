@@ -3215,6 +3215,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
             downloadsTabActive = false;
             stopDownloadsPolling();
+            closeDownloadEventStreams();
         }
     }
 
@@ -3590,6 +3591,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!items.length) {
             downloadsBody.innerHTML = `<tr><td colspan="7" class="empty-state">No matching download tasks.</td></tr>`;
             if (downloadsCount) downloadsCount.textContent = "";
+            syncDownloadEventStreams();
             return;
         }
 
@@ -3662,9 +3664,18 @@ document.addEventListener("DOMContentLoaded", () => {
         return (events || []).map(event => `<div><span class="event-status">${escapeHtml(event.status || 'event')}</span> ${escapeHtml(event.message || event.error || '')}${event.progress != null ? ` · ${escapeHtml(event.progress)}%` : ''}${event.hostname ? ` · ${escapeHtml(event.hostname)}` : ''}</div>`).join('') || '<span class="admin-hint">No status events recorded.</span>';
     }
 
+    function closeDownloadEventStreams() {
+        for (const source of downloadEventStreams.values()) source.close();
+        downloadEventStreams.clear();
+    }
+
     function syncDownloadEventStreams() {
-        const activeEntries = new Set(downloadsList.map(item => item.id));
+        const openEntries = new Set(
+            [...document.querySelectorAll(".download-events-row:not(.hidden)")]
+                .map(row => row.id.replace(/^download-events-/, ""))
+        );
         for (const item of downloadsList) {
+            if (!openEntries.has(item.id)) continue;
             if (downloadEventStreams.has(item.id)) continue;
             const source = new EventSource(`/api/actions/downloads/stream?entry=${encodeURIComponent(item.id)}`);
             downloadEventStreams.set(item.id, source);
@@ -3688,7 +3699,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         consoleEl.scrollTop = consoleEl.scrollHeight;
                     }
                 }
-                if (["COMPLETED", "FAILED"].includes(String(payload.status || "").toUpperCase())) {
+                if (["COMPLETED", "FAILED"].includes(String(current.status || "").toUpperCase())) {
                     source.close();
                     downloadEventStreams.delete(item.id);
                 }
@@ -3699,7 +3710,7 @@ document.addEventListener("DOMContentLoaded", () => {
             };
         }
         for (const [entry, source] of downloadEventStreams) {
-            if (!activeEntries.has(entry)) {
+            if (!openEntries.has(entry) || !downloadsList.some(item => item.id === entry)) {
                 source.close();
                 downloadEventStreams.delete(entry);
             }
@@ -3720,6 +3731,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const consoleRow = row?.nextElementSibling;
         if (consoleRow?.classList.contains("download-events-row")) {
             consoleRow.classList.toggle("hidden");
+            syncDownloadEventStreams();
         }
     });
 
